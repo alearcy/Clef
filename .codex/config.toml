@@ -1,0 +1,8 @@
+# Project-scoped Codex settings.
+#
+# Ponytail is intentionally disabled for this repository: Clef follows the
+# spec-driven workflow in AGENTS.md and does not use Ponytail modes, review
+# commands, or its code-minimisation rules. The plugin remains available to
+# other projects.
+[plugins."ponytail@ponytail"]
+enabled = false

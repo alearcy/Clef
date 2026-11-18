@@ -1,0 +1,2283 @@
+log path:'/Users/arcy/Desktop/ZebraHZ.log'
+checking deskTopFile at: /Users/arcy/Desktop/ZebraHZ.log
+INIT AudioProcessor 1414234112
+Path: '/Library/Audio/Plug-Ins/VST3/ZebraHZ.vst3'
+MacOS: Version 26.6.2 (Build 25G83)
+CPU Vendor: ''
+CPU Type: 'Apple M4 Pro'
+CPU Architecture: 'arm64'
+Binary: 'ARM 64 bit'
+Machine Model: 'Mac16,11'
+Logical Cores: 12/12 Physical Cores: 12/12 Frequency: 0.0GHz (Range: 0.0 to 0.0Ghz) RAM: 24GB
+ZebraHZ Plugin ID: 534D485A
+Hostname: 'clef'
+Plugin API: 'VST3'
+Starting REVISION 16765
+totalSize 3025
+Zebra2_Wavefolder::Zebra2_Wavefolder plot figures: 1 256 0.00
+buffer[0] = 7.00
+Zebra2_Wavefolder::Zebra2_Wavefolder plot figures: 1 256 0.00
+buffer[0] = 7.00
+void AM_AudioMan::createModules()
+new instance of  AM_PreferencesAudio created for ZebraHZ # 1
+Warning! AudioPreferenceExtractor::setPreference didn't find matching preference for "NKS Colour Fit"
+Warning! AudioPreferenceExtractor::setPreference didn't find matching preference for "NKS Auto Map"
+Parm 1868 TrimPots same ptr as param 1843 V1Tune1
+loadPreferences() - ZebraHZ
+void AM_AudioMan::createMidiPrograms()
+Preset from 'ZebraHZ'
+publicparams path: /Library/Application Support/u-he file: com.u-he.ZebraHZ.publicparams.txt
+CustomParamTable::createCrossReference sorted 0 automatable parameters
+getMidiAssignPath(): '/Users/arcy/Library/Application Support/u-he/com.u-he.ZebraHZ.midiassign.txt'
+READING midiAssignFile
+Preset from 'ZebraHZ'
+Preset from 'ZebraHZ'
+Preset for rev 10218 loaded into rev 16765, Revision
+Created AudioMan at 1449361408
+/ INIT AudioProcessor 1414234112
+AM_VST3_Processor::setBusArrangements 0 1 vs 0 1
+Loaded ZebraHZ (latency: 0 samples). Commands: open, close, save PATH, restore PATH, recreate, render PATH, quit.
+clef> AM_Message_RenderModeChanged! 0
+Audio output: Audient EVO16, channels 1–2, 48000 Hz, requested buffer 128, IPC lead 512 samples, graph latency 0 samples, plugin latency 16 samples.
+clef> AM_Base_View_Interface::AM_Base_View_Interface()
+AM_VST3_ViewInterface::setFrame. frame == nullptr 0
+AM_VST3_ViewInterface::attached
+AM_View_ControlsRegistrar instanceCounter: 1
+LEDParam 349
+PAGEParam 350
+PagesOn 354
+Starting REVISION 16765
+void AM_AudioMan::createModules()
+create viewMan 0x56e60000
+Running View with AudioMan access.
+setUpGUI
+AM_ViewMan::initialize
+AM_Locale: System Locale 'en' selected Locale 'en'
+new instance of AM_PreferencesView created for ZebraHZ # 1, 1410877504
+numInstances 1
+AM_PreferencesView::getSetupPreferences: NO PREFS LOADED
+AM_PreferencesView::getSetupPreferences: NO PREFS LOADED
+AM_AudioMan received INTERCOM_MESSAGE_REQUEST_AUDIO_PREF but didn't find matching preference for message: NKS Auto Map
+AM_AudioMan received INTERCOM_MESSAGE_REQUEST_AUDIO_PREF but didn't find matching preference for message: NKS Colour Fit
+AM_AudioMan::setPreference called but didn't find matching preference value for "NO"
+AM_AudioMan setPreference called but didn't find matching preference for "NKS Colour Fit"
+AM_AudioMan::setPreference called but didn't find matching preference value for "NO"
+AM_AudioMan setPreference called but didn't find matching preference for "NKS Auto Map"
+sqlite log installed.
+added folders for 'Presets' in 0.000 sec.
+0.00:restore directory cache in 0.0000 sec.
+inGamma == graphicsGamma - 2
+No instance-specific GUI scale value found. Trying to load default GUI scale from preferences.
+Using default GUI scale value on init from preferences. Applying 5 -> 1.00
+AM_ViewMan::initialize before loadSetup 23.56
+LOADING /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZ.txt
+filename default
+loadSetup /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZdefault.txt
+LOADING /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZdefault.txt
+filename ZebraHZorig.txt
+loadSetup /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZorig.txt
+LOADING /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZorig.txt
+0.01:scan directory 'Local' in 0.0102 sec.
+0.01:scan directory 'User' in 0.0104 sec.
+PreRenderImage - ColorSpace kCGColorSpaceDeviceRGB
+Updating tuning tables for qlty 2 OS 4
+Updating for 48000.00
+GETTING FILTER TUNING 4 48000.00
+SVF12Table[ 3 ] = 55B24300
+addFilterConfigurationForName is called with id 0 and string LS-Peak-Peak-HS
+adding configuration for id 0, LS-Peak-Peak-HS
+addFilterConfigurationForName is called with id 0 and string LS-Peak-Peak-HS
+adding configuration for id 0, LS-Peak-Peak-HS
+AM_View_MidiAssignMenu::AM_View_MidiAssignMenu number of graphics: 3
+updating / adding Core Matrix1 Source
+updating / adding Core Matrix3 Source
+updating / adding Oscillator1 WarpModSrc
+updating / adding Oscillator1 SFX1ModSrc
+updating / adding Oscillator1 VolumeModSrc
+updating / adding Oscillator2 VolumeModSrc
+updating / adding Oscillator3 WarpModSrc
+updating / adding Oscillator3 SFX1ModSrc
+updating / adding Oscillator3 VolumeModSrc
+updating / adding Oscillator1 SFX2ModSrc
+updating / adding Noise1 VolumeModSrc
+updating / adding Filter2 Modsource1
+updating / adding VoiceMix Modulation1
+updating / adding VoiceMix Modulation2
+AM_ViewMan::initialize after loadSetup 108.10
+AM_AudioMan::setPreference called but didn't find matching preference value for "NO"
+AM_AudioMan setPreference called but didn't find matching preference for "NKS Colour Fit"
+AM_AudioMan::setPreference called but didn't find matching preference value for "NO"
+AM_AudioMan setPreference called but didn't find matching preference for "NKS Auto Map"
+AM_ViewMan::initialize after loadPreferences 123.25
+AM_AudioMan received INTERCOM_MESSAGE_REQUEST_AUDIO_PREF but didn't find matching preference for message: NKS Auto Map
+AM_AudioMan received INTERCOM_MESSAGE_REQUEST_AUDIO_PREF but didn't find matching preference for message: NKS Colour Fit
+AM_ViewMan::initialize before collectPreferencesFromControls 123.29
+AM_ViewMan::initialize before AM_Message_ViewInitialized 123.58
+notifyPreferenceChanged DataGraph 9337 Graph Mode, glow
+notifyPreferenceChanged DataGraph 27322 Graph Mode, glow
+AM_ViewMan::initialize after AM_Message_ViewInitialized 125.12
+AM_ViewMan::initialize after scheduleModulatorActivityUpdate 125.38
+WARNING: Automatable Parameter w/o UI Control: main:#LFOG
+WARNING: Automatable Parameter w/o UI Control: main:#LFOG2
+WARNING: Automatable Parameter w/o UI Control: VCC:#LFO1
+WARNING: Automatable Parameter w/o UI Control: VCC:#LFO2
+WARNING: Automatable Parameter w/o UI Control: VCC:#LFO3
+WARNING: Automatable Parameter w/o UI Control: VCC:#LFO4
+WARNING: Automatable Parameter w/o UI Control: VCC:Voicing
+WARNING: Automatable Parameter w/o UI Control: D-HPF1:KeyScl
+WARNING: Automatable Parameter w/o UI Control: D-HPF2:KeyScl
+WARNING: Automatable Parameter w/o UI Control: D-HPF3:KeyScl
+WARNING: Automatable Parameter w/o UI Control: D-HPF4:KeyScl
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FFM
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FfmSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FfmDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FbSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FbDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FFM
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FfmSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FfmDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FbSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FbDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FFM
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FfmSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FfmDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FbSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FbDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FFM
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FfmSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FfmDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FbSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FbDpt
+WARNING: Automatable Parameter w/o UI Control: NuRev1:Pan
+AM_ViewMan::initialize ended 125.42
+guiBounds: 1130 800
+ViewTimer started (120 FPS).
+Cocoa draws asynchronously
+presentPresetChanged(); from attach Editor ...
+/ presentPresetChanged(); from attach Editor ...
+/ handlePresetNameChanged(); from attach Editor ...
+clef> PreRenderImage - ColorSpace kCGColorSpaceDeviceRGB
+AM_Cocoa_ViewMan::paintRegion time since ViewMan started 202.71
+bounds: 0.00 0.00 1130.00 800.00
+preset scan completed in 0.204 seconds.
+AM_VST3_ViewInterface::removed ()
+AM_VST3_ViewInterface::setFrame. frame == nullptr 1
+waiting for preset scan to abort...
+AM_ViewMan::beforeDelete()
+AM_ViewMan::unregisterViewsPreferenceListeners
+unregister ViewMan:AudioPrefs:'BaseLatencyBuffer16' from prefs
+unregister ViewMan:AudioPrefs:'SmoothMidiCtrls' from prefs
+unregister ViewMan:AudioPrefs:'Control A Default' from prefs
+unregister ViewMan:AudioPrefs:'Control B Default' from prefs
+unregister ViewMan:AllViews:'Graphics Gamma' from prefs
+unregister ViewMan:AudioPrefs:'NKS Auto Map' from prefs
+unregister ViewMan:AudioPrefs:'NKS Colour Fit' from prefs
+unregister ViewMan:AudioPrefs:'PrefixParamNamesWithModule' from prefs
+unregister ViewMan:AudioPrefs:'ShortModuleName' from prefs
+unregister DataGraph 9337:DataGraph:'Graph Mode' from prefs
+unregister DataGraph 27322:DataGraph:'Graph Mode' from prefs
+flushing Undo History
+instantCounter: 79
+instantCounter: 78
+instantCounter: 77
+instantCounter: 76
+instantCounter: 75
+instantCounter: 74
+instantCounter: 73
+instantCounter: 72
+instantCounter: 71
+instantCounter: 70
+instantCounter: 69
+instantCounter: 68
+instantCounter: 67
+instantCounter: 66
+instantCounter: 65
+instantCounter: 64
+instantCounter: 63
+instantCounter: 62
+instantCounter: 61
+instantCounter: 60
+instantCounter: 59
+instantCounter: 58
+instantCounter: 57
+instantCounter: 56
+instantCounter: 55
+instantCounter: 54
+instantCounter: 53
+instantCounter: 52
+instantCounter: 51
+instantCounter: 50
+instantCounter: 49
+instantCounter: 48
+instantCounter: 47
+instantCounter: 46
+instantCounter: 45
+instantCounter: 44
+instantCounter: 43
+instantCounter: 42
+instantCounter: 41
+instantCounter: 40
+instantCounter: 39
+instantCounter: 38
+instantCounter: 37
+instantCounter: 36
+instantCounter: 35
+instantCounter: 34
+instantCounter: 33
+instantCounter: 32
+instantCounter: 31
+instantCounter: 30
+instantCounter: 29
+instantCounter: 28
+instantCounter: 27
+instantCounter: 26
+instantCounter: 25
+instantCounter: 24
+instantCounter: 23
+instantCounter: 22
+instantCounter: 21
+instantCounter: 20
+instantCounter: 19
+instantCounter: 18
+instantCounter: 17
+instantCounter: 16
+instantCounter: 15
+instantCounter: 14
+instantCounter: 13
+instantCounter: 12
+instantCounter: 11
+instantCounter: 10
+instantCounter: 9
+instantCounter: 8
+instantCounter: 7
+instantCounter: 6
+instantCounter: 5
+instantCounter: 4
+instantCounter: 3
+instantCounter: 2
+instantCounter: 1
+instantCounter: 0
+max CPU @ watch: watch: 0.00
+~AM_ViewInstanceRecord for ZebraHZ
+AM_PreferencesView::destroy instance destroyed
+AM_PreferencesView::~AM_PreferencesView(), instanceCount after destruction: 0
+AM_PreferencesView::~AM_PreferencesView(), all preference entries in this instance deleted
+ViewTimer removed!
+max CPU @ StopWatch: 0.00
+no listeners to be removed
+clef> AM_VST3_ViewInterface::removed: delete cocoaView
+AM_VST3_ViewInterface::setFrame. frame == nullptr 1
+AM_VST3_ViewInterface::setFrame. frame == nullptr 0
+AM_VST3_ViewInterface::attached
+AM_View_ControlsRegistrar instanceCounter: 2
+LEDParam 349
+PAGEParam 350
+PagesOn 354
+Warning: AM_View_Interface::createModulatorList probably called multiple times ( ModSourceString != nullptr )
+Starting REVISION 16765
+void AM_AudioMan::createModules()
+create viewMan 0x58768000
+Running View with AudioMan access.
+setUpGUI
+AM_ViewMan::initialize
+AM_Locale: System Locale 'en' selected Locale 'en'
+new instance of AM_PreferencesView created for ZebraHZ # 1, 1407700064
+numInstances 1
+AM_PreferencesView::getSetupPreferences: NO PREFS LOADED
+AM_PreferencesView::getSetupPreferences: NO PREFS LOADED
+AM_AudioMan received INTERCOM_MESSAGE_REQUEST_AUDIO_PREF but didn't find matching preference for message: NKS Auto Map
+AM_AudioMan received INTERCOM_MESSAGE_REQUEST_AUDIO_PREF but didn't find matching preference for message: NKS Colour Fit
+AM_AudioMan::setPreference called but didn't find matching preference value for "NO"
+AM_AudioMan setPreference called but didn't find matching preference for "NKS Colour Fit"
+AM_AudioMan::setPreference called but didn't find matching preference value for "NO"
+AM_AudioMan setPreference called but didn't find matching preference for "NKS Auto Map"
+added folders for 'Presets' in 0.000 sec.
+inGamma == graphicsGamma - 2
+No instance-specific GUI scale value found. Trying to load default GUI scale from preferences.
+Using default GUI scale value on init from preferences. Applying 5 -> 1.00
+AM_ViewMan::initialize before loadSetup 7.67
+LOADING /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZ.txt
+filename default
+loadSetup /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZdefault.txt
+LOADING /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZdefault.txt
+filename ZebraHZorig.txt
+loadSetup /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZorig.txt
+LOADING /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZorig.txt
+addFilterConfigurationForName is called with id 0 and string LS-Peak-Peak-HS
+adding configuration for id 0, LS-Peak-Peak-HS
+addFilterConfigurationForName is called with id 0 and string LS-Peak-Peak-HS
+adding configuration for id 0, LS-Peak-Peak-HS
+AM_View_MidiAssignMenu::AM_View_MidiAssignMenu number of graphics: 3
+updating / adding Core Matrix1 Source
+updating / adding Core Matrix3 Source
+updating / adding Oscillator1 WarpModSrc
+updating / adding Oscillator1 SFX1ModSrc
+updating / adding Oscillator1 VolumeModSrc
+updating / adding Oscillator2 VolumeModSrc
+updating / adding Oscillator3 WarpModSrc
+updating / adding Oscillator3 SFX1ModSrc
+updating / adding Oscillator3 VolumeModSrc
+updating / adding Oscillator1 SFX2ModSrc
+updating / adding Noise1 VolumeModSrc
+updating / adding Filter2 Modsource1
+updating / adding VoiceMix Modulation1
+updating / adding VoiceMix Modulation2
+AM_ViewMan::initialize after loadSetup 78.36
+AM_AudioMan::setPreference called but didn't find matching preference value for "NO"
+AM_AudioMan setPreference called but didn't find matching preference for "NKS Colour Fit"
+AM_AudioMan::setPreference called but didn't find matching preference value for "NO"
+AM_AudioMan setPreference called but didn't find matching preference for "NKS Auto Map"
+AM_ViewMan::initialize after loadPreferences 93.06
+AM_AudioMan received INTERCOM_MESSAGE_REQUEST_AUDIO_PREF but didn't find matching preference for message: NKS Auto Map
+AM_AudioMan received INTERCOM_MESSAGE_REQUEST_AUDIO_PREF but didn't find matching preference for message: NKS Colour Fit
+AM_ViewMan::initialize before collectPreferencesFromControls 93.10
+AM_ViewMan::initialize before AM_Message_ViewInitialized 93.38
+notifyPreferenceChanged DataGraph 9337 Graph Mode, glow
+notifyPreferenceChanged DataGraph 27322 Graph Mode, glow
+AM_ViewMan::initialize after AM_Message_ViewInitialized 95.98
+AM_ViewMan::initialize after scheduleModulatorActivityUpdate 96.26
+WARNING: Automatable Parameter w/o UI Control: main:#LFOG
+WARNING: Automatable Parameter w/o UI Control: main:#LFOG2
+WARNING: Automatable Parameter w/o UI Control: VCC:#LFO1
+WARNING: Automatable Parameter w/o UI Control: VCC:#LFO2
+WARNING: Automatable Parameter w/o UI Control: VCC:#LFO3
+WARNING: Automatable Parameter w/o UI Control: VCC:#LFO4
+WARNING: Automatable Parameter w/o UI Control: VCC:Voicing
+WARNING: Automatable Parameter w/o UI Control: D-HPF1:KeyScl
+WARNING: Automatable Parameter w/o UI Control: D-HPF2:KeyScl
+WARNING: Automatable Parameter w/o UI Control: D-HPF3:KeyScl
+WARNING: Automatable Parameter w/o UI Control: D-HPF4:KeyScl
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FFM
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FfmSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FfmDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FbSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FbDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FFM
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FfmSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FfmDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FbSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FbDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FFM
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FfmSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FfmDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FbSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FbDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FFM
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FfmSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FfmDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FbSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FbDpt
+WARNING: Automatable Parameter w/o UI Control: NuRev1:Pan
+AM_ViewMan::initialize ended 96.31
+guiBounds: 1130 800
+ViewTimer started (120 FPS).
+Cocoa draws asynchronously
+presentPresetChanged(); from attach Editor ...
+/ presentPresetChanged(); from attach Editor ...
+/ handlePresetNameChanged(); from attach Editor ...
+clef> PreRenderImage - ColorSpace kCGColorSpaceDeviceRGB
+AM_Cocoa_ViewMan::paintRegion time since ViewMan started 330.84
+bounds: 0.00 0.00 1130.00 800.00
+AM_VST3_ViewInterface::removed ()
+AM_VST3_ViewInterface::setFrame. frame == nullptr 1
+AM_ViewMan::beforeDelete()
+AM_ViewMan::unregisterViewsPreferenceListeners
+unregister ViewMan:AudioPrefs:'BaseLatencyBuffer16' from prefs
+unregister ViewMan:AudioPrefs:'SmoothMidiCtrls' from prefs
+unregister ViewMan:AudioPrefs:'Control A Default' from prefs
+unregister ViewMan:AudioPrefs:'Control B Default' from prefs
+unregister ViewMan:AllViews:'Graphics Gamma' from prefs
+unregister ViewMan:AudioPrefs:'NKS Auto Map' from prefs
+unregister ViewMan:AudioPrefs:'NKS Colour Fit' from prefs
+unregister ViewMan:AudioPrefs:'PrefixParamNamesWithModule' from prefs
+unregister ViewMan:AudioPrefs:'ShortModuleName' from prefs
+unregister DataGraph 9337:DataGraph:'Graph Mode' from prefs
+unregister DataGraph 27322:DataGraph:'Graph Mode' from prefs
+flushing Undo History
+instantCounter: 79
+instantCounter: 78
+instantCounter: 77
+instantCounter: 76
+instantCounter: 75
+instantCounter: 74
+instantCounter: 73
+instantCounter: 72
+instantCounter: 71
+instantCounter: 70
+instantCounter: 69
+instantCounter: 68
+instantCounter: 67
+instantCounter: 66
+instantCounter: 65
+instantCounter: 64
+instantCounter: 63
+instantCounter: 62
+instantCounter: 61
+instantCounter: 60
+instantCounter: 59
+instantCounter: 58
+instantCounter: 57
+instantCounter: 56
+instantCounter: 55
+instantCounter: 54
+instantCounter: 53
+instantCounter: 52
+instantCounter: 51
+instantCounter: 50
+instantCounter: 49
+instantCounter: 48
+instantCounter: 47
+instantCounter: 46
+instantCounter: 45
+instantCounter: 44
+instantCounter: 43
+instantCounter: 42
+instantCounter: 41
+instantCounter: 40
+instantCounter: 39
+instantCounter: 38
+instantCounter: 37
+instantCounter: 36
+instantCounter: 35
+instantCounter: 34
+instantCounter: 33
+instantCounter: 32
+instantCounter: 31
+instantCounter: 30
+instantCounter: 29
+instantCounter: 28
+instantCounter: 27
+instantCounter: 26
+instantCounter: 25
+instantCounter: 24
+instantCounter: 23
+instantCounter: 22
+instantCounter: 21
+instantCounter: 20
+instantCounter: 19
+instantCounter: 18
+instantCounter: 17
+instantCounter: 16
+instantCounter: 15
+instantCounter: 14
+instantCounter: 13
+instantCounter: 12
+instantCounter: 11
+instantCounter: 10
+instantCounter: 9
+instantCounter: 8
+instantCounter: 7
+instantCounter: 6
+instantCounter: 5
+instantCounter: 4
+instantCounter: 3
+instantCounter: 2
+instantCounter: 1
+instantCounter: 0
+max CPU @ watch: watch: 0.00
+~AM_ViewInstanceRecord for ZebraHZ
+AM_PreferencesView::destroy instance destroyed
+AM_PreferencesView::~AM_PreferencesView(), instanceCount after destruction: 0
+AM_PreferencesView::~AM_PreferencesView(), all preference entries in this instance deleted
+ViewTimer removed!
+max CPU @ StopWatch: 0.00
+no listeners to be removed
+AM_VST3_ViewInterface::removed: delete cocoaView
+AM_VST3_ViewInterface::setFrame. frame == nullptr 1
+clef> AM_VST3_ViewInterface::setFrame. frame == nullptr 0
+AM_VST3_ViewInterface::attached
+AM_View_ControlsRegistrar instanceCounter: 3
+LEDParam 349
+PAGEParam 350
+PagesOn 354
+Warning: AM_View_Interface::createModulatorList probably called multiple times ( ModSourceString != nullptr )
+Starting REVISION 16765
+void AM_AudioMan::createModules()
+create viewMan 0x58768000
+Running View with AudioMan access.
+setUpGUI
+AM_ViewMan::initialize
+AM_Locale: System Locale 'en' selected Locale 'en'
+new instance of AM_PreferencesView created for ZebraHZ # 1, 1407044992
+numInstances 1
+AM_PreferencesView::getSetupPreferences: NO PREFS LOADED
+AM_PreferencesView::getSetupPreferences: NO PREFS LOADED
+AM_AudioMan received INTERCOM_MESSAGE_REQUEST_AUDIO_PREF but didn't find matching preference for message: NKS Auto Map
+AM_AudioMan received INTERCOM_MESSAGE_REQUEST_AUDIO_PREF but didn't find matching preference for message: NKS Colour Fit
+AM_AudioMan::setPreference called but didn't find matching preference value for "NO"
+AM_AudioMan setPreference called but didn't find matching preference for "NKS Colour Fit"
+AM_AudioMan::setPreference called but didn't find matching preference value for "NO"
+AM_AudioMan setPreference called but didn't find matching preference for "NKS Auto Map"
+added folders for 'Presets' in 0.000 sec.
+inGamma == graphicsGamma - 2
+No instance-specific GUI scale value found. Trying to load default GUI scale from preferences.
+Using default GUI scale value on init from preferences. Applying 5 -> 1.00
+AM_ViewMan::initialize before loadSetup 6.77
+LOADING /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZ.txt
+filename default
+loadSetup /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZdefault.txt
+LOADING /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZdefault.txt
+filename ZebraHZorig.txt
+loadSetup /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZorig.txt
+LOADING /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZorig.txt
+addFilterConfigurationForName is called with id 0 and string LS-Peak-Peak-HS
+adding configuration for id 0, LS-Peak-Peak-HS
+addFilterConfigurationForName is called with id 0 and string LS-Peak-Peak-HS
+adding configuration for id 0, LS-Peak-Peak-HS
+AM_View_MidiAssignMenu::AM_View_MidiAssignMenu number of graphics: 3
+updating / adding Core Matrix1 Source
+updating / adding Core Matrix3 Source
+updating / adding Oscillator1 WarpModSrc
+updating / adding Oscillator1 SFX1ModSrc
+updating / adding Oscillator1 VolumeModSrc
+updating / adding Oscillator2 VolumeModSrc
+updating / adding Oscillator3 WarpModSrc
+updating / adding Oscillator3 SFX1ModSrc
+updating / adding Oscillator3 VolumeModSrc
+updating / adding Oscillator1 SFX2ModSrc
+updating / adding Noise1 VolumeModSrc
+updating / adding Filter2 Modsource1
+updating / adding VoiceMix Modulation1
+updating / adding VoiceMix Modulation2
+AM_ViewMan::initialize after loadSetup 71.73
+AM_AudioMan::setPreference called but didn't find matching preference value for "NO"
+AM_AudioMan setPreference called but didn't find matching preference for "NKS Colour Fit"
+AM_AudioMan::setPreference called but didn't find matching preference value for "NO"
+AM_AudioMan setPreference called but didn't find matching preference for "NKS Auto Map"
+AM_ViewMan::initialize after loadPreferences 86.49
+AM_AudioMan received INTERCOM_MESSAGE_REQUEST_AUDIO_PREF but didn't find matching preference for message: NKS Auto Map
+AM_AudioMan received INTERCOM_MESSAGE_REQUEST_AUDIO_PREF but didn't find matching preference for message: NKS Colour Fit
+AM_ViewMan::initialize before collectPreferencesFromControls 86.53
+AM_ViewMan::initialize before AM_Message_ViewInitialized 86.82
+notifyPreferenceChanged DataGraph 9337 Graph Mode, glow
+notifyPreferenceChanged DataGraph 27322 Graph Mode, glow
+AM_ViewMan::initialize after AM_Message_ViewInitialized 89.16
+AM_ViewMan::initialize after scheduleModulatorActivityUpdate 89.43
+WARNING: Automatable Parameter w/o UI Control: main:#LFOG
+WARNING: Automatable Parameter w/o UI Control: main:#LFOG2
+WARNING: Automatable Parameter w/o UI Control: VCC:#LFO1
+WARNING: Automatable Parameter w/o UI Control: VCC:#LFO2
+WARNING: Automatable Parameter w/o UI Control: VCC:#LFO3
+WARNING: Automatable Parameter w/o UI Control: VCC:#LFO4
+WARNING: Automatable Parameter w/o UI Control: VCC:Voicing
+WARNING: Automatable Parameter w/o UI Control: D-HPF1:KeyScl
+WARNING: Automatable Parameter w/o UI Control: D-HPF2:KeyScl
+WARNING: Automatable Parameter w/o UI Control: D-HPF3:KeyScl
+WARNING: Automatable Parameter w/o UI Control: D-HPF4:KeyScl
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FFM
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FfmSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FfmDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FbSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FbDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FFM
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FfmSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FfmDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FbSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FbDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FFM
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FfmSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FfmDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FbSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FbDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FFM
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FfmSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FfmDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FbSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FbDpt
+WARNING: Automatable Parameter w/o UI Control: NuRev1:Pan
+AM_ViewMan::initialize ended 89.47
+guiBounds: 1130 800
+ViewTimer started (120 FPS).
+Cocoa draws asynchronously
+presentPresetChanged(); from attach Editor ...
+/ presentPresetChanged(); from attach Editor ...
+/ handlePresetNameChanged(); from attach Editor ...
+clef> PreRenderImage - ColorSpace kCGColorSpaceDeviceRGB
+AM_Cocoa_ViewMan::paintRegion time since ViewMan started 153.64
+bounds: 0.00 0.00 1130.00 800.00
+AM_VST3_ViewInterface::removed ()
+AM_VST3_ViewInterface::setFrame. frame == nullptr 1
+AM_ViewMan::beforeDelete()
+AM_ViewMan::unregisterViewsPreferenceListeners
+unregister ViewMan:AudioPrefs:'BaseLatencyBuffer16' from prefs
+unregister ViewMan:AudioPrefs:'SmoothMidiCtrls' from prefs
+unregister ViewMan:AudioPrefs:'Control A Default' from prefs
+unregister ViewMan:AudioPrefs:'Control B Default' from prefs
+unregister ViewMan:AllViews:'Graphics Gamma' from prefs
+unregister ViewMan:AudioPrefs:'NKS Auto Map' from prefs
+unregister ViewMan:AudioPrefs:'NKS Colour Fit' from prefs
+unregister ViewMan:AudioPrefs:'PrefixParamNamesWithModule' from prefs
+unregister ViewMan:AudioPrefs:'ShortModuleName' from prefs
+unregister DataGraph 9337:DataGraph:'Graph Mode' from prefs
+unregister DataGraph 27322:DataGraph:'Graph Mode' from prefs
+flushing Undo History
+instantCounter: 79
+instantCounter: 78
+instantCounter: 77
+instantCounter: 76
+instantCounter: 75
+instantCounter: 74
+instantCounter: 73
+instantCounter: 72
+instantCounter: 71
+instantCounter: 70
+instantCounter: 69
+instantCounter: 68
+instantCounter: 67
+instantCounter: 66
+instantCounter: 65
+instantCounter: 64
+instantCounter: 63
+instantCounter: 62
+instantCounter: 61
+instantCounter: 60
+instantCounter: 59
+instantCounter: 58
+instantCounter: 57
+instantCounter: 56
+instantCounter: 55
+instantCounter: 54
+instantCounter: 53
+instantCounter: 52
+instantCounter: 51
+instantCounter: 50
+instantCounter: 49
+instantCounter: 48
+instantCounter: 47
+instantCounter: 46
+instantCounter: 45
+instantCounter: 44
+instantCounter: 43
+instantCounter: 42
+instantCounter: 41
+instantCounter: 40
+instantCounter: 39
+instantCounter: 38
+instantCounter: 37
+instantCounter: 36
+instantCounter: 35
+instantCounter: 34
+instantCounter: 33
+instantCounter: 32
+instantCounter: 31
+instantCounter: 30
+instantCounter: 29
+instantCounter: 28
+instantCounter: 27
+instantCounter: 26
+instantCounter: 25
+instantCounter: 24
+instantCounter: 23
+instantCounter: 22
+instantCounter: 21
+instantCounter: 20
+instantCounter: 19
+instantCounter: 18
+instantCounter: 17
+instantCounter: 16
+instantCounter: 15
+instantCounter: 14
+instantCounter: 13
+instantCounter: 12
+instantCounter: 11
+instantCounter: 10
+instantCounter: 9
+instantCounter: 8
+instantCounter: 7
+instantCounter: 6
+instantCounter: 5
+instantCounter: 4
+instantCounter: 3
+instantCounter: 2
+instantCounter: 1
+instantCounter: 0
+max CPU @ watch: watch: 0.00
+~AM_ViewInstanceRecord for ZebraHZ
+AM_PreferencesView::destroy instance destroyed
+AM_PreferencesView::~AM_PreferencesView(), instanceCount after destruction: 0
+AM_PreferencesView::~AM_PreferencesView(), all preference entries in this instance deleted
+ViewTimer removed!
+max CPU @ StopWatch: 0.00
+no listeners to be removed
+AM_VST3_ViewInterface::removed: delete cocoaView
+AM_VST3_ViewInterface::setFrame. frame == nullptr 1
+clef> AM_VST3_ViewInterface::setFrame. frame == nullptr 0
+AM_VST3_ViewInterface::attached
+AM_View_ControlsRegistrar instanceCounter: 4
+LEDParam 349
+PAGEParam 350
+PagesOn 354
+Warning: AM_View_Interface::createModulatorList probably called multiple times ( ModSourceString != nullptr )
+Starting REVISION 16765
+void AM_AudioMan::createModules()
+create viewMan 0x58768000
+Running View with AudioMan access.
+setUpGUI
+AM_ViewMan::initialize
+AM_Locale: System Locale 'en' selected Locale 'en'
+new instance of AM_PreferencesView created for ZebraHZ # 1, 1406488224
+numInstances 1
+AM_PreferencesView::getSetupPreferences: NO PREFS LOADED
+AM_PreferencesView::getSetupPreferences: NO PREFS LOADED
+AM_AudioMan received INTERCOM_MESSAGE_REQUEST_AUDIO_PREF but didn't find matching preference for message: NKS Auto Map
+AM_AudioMan received INTERCOM_MESSAGE_REQUEST_AUDIO_PREF but didn't find matching preference for message: NKS Colour Fit
+AM_AudioMan::setPreference called but didn't find matching preference value for "NO"
+AM_AudioMan setPreference called but didn't find matching preference for "NKS Colour Fit"
+AM_AudioMan::setPreference called but didn't find matching preference value for "NO"
+AM_AudioMan setPreference called but didn't find matching preference for "NKS Auto Map"
+added folders for 'Presets' in 0.000 sec.
+inGamma == graphicsGamma - 2
+No instance-specific GUI scale value found. Trying to load default GUI scale from preferences.
+Using default GUI scale value on init from preferences. Applying 5 -> 1.00
+AM_ViewMan::initialize before loadSetup 6.47
+LOADING /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZ.txt
+filename default
+loadSetup /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZdefault.txt
+LOADING /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZdefault.txt
+filename ZebraHZorig.txt
+loadSetup /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZorig.txt
+LOADING /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZorig.txt
+addFilterConfigurationForName is called with id 0 and string LS-Peak-Peak-HS
+adding configuration for id 0, LS-Peak-Peak-HS
+addFilterConfigurationForName is called with id 0 and string LS-Peak-Peak-HS
+adding configuration for id 0, LS-Peak-Peak-HS
+AM_View_MidiAssignMenu::AM_View_MidiAssignMenu number of graphics: 3
+updating / adding Core Matrix1 Source
+updating / adding Core Matrix3 Source
+updating / adding Oscillator1 WarpModSrc
+updating / adding Oscillator1 SFX1ModSrc
+updating / adding Oscillator1 VolumeModSrc
+updating / adding Oscillator2 VolumeModSrc
+updating / adding Oscillator3 WarpModSrc
+updating / adding Oscillator3 SFX1ModSrc
+updating / adding Oscillator3 VolumeModSrc
+updating / adding Oscillator1 SFX2ModSrc
+updating / adding Noise1 VolumeModSrc
+updating / adding Filter2 Modsource1
+updating / adding VoiceMix Modulation1
+updating / adding VoiceMix Modulation2
+AM_ViewMan::initialize after loadSetup 73.35
+AM_AudioMan::setPreference called but didn't find matching preference value for "NO"
+AM_AudioMan setPreference called but didn't find matching preference for "NKS Colour Fit"
+AM_AudioMan::setPreference called but didn't find matching preference value for "NO"
+AM_AudioMan setPreference called but didn't find matching preference for "NKS Auto Map"
+PreRenderImage - ColorSpace kCGColorSpaceDeviceRGB
+AM_ViewMan::initialize after loadPreferences 87.79
+AM_AudioMan received INTERCOM_MESSAGE_REQUEST_AUDIO_PREF but didn't find matching preference for message: NKS Auto Map
+AM_AudioMan received INTERCOM_MESSAGE_REQUEST_AUDIO_PREF but didn't find matching preference for message: NKS Colour Fit
+AM_ViewMan::initialize before collectPreferencesFromControls 87.82
+AM_ViewMan::initialize before AM_Message_ViewInitialized 88.10
+notifyPreferenceChanged DataGraph 9337 Graph Mode, glow
+notifyPreferenceChanged DataGraph 27322 Graph Mode, glow
+AM_ViewMan::initialize after AM_Message_ViewInitialized 90.43
+AM_ViewMan::initialize after scheduleModulatorActivityUpdate 90.70
+WARNING: Automatable Parameter w/o UI Control: main:#LFOG
+WARNING: Automatable Parameter w/o UI Control: main:#LFOG2
+WARNING: Automatable Parameter w/o UI Control: VCC:#LFO1
+WARNING: Automatable Parameter w/o UI Control: VCC:#LFO2
+WARNING: Automatable Parameter w/o UI Control: VCC:#LFO3
+WARNING: Automatable Parameter w/o UI Control: VCC:#LFO4
+WARNING: Automatable Parameter w/o UI Control: VCC:Voicing
+WARNING: Automatable Parameter w/o UI Control: D-HPF1:KeyScl
+WARNING: Automatable Parameter w/o UI Control: D-HPF2:KeyScl
+WARNING: Automatable Parameter w/o UI Control: D-HPF3:KeyScl
+WARNING: Automatable Parameter w/o UI Control: D-HPF4:KeyScl
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FFM
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FfmSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FfmDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FbSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FbDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FFM
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FfmSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FfmDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FbSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FbDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FFM
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FfmSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FfmDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FbSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FbDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FFM
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FfmSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FfmDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FbSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FbDpt
+WARNING: Automatable Parameter w/o UI Control: NuRev1:Pan
+AM_ViewMan::initialize ended 90.75
+guiBounds: 1130 800
+ViewTimer started (120 FPS).
+Cocoa draws asynchronously
+presentPresetChanged(); from attach Editor ...
+/ presentPresetChanged(); from attach Editor ...
+/ handlePresetNameChanged(); from attach Editor ...
+clef> AM_Cocoa_ViewMan::paintRegion time since ViewMan started 332.40
+bounds: 0.00 0.00 1130.00 800.00
+AM_VST3_ViewInterface::removed ()
+AM_VST3_ViewInterface::setFrame. frame == nullptr 1
+AM_ViewMan::beforeDelete()
+AM_ViewMan::unregisterViewsPreferenceListeners
+unregister ViewMan:AudioPrefs:'BaseLatencyBuffer16' from prefs
+unregister ViewMan:AudioPrefs:'SmoothMidiCtrls' from prefs
+unregister ViewMan:AudioPrefs:'Control A Default' from prefs
+unregister ViewMan:AudioPrefs:'Control B Default' from prefs
+unregister ViewMan:AllViews:'Graphics Gamma' from prefs
+unregister ViewMan:AudioPrefs:'NKS Auto Map' from prefs
+unregister ViewMan:AudioPrefs:'NKS Colour Fit' from prefs
+unregister ViewMan:AudioPrefs:'PrefixParamNamesWithModule' from prefs
+unregister ViewMan:AudioPrefs:'ShortModuleName' from prefs
+unregister DataGraph 9337:DataGraph:'Graph Mode' from prefs
+unregister DataGraph 27322:DataGraph:'Graph Mode' from prefs
+flushing Undo History
+instantCounter: 79
+instantCounter: 78
+instantCounter: 77
+instantCounter: 76
+instantCounter: 75
+instantCounter: 74
+instantCounter: 73
+instantCounter: 72
+instantCounter: 71
+instantCounter: 70
+instantCounter: 69
+instantCounter: 68
+instantCounter: 67
+instantCounter: 66
+instantCounter: 65
+instantCounter: 64
+instantCounter: 63
+instantCounter: 62
+instantCounter: 61
+instantCounter: 60
+instantCounter: 59
+instantCounter: 58
+instantCounter: 57
+instantCounter: 56
+instantCounter: 55
+instantCounter: 54
+instantCounter: 53
+instantCounter: 52
+instantCounter: 51
+instantCounter: 50
+instantCounter: 49
+instantCounter: 48
+instantCounter: 47
+instantCounter: 46
+instantCounter: 45
+instantCounter: 44
+instantCounter: 43
+instantCounter: 42
+instantCounter: 41
+instantCounter: 40
+instantCounter: 39
+instantCounter: 38
+instantCounter: 37
+instantCounter: 36
+instantCounter: 35
+instantCounter: 34
+instantCounter: 33
+instantCounter: 32
+instantCounter: 31
+instantCounter: 30
+instantCounter: 29
+instantCounter: 28
+instantCounter: 27
+instantCounter: 26
+instantCounter: 25
+instantCounter: 24
+instantCounter: 23
+instantCounter: 22
+instantCounter: 21
+instantCounter: 20
+instantCounter: 19
+instantCounter: 18
+instantCounter: 17
+instantCounter: 16
+instantCounter: 15
+instantCounter: 14
+instantCounter: 13
+instantCounter: 12
+instantCounter: 11
+instantCounter: 10
+instantCounter: 9
+instantCounter: 8
+instantCounter: 7
+instantCounter: 6
+instantCounter: 5
+instantCounter: 4
+instantCounter: 3
+instantCounter: 2
+instantCounter: 1
+instantCounter: 0
+max CPU @ watch: watch: 0.00
+~AM_ViewInstanceRecord for ZebraHZ
+AM_PreferencesView::destroy instance destroyed
+AM_PreferencesView::~AM_PreferencesView(), instanceCount after destruction: 0
+AM_PreferencesView::~AM_PreferencesView(), all preference entries in this instance deleted
+ViewTimer removed!
+max CPU @ StopWatch: 0.00
+no listeners to be removed
+AM_VST3_ViewInterface::removed: delete cocoaView
+AM_VST3_ViewInterface::setFrame. frame == nullptr 1
+clef> AM_VST3_ViewInterface::setFrame. frame == nullptr 0
+AM_VST3_ViewInterface::attached
+AM_View_ControlsRegistrar instanceCounter: 5
+LEDParam 349
+PAGEParam 350
+PagesOn 354
+Warning: AM_View_Interface::createModulatorList probably called multiple times ( ModSourceString != nullptr )
+Starting REVISION 16765
+void AM_AudioMan::createModules()
+create viewMan 0x58768000
+Running View with AudioMan access.
+setUpGUI
+AM_ViewMan::initialize
+AM_Locale: System Locale 'en' selected Locale 'en'
+new instance of AM_PreferencesView created for ZebraHZ # 1, 1406175104
+numInstances 1
+AM_PreferencesView::getSetupPreferences: NO PREFS LOADED
+AM_PreferencesView::getSetupPreferences: NO PREFS LOADED
+AM_AudioMan received INTERCOM_MESSAGE_REQUEST_AUDIO_PREF but didn't find matching preference for message: NKS Auto Map
+AM_AudioMan received INTERCOM_MESSAGE_REQUEST_AUDIO_PREF but didn't find matching preference for message: NKS Colour Fit
+AM_AudioMan::setPreference called but didn't find matching preference value for "NO"
+AM_AudioMan setPreference called but didn't find matching preference for "NKS Colour Fit"
+AM_AudioMan::setPreference called but didn't find matching preference value for "NO"
+AM_AudioMan setPreference called but didn't find matching preference for "NKS Auto Map"
+added folders for 'Presets' in 0.000 sec.
+inGamma == graphicsGamma - 2
+No instance-specific GUI scale value found. Trying to load default GUI scale from preferences.
+Using default GUI scale value on init from preferences. Applying 5 -> 1.00
+AM_ViewMan::initialize before loadSetup 6.44
+LOADING /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZ.txt
+filename default
+loadSetup /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZdefault.txt
+LOADING /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZdefault.txt
+filename ZebraHZorig.txt
+loadSetup /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZorig.txt
+LOADING /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZorig.txt
+addFilterConfigurationForName is called with id 0 and string LS-Peak-Peak-HS
+adding configuration for id 0, LS-Peak-Peak-HS
+addFilterConfigurationForName is called with id 0 and string LS-Peak-Peak-HS
+adding configuration for id 0, LS-Peak-Peak-HS
+AM_View_MidiAssignMenu::AM_View_MidiAssignMenu number of graphics: 3
+updating / adding Core Matrix1 Source
+updating / adding Core Matrix3 Source
+updating / adding Oscillator1 WarpModSrc
+updating / adding Oscillator1 SFX1ModSrc
+updating / adding Oscillator1 VolumeModSrc
+updating / adding Oscillator2 VolumeModSrc
+updating / adding Oscillator3 WarpModSrc
+updating / adding Oscillator3 SFX1ModSrc
+updating / adding Oscillator3 VolumeModSrc
+updating / adding Oscillator1 SFX2ModSrc
+updating / adding Noise1 VolumeModSrc
+updating / adding Filter2 Modsource1
+updating / adding VoiceMix Modulation1
+updating / adding VoiceMix Modulation2
+AM_ViewMan::initialize after loadSetup 75.64
+AM_AudioMan::setPreference called but didn't find matching preference value for "NO"
+AM_AudioMan setPreference called but didn't find matching preference for "NKS Colour Fit"
+AM_AudioMan::setPreference called but didn't find matching preference value for "NO"
+AM_AudioMan setPreference called but didn't find matching preference for "NKS Auto Map"
+PreRenderImage - ColorSpace kCGColorSpaceDeviceRGB
+AM_ViewMan::initialize after loadPreferences 91.06
+AM_AudioMan received INTERCOM_MESSAGE_REQUEST_AUDIO_PREF but didn't find matching preference for message: NKS Auto Map
+AM_AudioMan received INTERCOM_MESSAGE_REQUEST_AUDIO_PREF but didn't find matching preference for message: NKS Colour Fit
+AM_ViewMan::initialize before collectPreferencesFromControls 91.09
+AM_ViewMan::initialize before AM_Message_ViewInitialized 91.38
+notifyPreferenceChanged DataGraph 9337 Graph Mode, glow
+notifyPreferenceChanged DataGraph 27322 Graph Mode, glow
+AM_ViewMan::initialize after AM_Message_ViewInitialized 93.79
+AM_ViewMan::initialize after scheduleModulatorActivityUpdate 94.09
+WARNING: Automatable Parameter w/o UI Control: main:#LFOG
+WARNING: Automatable Parameter w/o UI Control: main:#LFOG2
+WARNING: Automatable Parameter w/o UI Control: VCC:#LFO1
+WARNING: Automatable Parameter w/o UI Control: VCC:#LFO2
+WARNING: Automatable Parameter w/o UI Control: VCC:#LFO3
+WARNING: Automatable Parameter w/o UI Control: VCC:#LFO4
+WARNING: Automatable Parameter w/o UI Control: VCC:Voicing
+WARNING: Automatable Parameter w/o UI Control: D-HPF1:KeyScl
+WARNING: Automatable Parameter w/o UI Control: D-HPF2:KeyScl
+WARNING: Automatable Parameter w/o UI Control: D-HPF3:KeyScl
+WARNING: Automatable Parameter w/o UI Control: D-HPF4:KeyScl
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FFM
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FfmSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FfmDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FbSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FbDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FFM
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FfmSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FfmDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FbSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FbDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FFM
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FfmSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FfmDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FbSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FbDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FFM
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FfmSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FfmDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FbSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FbDpt
+WARNING: Automatable Parameter w/o UI Control: NuRev1:Pan
+AM_ViewMan::initialize ended 94.13
+guiBounds: 1130 800
+ViewTimer started (120 FPS).
+Cocoa draws asynchronously
+presentPresetChanged(); from attach Editor ...
+/ presentPresetChanged(); from attach Editor ...
+/ handlePresetNameChanged(); from attach Editor ...
+clef> AM_Cocoa_ViewMan::paintRegion time since ViewMan started 141.11
+bounds: 0.00 0.00 1130.00 800.00
+AM_VST3_ViewInterface::removed ()
+AM_VST3_ViewInterface::setFrame. frame == nullptr 1
+AM_ViewMan::beforeDelete()
+AM_ViewMan::unregisterViewsPreferenceListeners
+unregister ViewMan:AudioPrefs:'BaseLatencyBuffer16' from prefs
+unregister ViewMan:AudioPrefs:'SmoothMidiCtrls' from prefs
+unregister ViewMan:AudioPrefs:'Control A Default' from prefs
+unregister ViewMan:AudioPrefs:'Control B Default' from prefs
+unregister ViewMan:AllViews:'Graphics Gamma' from prefs
+unregister ViewMan:AudioPrefs:'NKS Auto Map' from prefs
+unregister ViewMan:AudioPrefs:'NKS Colour Fit' from prefs
+unregister ViewMan:AudioPrefs:'PrefixParamNamesWithModule' from prefs
+unregister ViewMan:AudioPrefs:'ShortModuleName' from prefs
+unregister DataGraph 9337:DataGraph:'Graph Mode' from prefs
+unregister DataGraph 27322:DataGraph:'Graph Mode' from prefs
+flushing Undo History
+instantCounter: 79
+instantCounter: 78
+instantCounter: 77
+instantCounter: 76
+instantCounter: 75
+instantCounter: 74
+instantCounter: 73
+instantCounter: 72
+instantCounter: 71
+instantCounter: 70
+instantCounter: 69
+instantCounter: 68
+instantCounter: 67
+instantCounter: 66
+instantCounter: 65
+instantCounter: 64
+instantCounter: 63
+instantCounter: 62
+instantCounter: 61
+instantCounter: 60
+instantCounter: 59
+instantCounter: 58
+instantCounter: 57
+instantCounter: 56
+instantCounter: 55
+instantCounter: 54
+instantCounter: 53
+instantCounter: 52
+instantCounter: 51
+instantCounter: 50
+instantCounter: 49
+instantCounter: 48
+instantCounter: 47
+instantCounter: 46
+instantCounter: 45
+instantCounter: 44
+instantCounter: 43
+instantCounter: 42
+instantCounter: 41
+instantCounter: 40
+instantCounter: 39
+instantCounter: 38
+instantCounter: 37
+instantCounter: 36
+instantCounter: 35
+instantCounter: 34
+instantCounter: 33
+instantCounter: 32
+instantCounter: 31
+instantCounter: 30
+instantCounter: 29
+instantCounter: 28
+instantCounter: 27
+instantCounter: 26
+instantCounter: 25
+instantCounter: 24
+instantCounter: 23
+instantCounter: 22
+instantCounter: 21
+instantCounter: 20
+instantCounter: 19
+instantCounter: 18
+instantCounter: 17
+instantCounter: 16
+instantCounter: 15
+instantCounter: 14
+instantCounter: 13
+instantCounter: 12
+instantCounter: 11
+instantCounter: 10
+instantCounter: 9
+instantCounter: 8
+instantCounter: 7
+instantCounter: 6
+instantCounter: 5
+instantCounter: 4
+instantCounter: 3
+instantCounter: 2
+instantCounter: 1
+instantCounter: 0
+max CPU @ watch: watch: 0.00
+~AM_ViewInstanceRecord for ZebraHZ
+AM_PreferencesView::destroy instance destroyed
+AM_PreferencesView::~AM_PreferencesView(), instanceCount after destruction: 0
+AM_PreferencesView::~AM_PreferencesView(), all preference entries in this instance deleted
+ViewTimer removed!
+max CPU @ StopWatch: 0.00
+no listeners to be removed
+AM_VST3_ViewInterface::removed: delete cocoaView
+AM_VST3_ViewInterface::setFrame. frame == nullptr 1
+clef> AM_VST3_ViewInterface::setFrame. frame == nullptr 0
+AM_VST3_ViewInterface::attached
+AM_View_ControlsRegistrar instanceCounter: 6
+LEDParam 349
+PAGEParam 350
+PagesOn 354
+Warning: AM_View_Interface::createModulatorList probably called multiple times ( ModSourceString != nullptr )
+Starting REVISION 16765
+void AM_AudioMan::createModules()
+create viewMan 0x58768000
+Running View with AudioMan access.
+setUpGUI
+AM_ViewMan::initialize
+AM_Locale: System Locale 'en' selected Locale 'en'
+new instance of AM_PreferencesView created for ZebraHZ # 1, 1406785344
+numInstances 1
+AM_PreferencesView::getSetupPreferences: NO PREFS LOADED
+AM_PreferencesView::getSetupPreferences: NO PREFS LOADED
+Too many messages queued
+AM_AudioMan received INTERCOM_MESSAGE_REQUEST_AUDIO_PREF but didn't find matching preference for message: NKS Auto Map
+AM_AudioMan received INTERCOM_MESSAGE_REQUEST_AUDIO_PREF but didn't find matching preference for message: NKS Colour Fit
+Too many messages queued
+Too many messages queued
+AM_AudioMan::setPreference called but didn't find matching preference value for "NO"
+AM_AudioMan setPreference called but didn't find matching preference for "NKS Colour Fit"
+AM_AudioMan::setPreference called but didn't find matching preference value for "NO"
+AM_AudioMan setPreference called but didn't find matching preference for "NKS Auto Map"
+added folders for 'Presets' in 0.000 sec.
+inGamma == graphicsGamma - 2
+No instance-specific GUI scale value found. Trying to load default GUI scale from preferences.
+Using default GUI scale value on init from preferences. Applying 5 -> 1.00
+AM_ViewMan::initialize before loadSetup 7.06
+LOADING /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZ.txt
+filename default
+loadSetup /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZdefault.txt
+LOADING /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZdefault.txt
+filename ZebraHZorig.txt
+loadSetup /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZorig.txt
+LOADING /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZorig.txt
+addFilterConfigurationForName is called with id 0 and string LS-Peak-Peak-HS
+adding configuration for id 0, LS-Peak-Peak-HS
+addFilterConfigurationForName is called with id 0 and string LS-Peak-Peak-HS
+adding configuration for id 0, LS-Peak-Peak-HS
+AM_View_MidiAssignMenu::AM_View_MidiAssignMenu number of graphics: 3
+updating / adding Core Matrix1 Source
+updating / adding Core Matrix3 Source
+updating / adding Oscillator1 WarpModSrc
+updating / adding Oscillator1 SFX1ModSrc
+updating / adding Oscillator1 VolumeModSrc
+updating / adding Oscillator2 VolumeModSrc
+updating / adding Oscillator3 WarpModSrc
+updating / adding Oscillator3 SFX1ModSrc
+updating / adding Oscillator3 VolumeModSrc
+updating / adding Oscillator1 SFX2ModSrc
+updating / adding Noise1 VolumeModSrc
+updating / adding Filter2 Modsource1
+updating / adding VoiceMix Modulation1
+updating / adding VoiceMix Modulation2
+AM_ViewMan::initialize after loadSetup 74.88
+AM_AudioMan::setPreference called but didn't find matching preference value for "NO"
+AM_AudioMan setPreference called but didn't find matching preference for "NKS Colour Fit"
+AM_AudioMan::setPreference called but didn't find matching preference value for "NO"
+AM_AudioMan setPreference called but didn't find matching preference for "NKS Auto Map"
+PreRenderImage - ColorSpace kCGColorSpaceDeviceRGB
+AM_ViewMan::initialize after loadPreferences 93.55
+Too many messages queued
+Too many messages queued
+Too many messages queued
+Too many messages queued
+AM_AudioMan received INTERCOM_MESSAGE_REQUEST_AUDIO_PREF but didn't find matching preference for message: NKS Auto Map
+AM_AudioMan received INTERCOM_MESSAGE_REQUEST_AUDIO_PREF but didn't find matching preference for message: NKS Colour Fit
+Too many messages queued
+Too many messages queued
+AM_ViewMan::initialize before collectPreferencesFromControls 93.60
+AM_ViewMan::initialize before AM_Message_ViewInitialized 93.90
+notifyPreferenceChanged DataGraph 9337 Graph Mode, glow
+notifyPreferenceChanged DataGraph 27322 Graph Mode, glow
+AM_ViewMan::initialize after AM_Message_ViewInitialized 96.26
+AM_ViewMan::initialize after scheduleModulatorActivityUpdate 96.53
+WARNING: Automatable Parameter w/o UI Control: main:#LFOG
+WARNING: Automatable Parameter w/o UI Control: main:#LFOG2
+WARNING: Automatable Parameter w/o UI Control: VCC:#LFO1
+WARNING: Automatable Parameter w/o UI Control: VCC:#LFO2
+WARNING: Automatable Parameter w/o UI Control: VCC:#LFO3
+WARNING: Automatable Parameter w/o UI Control: VCC:#LFO4
+WARNING: Automatable Parameter w/o UI Control: VCC:Voicing
+WARNING: Automatable Parameter w/o UI Control: D-HPF1:KeyScl
+WARNING: Automatable Parameter w/o UI Control: D-HPF2:KeyScl
+WARNING: Automatable Parameter w/o UI Control: D-HPF3:KeyScl
+WARNING: Automatable Parameter w/o UI Control: D-HPF4:KeyScl
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FFM
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FfmSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FfmDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FbSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FbDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FFM
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FfmSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FfmDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FbSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FbDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FFM
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FfmSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FfmDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FbSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FbDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FFM
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FfmSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FfmDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FbSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FbDpt
+WARNING: Automatable Parameter w/o UI Control: NuRev1:Pan
+AM_ViewMan::initialize ended 96.57
+guiBounds: 1130 800
+ViewTimer started (120 FPS).
+Cocoa draws asynchronously
+presentPresetChanged(); from attach Editor ...
+/ presentPresetChanged(); from attach Editor ...
+/ handlePresetNameChanged(); from attach Editor ...
+clef> AM_Cocoa_ViewMan::paintRegion time since ViewMan started 333.36
+bounds: 0.00 0.00 1130.00 800.00
+AM_VST3_ViewInterface::removed ()
+AM_VST3_ViewInterface::setFrame. frame == nullptr 1
+AM_ViewMan::beforeDelete()
+AM_ViewMan::unregisterViewsPreferenceListeners
+unregister ViewMan:AudioPrefs:'BaseLatencyBuffer16' from prefs
+unregister ViewMan:AudioPrefs:'SmoothMidiCtrls' from prefs
+unregister ViewMan:AudioPrefs:'Control A Default' from prefs
+unregister ViewMan:AudioPrefs:'Control B Default' from prefs
+unregister ViewMan:AllViews:'Graphics Gamma' from prefs
+unregister ViewMan:AudioPrefs:'NKS Auto Map' from prefs
+unregister ViewMan:AudioPrefs:'NKS Colour Fit' from prefs
+unregister ViewMan:AudioPrefs:'PrefixParamNamesWithModule' from prefs
+unregister ViewMan:AudioPrefs:'ShortModuleName' from prefs
+unregister DataGraph 9337:DataGraph:'Graph Mode' from prefs
+unregister DataGraph 27322:DataGraph:'Graph Mode' from prefs
+flushing Undo History
+instantCounter: 79
+instantCounter: 78
+instantCounter: 77
+instantCounter: 76
+instantCounter: 75
+instantCounter: 74
+instantCounter: 73
+instantCounter: 72
+instantCounter: 71
+instantCounter: 70
+instantCounter: 69
+instantCounter: 68
+instantCounter: 67
+instantCounter: 66
+instantCounter: 65
+instantCounter: 64
+instantCounter: 63
+instantCounter: 62
+instantCounter: 61
+instantCounter: 60
+instantCounter: 59
+instantCounter: 58
+instantCounter: 57
+instantCounter: 56
+instantCounter: 55
+instantCounter: 54
+instantCounter: 53
+instantCounter: 52
+instantCounter: 51
+instantCounter: 50
+instantCounter: 49
+instantCounter: 48
+instantCounter: 47
+instantCounter: 46
+instantCounter: 45
+instantCounter: 44
+instantCounter: 43
+instantCounter: 42
+instantCounter: 41
+instantCounter: 40
+instantCounter: 39
+instantCounter: 38
+instantCounter: 37
+instantCounter: 36
+instantCounter: 35
+instantCounter: 34
+instantCounter: 33
+instantCounter: 32
+instantCounter: 31
+instantCounter: 30
+instantCounter: 29
+instantCounter: 28
+instantCounter: 27
+instantCounter: 26
+instantCounter: 25
+instantCounter: 24
+instantCounter: 23
+instantCounter: 22
+instantCounter: 21
+instantCounter: 20
+instantCounter: 19
+instantCounter: 18
+instantCounter: 17
+instantCounter: 16
+instantCounter: 15
+instantCounter: 14
+instantCounter: 13
+instantCounter: 12
+instantCounter: 11
+instantCounter: 10
+instantCounter: 9
+instantCounter: 8
+instantCounter: 7
+instantCounter: 6
+instantCounter: 5
+instantCounter: 4
+instantCounter: 3
+instantCounter: 2
+instantCounter: 1
+instantCounter: 0
+max CPU @ watch: watch: 0.00
+~AM_ViewInstanceRecord for ZebraHZ
+AM_PreferencesView::destroy instance destroyed
+AM_PreferencesView::~AM_PreferencesView(), instanceCount after destruction: 0
+AM_PreferencesView::~AM_PreferencesView(), all preference entries in this instance deleted
+ViewTimer removed!
+max CPU @ StopWatch: 0.00
+no listeners to be removed
+AM_VST3_ViewInterface::removed: delete cocoaView
+AM_VST3_ViewInterface::setFrame. frame == nullptr 1
+clef> AM_VST3_ViewInterface::setFrame. frame == nullptr 0
+AM_VST3_ViewInterface::attached
+AM_View_ControlsRegistrar instanceCounter: 7
+LEDParam 349
+PAGEParam 350
+PagesOn 354
+Warning: AM_View_Interface::createModulatorList probably called multiple times ( ModSourceString != nullptr )
+Starting REVISION 16765
+void AM_AudioMan::createModules()
+create viewMan 0x58768000
+Running View with AudioMan access.
+setUpGUI
+AM_ViewMan::initialize
+AM_Locale: System Locale 'en' selected Locale 'en'
+new instance of AM_PreferencesView created for ZebraHZ # 1, 1405888736
+numInstances 1
+AM_PreferencesView::getSetupPreferences: NO PREFS LOADED
+AM_PreferencesView::getSetupPreferences: NO PREFS LOADED
+Too many messages queued
+Too many messages queued
+Too many messages queued
+Too many messages queued
+AM_AudioMan received INTERCOM_MESSAGE_REQUEST_AUDIO_PREF but didn't find matching preference for message: NKS Auto Map
+AM_AudioMan received INTERCOM_MESSAGE_REQUEST_AUDIO_PREF but didn't find matching preference for message: NKS Colour Fit
+Too many messages queued
+Too many messages queued
+AM_AudioMan::setPreference called but didn't find matching preference value for "NO"
+AM_AudioMan setPreference called but didn't find matching preference for "NKS Colour Fit"
+AM_AudioMan::setPreference called but didn't find matching preference value for "NO"
+AM_AudioMan setPreference called but didn't find matching preference for "NKS Auto Map"
+added folders for 'Presets' in 0.000 sec.
+inGamma == graphicsGamma - 2
+No instance-specific GUI scale value found. Trying to load default GUI scale from preferences.
+Using default GUI scale value on init from preferences. Applying 5 -> 1.00
+AM_ViewMan::initialize before loadSetup 7.02
+LOADING /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZ.txt
+filename default
+loadSetup /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZdefault.txt
+LOADING /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZdefault.txt
+filename ZebraHZorig.txt
+loadSetup /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZorig.txt
+LOADING /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZorig.txt
+addFilterConfigurationForName is called with id 0 and string LS-Peak-Peak-HS
+adding configuration for id 0, LS-Peak-Peak-HS
+addFilterConfigurationForName is called with id 0 and string LS-Peak-Peak-HS
+adding configuration for id 0, LS-Peak-Peak-HS
+PreRenderImage - ColorSpace kCGColorSpaceDeviceRGB
+AM_View_MidiAssignMenu::AM_View_MidiAssignMenu number of graphics: 3
+updating / adding Core Matrix1 Source
+updating / adding Core Matrix3 Source
+updating / adding Oscillator1 WarpModSrc
+updating / adding Oscillator1 SFX1ModSrc
+updating / adding Oscillator1 VolumeModSrc
+updating / adding Oscillator2 VolumeModSrc
+updating / adding Oscillator3 WarpModSrc
+updating / adding Oscillator3 SFX1ModSrc
+updating / adding Oscillator3 VolumeModSrc
+updating / adding Oscillator1 SFX2ModSrc
+updating / adding Noise1 VolumeModSrc
+updating / adding Filter2 Modsource1
+updating / adding VoiceMix Modulation1
+updating / adding VoiceMix Modulation2
+AM_ViewMan::initialize after loadSetup 76.25
+AM_AudioMan::setPreference called but didn't find matching preference value for "NO"
+AM_AudioMan setPreference called but didn't find matching preference for "NKS Colour Fit"
+AM_AudioMan::setPreference called but didn't find matching preference value for "NO"
+AM_AudioMan setPreference called but didn't find matching preference for "NKS Auto Map"
+AM_ViewMan::initialize after loadPreferences 92.18
+Too many messages queued
+Too many messages queued
+Too many messages queued
+Too many messages queued
+AM_AudioMan received INTERCOM_MESSAGE_REQUEST_AUDIO_PREF but didn't find matching preference for message: NKS Auto Map
+AM_AudioMan received INTERCOM_MESSAGE_REQUEST_AUDIO_PREF but didn't find matching preference for message: NKS Colour Fit
+Too many messages queued
+Too many messages queued
+AM_ViewMan::initialize before collectPreferencesFromControls 92.22
+AM_ViewMan::initialize before AM_Message_ViewInitialized 92.56
+notifyPreferenceChanged DataGraph 9337 Graph Mode, glow
+notifyPreferenceChanged DataGraph 27322 Graph Mode, glow
+AM_ViewMan::initialize after AM_Message_ViewInitialized 94.98
+AM_ViewMan::initialize after scheduleModulatorActivityUpdate 95.36
+WARNING: Automatable Parameter w/o UI Control: main:#LFOG
+WARNING: Automatable Parameter w/o UI Control: main:#LFOG2
+WARNING: Automatable Parameter w/o UI Control: VCC:#LFO1
+WARNING: Automatable Parameter w/o UI Control: VCC:#LFO2
+WARNING: Automatable Parameter w/o UI Control: VCC:#LFO3
+WARNING: Automatable Parameter w/o UI Control: VCC:#LFO4
+WARNING: Automatable Parameter w/o UI Control: VCC:Voicing
+WARNING: Automatable Parameter w/o UI Control: D-HPF1:KeyScl
+WARNING: Automatable Parameter w/o UI Control: D-HPF2:KeyScl
+WARNING: Automatable Parameter w/o UI Control: D-HPF3:KeyScl
+WARNING: Automatable Parameter w/o UI Control: D-HPF4:KeyScl
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FFM
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FfmSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FfmDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FbSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FbDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FFM
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FfmSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FfmDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FbSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FbDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FFM
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FfmSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FfmDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FbSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FbDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FFM
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FfmSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FfmDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FbSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FbDpt
+WARNING: Automatable Parameter w/o UI Control: NuRev1:Pan
+AM_ViewMan::initialize ended 95.40
+guiBounds: 1130 800
+ViewTimer started (120 FPS).
+Cocoa draws asynchronously
+presentPresetChanged(); from attach Editor ...
+/ presentPresetChanged(); from attach Editor ...
+/ handlePresetNameChanged(); from attach Editor ...
+clef> AM_Cocoa_ViewMan::paintRegion time since ViewMan started 139.42
+bounds: 0.00 0.00 1130.00 800.00
+AM_VST3_ViewInterface::removed ()
+AM_VST3_ViewInterface::setFrame. frame == nullptr 1
+AM_ViewMan::beforeDelete()
+AM_ViewMan::unregisterViewsPreferenceListeners
+unregister ViewMan:AudioPrefs:'BaseLatencyBuffer16' from prefs
+unregister ViewMan:AudioPrefs:'SmoothMidiCtrls' from prefs
+unregister ViewMan:AudioPrefs:'Control A Default' from prefs
+unregister ViewMan:AudioPrefs:'Control B Default' from prefs
+unregister ViewMan:AllViews:'Graphics Gamma' from prefs
+unregister ViewMan:AudioPrefs:'NKS Auto Map' from prefs
+unregister ViewMan:AudioPrefs:'NKS Colour Fit' from prefs
+unregister ViewMan:AudioPrefs:'PrefixParamNamesWithModule' from prefs
+unregister ViewMan:AudioPrefs:'ShortModuleName' from prefs
+unregister DataGraph 9337:DataGraph:'Graph Mode' from prefs
+unregister DataGraph 27322:DataGraph:'Graph Mode' from prefs
+flushing Undo History
+instantCounter: 79
+instantCounter: 78
+instantCounter: 77
+instantCounter: 76
+instantCounter: 75
+instantCounter: 74
+instantCounter: 73
+instantCounter: 72
+instantCounter: 71
+instantCounter: 70
+instantCounter: 69
+instantCounter: 68
+instantCounter: 67
+instantCounter: 66
+instantCounter: 65
+instantCounter: 64
+instantCounter: 63
+instantCounter: 62
+instantCounter: 61
+instantCounter: 60
+instantCounter: 59
+instantCounter: 58
+instantCounter: 57
+instantCounter: 56
+instantCounter: 55
+instantCounter: 54
+instantCounter: 53
+instantCounter: 52
+instantCounter: 51
+instantCounter: 50
+instantCounter: 49
+instantCounter: 48
+instantCounter: 47
+instantCounter: 46
+instantCounter: 45
+instantCounter: 44
+instantCounter: 43
+instantCounter: 42
+instantCounter: 41
+instantCounter: 40
+instantCounter: 39
+instantCounter: 38
+instantCounter: 37
+instantCounter: 36
+instantCounter: 35
+instantCounter: 34
+instantCounter: 33
+instantCounter: 32
+instantCounter: 31
+instantCounter: 30
+instantCounter: 29
+instantCounter: 28
+instantCounter: 27
+instantCounter: 26
+instantCounter: 25
+instantCounter: 24
+instantCounter: 23
+instantCounter: 22
+instantCounter: 21
+instantCounter: 20
+instantCounter: 19
+instantCounter: 18
+instantCounter: 17
+instantCounter: 16
+instantCounter: 15
+instantCounter: 14
+instantCounter: 13
+instantCounter: 12
+instantCounter: 11
+instantCounter: 10
+instantCounter: 9
+instantCounter: 8
+instantCounter: 7
+instantCounter: 6
+instantCounter: 5
+instantCounter: 4
+instantCounter: 3
+instantCounter: 2
+instantCounter: 1
+instantCounter: 0
+max CPU @ watch: watch: 0.00
+~AM_ViewInstanceRecord for ZebraHZ
+AM_PreferencesView::destroy instance destroyed
+AM_PreferencesView::~AM_PreferencesView(), instanceCount after destruction: 0
+AM_PreferencesView::~AM_PreferencesView(), all preference entries in this instance deleted
+ViewTimer removed!
+max CPU @ StopWatch: 0.00
+no listeners to be removed
+AM_VST3_ViewInterface::removed: delete cocoaView
+AM_VST3_ViewInterface::setFrame. frame == nullptr 1
+clef> AM_VST3_ViewInterface::setFrame. frame == nullptr 0
+AM_VST3_ViewInterface::attached
+AM_View_ControlsRegistrar instanceCounter: 8
+LEDParam 349
+PAGEParam 350
+PagesOn 354
+Warning: AM_View_Interface::createModulatorList probably called multiple times ( ModSourceString != nullptr )
+Starting REVISION 16765
+void AM_AudioMan::createModules()
+create viewMan 0x59400000
+Running View with AudioMan access.
+setUpGUI
+AM_ViewMan::initialize
+AM_Locale: System Locale 'en' selected Locale 'en'
+new instance of AM_PreferencesView created for ZebraHZ # 1, 1407042112
+numInstances 1
+AM_PreferencesView::getSetupPreferences: NO PREFS LOADED
+AM_PreferencesView::getSetupPreferences: NO PREFS LOADED
+Too many messages queued
+Too many messages queued
+Too many messages queued
+Too many messages queued
+AM_AudioMan received INTERCOM_MESSAGE_REQUEST_AUDIO_PREF but didn't find matching preference for message: NKS Auto Map
+AM_AudioMan received INTERCOM_MESSAGE_REQUEST_AUDIO_PREF but didn't find matching preference for message: NKS Colour Fit
+Too many messages queued
+Too many messages queued
+AM_AudioMan::setPreference called but didn't find matching preference value for "NO"
+AM_AudioMan setPreference called but didn't find matching preference for "NKS Colour Fit"
+AM_AudioMan::setPreference called but didn't find matching preference value for "NO"
+AM_AudioMan setPreference called but didn't find matching preference for "NKS Auto Map"
+added folders for 'Presets' in 0.000 sec.
+inGamma == graphicsGamma - 2
+No instance-specific GUI scale value found. Trying to load default GUI scale from preferences.
+Using default GUI scale value on init from preferences. Applying 5 -> 1.00
+AM_ViewMan::initialize before loadSetup 7.13
+LOADING /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZ.txt
+filename default
+loadSetup /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZdefault.txt
+LOADING /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZdefault.txt
+filename ZebraHZorig.txt
+loadSetup /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZorig.txt
+LOADING /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZorig.txt
+addFilterConfigurationForName is called with id 0 and string LS-Peak-Peak-HS
+adding configuration for id 0, LS-Peak-Peak-HS
+addFilterConfigurationForName is called with id 0 and string LS-Peak-Peak-HS
+adding configuration for id 0, LS-Peak-Peak-HS
+PreRenderImage - ColorSpace kCGColorSpaceDeviceRGB
+AM_View_MidiAssignMenu::AM_View_MidiAssignMenu number of graphics: 3
+updating / adding Core Matrix1 Source
+updating / adding Core Matrix3 Source
+updating / adding Oscillator1 WarpModSrc
+updating / adding Oscillator1 SFX1ModSrc
+updating / adding Oscillator1 VolumeModSrc
+updating / adding Oscillator2 VolumeModSrc
+updating / adding Oscillator3 WarpModSrc
+updating / adding Oscillator3 SFX1ModSrc
+updating / adding Oscillator3 VolumeModSrc
+updating / adding Oscillator1 SFX2ModSrc
+updating / adding Noise1 VolumeModSrc
+updating / adding Filter2 Modsource1
+updating / adding VoiceMix Modulation1
+updating / adding VoiceMix Modulation2
+AM_ViewMan::initialize after loadSetup 75.08
+AM_AudioMan::setPreference called but didn't find matching preference value for "NO"
+AM_AudioMan setPreference called but didn't find matching preference for "NKS Colour Fit"
+AM_AudioMan::setPreference called but didn't find matching preference value for "NO"
+AM_AudioMan setPreference called but didn't find matching preference for "NKS Auto Map"
+AM_ViewMan::initialize after loadPreferences 90.44
+Too many messages queued
+Too many messages queued
+Too many messages queued
+Too many messages queued
+AM_AudioMan received INTERCOM_MESSAGE_REQUEST_AUDIO_PREF but didn't find matching preference for message: NKS Auto Map
+AM_AudioMan received INTERCOM_MESSAGE_REQUEST_AUDIO_PREF but didn't find matching preference for message: NKS Colour Fit
+Too many messages queued
+Too many messages queued
+AM_ViewMan::initialize before collectPreferencesFromControls 90.48
+AM_ViewMan::initialize before AM_Message_ViewInitialized 90.76
+notifyPreferenceChanged DataGraph 9337 Graph Mode, glow
+notifyPreferenceChanged DataGraph 27322 Graph Mode, glow
+AM_ViewMan::initialize after AM_Message_ViewInitialized 93.12
+AM_ViewMan::initialize after scheduleModulatorActivityUpdate 93.40
+WARNING: Automatable Parameter w/o UI Control: main:#LFOG
+WARNING: Automatable Parameter w/o UI Control: main:#LFOG2
+WARNING: Automatable Parameter w/o UI Control: VCC:#LFO1
+WARNING: Automatable Parameter w/o UI Control: VCC:#LFO2
+WARNING: Automatable Parameter w/o UI Control: VCC:#LFO3
+WARNING: Automatable Parameter w/o UI Control: VCC:#LFO4
+WARNING: Automatable Parameter w/o UI Control: VCC:Voicing
+WARNING: Automatable Parameter w/o UI Control: D-HPF1:KeyScl
+WARNING: Automatable Parameter w/o UI Control: D-HPF2:KeyScl
+WARNING: Automatable Parameter w/o UI Control: D-HPF3:KeyScl
+WARNING: Automatable Parameter w/o UI Control: D-HPF4:KeyScl
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FFM
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FfmSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FfmDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FbSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FbDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FFM
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FfmSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FfmDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FbSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FbDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FFM
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FfmSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FfmDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FbSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FbDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FFM
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FfmSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FfmDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FbSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FbDpt
+WARNING: Automatable Parameter w/o UI Control: NuRev1:Pan
+AM_ViewMan::initialize ended 93.43
+guiBounds: 1130 800
+ViewTimer started (120 FPS).
+Cocoa draws asynchronously
+presentPresetChanged(); from attach Editor ...
+/ presentPresetChanged(); from attach Editor ...
+/ handlePresetNameChanged(); from attach Editor ...
+clef> PreRenderImage - ColorSpace kCGColorSpaceDeviceRGB
+AM_Cocoa_ViewMan::paintRegion time since ViewMan started 329.61
+bounds: 0.00 0.00 1130.00 800.00
+AM_VST3_ViewInterface::removed ()
+AM_VST3_ViewInterface::setFrame. frame == nullptr 1
+AM_ViewMan::beforeDelete()
+AM_ViewMan::unregisterViewsPreferenceListeners
+unregister ViewMan:AudioPrefs:'BaseLatencyBuffer16' from prefs
+unregister ViewMan:AudioPrefs:'SmoothMidiCtrls' from prefs
+unregister ViewMan:AudioPrefs:'Control A Default' from prefs
+unregister ViewMan:AudioPrefs:'Control B Default' from prefs
+unregister ViewMan:AllViews:'Graphics Gamma' from prefs
+unregister ViewMan:AudioPrefs:'NKS Auto Map' from prefs
+unregister ViewMan:AudioPrefs:'NKS Colour Fit' from prefs
+unregister ViewMan:AudioPrefs:'PrefixParamNamesWithModule' from prefs
+unregister ViewMan:AudioPrefs:'ShortModuleName' from prefs
+unregister DataGraph 9337:DataGraph:'Graph Mode' from prefs
+unregister DataGraph 27322:DataGraph:'Graph Mode' from prefs
+flushing Undo History
+instantCounter: 79
+instantCounter: 78
+instantCounter: 77
+instantCounter: 76
+instantCounter: 75
+instantCounter: 74
+instantCounter: 73
+instantCounter: 72
+instantCounter: 71
+instantCounter: 70
+instantCounter: 69
+instantCounter: 68
+instantCounter: 67
+instantCounter: 66
+instantCounter: 65
+instantCounter: 64
+instantCounter: 63
+instantCounter: 62
+instantCounter: 61
+instantCounter: 60
+instantCounter: 59
+instantCounter: 58
+instantCounter: 57
+instantCounter: 56
+instantCounter: 55
+instantCounter: 54
+instantCounter: 53
+instantCounter: 52
+instantCounter: 51
+instantCounter: 50
+instantCounter: 49
+instantCounter: 48
+instantCounter: 47
+instantCounter: 46
+instantCounter: 45
+instantCounter: 44
+instantCounter: 43
+instantCounter: 42
+instantCounter: 41
+instantCounter: 40
+instantCounter: 39
+instantCounter: 38
+instantCounter: 37
+instantCounter: 36
+instantCounter: 35
+instantCounter: 34
+instantCounter: 33
+instantCounter: 32
+instantCounter: 31
+instantCounter: 30
+instantCounter: 29
+instantCounter: 28
+instantCounter: 27
+instantCounter: 26
+instantCounter: 25
+instantCounter: 24
+instantCounter: 23
+instantCounter: 22
+instantCounter: 21
+instantCounter: 20
+instantCounter: 19
+instantCounter: 18
+instantCounter: 17
+instantCounter: 16
+instantCounter: 15
+instantCounter: 14
+instantCounter: 13
+instantCounter: 12
+instantCounter: 11
+instantCounter: 10
+instantCounter: 9
+instantCounter: 8
+instantCounter: 7
+instantCounter: 6
+instantCounter: 5
+instantCounter: 4
+instantCounter: 3
+instantCounter: 2
+instantCounter: 1
+instantCounter: 0
+max CPU @ watch: watch: 0.00
+~AM_ViewInstanceRecord for ZebraHZ
+AM_PreferencesView::destroy instance destroyed
+AM_PreferencesView::~AM_PreferencesView(), instanceCount after destruction: 0
+AM_PreferencesView::~AM_PreferencesView(), all preference entries in this instance deleted
+ViewTimer removed!
+max CPU @ StopWatch: 0.00
+no listeners to be removed
+AM_VST3_ViewInterface::removed: delete cocoaView
+AM_VST3_ViewInterface::setFrame. frame == nullptr 1
+clef> AM_VST3_ViewInterface::setFrame. frame == nullptr 0
+AM_VST3_ViewInterface::attached
+AM_View_ControlsRegistrar instanceCounter: 9
+LEDParam 349
+PAGEParam 350
+PagesOn 354
+Warning: AM_View_Interface::createModulatorList probably called multiple times ( ModSourceString != nullptr )
+Starting REVISION 16765
+void AM_AudioMan::createModules()
+create viewMan 0x59400000
+Running View with AudioMan access.
+setUpGUI
+AM_ViewMan::initialize
+AM_Locale: System Locale 'en' selected Locale 'en'
+new instance of AM_PreferencesView created for ZebraHZ # 1, 1405161312
+numInstances 1
+AM_PreferencesView::getSetupPreferences: NO PREFS LOADED
+AM_PreferencesView::getSetupPreferences: NO PREFS LOADED
+Too many messages queued
+Too many messages queued
+Too many messages queued
+Too many messages queued
+AM_AudioMan received INTERCOM_MESSAGE_REQUEST_AUDIO_PREF but didn't find matching preference for message: NKS Auto Map
+AM_AudioMan received INTERCOM_MESSAGE_REQUEST_AUDIO_PREF but didn't find matching preference for message: NKS Colour Fit
+Too many messages queued
+Too many messages queued
+AM_AudioMan::setPreference called but didn't find matching preference value for "NO"
+AM_AudioMan setPreference called but didn't find matching preference for "NKS Colour Fit"
+AM_AudioMan::setPreference called but didn't find matching preference value for "NO"
+AM_AudioMan setPreference called but didn't find matching preference for "NKS Auto Map"
+added folders for 'Presets' in 0.000 sec.
+inGamma == graphicsGamma - 2
+No instance-specific GUI scale value found. Trying to load default GUI scale from preferences.
+Using default GUI scale value on init from preferences. Applying 5 -> 1.00
+AM_ViewMan::initialize before loadSetup 7.21
+LOADING /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZ.txt
+filename default
+loadSetup /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZdefault.txt
+LOADING /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZdefault.txt
+filename ZebraHZorig.txt
+loadSetup /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZorig.txt
+LOADING /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZorig.txt
+addFilterConfigurationForName is called with id 0 and string LS-Peak-Peak-HS
+adding configuration for id 0, LS-Peak-Peak-HS
+addFilterConfigurationForName is called with id 0 and string LS-Peak-Peak-HS
+adding configuration for id 0, LS-Peak-Peak-HS
+AM_View_MidiAssignMenu::AM_View_MidiAssignMenu number of graphics: 3
+updating / adding Core Matrix1 Source
+updating / adding Core Matrix3 Source
+updating / adding Oscillator1 WarpModSrc
+updating / adding Oscillator1 SFX1ModSrc
+updating / adding Oscillator1 VolumeModSrc
+updating / adding Oscillator2 VolumeModSrc
+updating / adding Oscillator3 WarpModSrc
+updating / adding Oscillator3 SFX1ModSrc
+updating / adding Oscillator3 VolumeModSrc
+updating / adding Oscillator1 SFX2ModSrc
+updating / adding Noise1 VolumeModSrc
+updating / adding Filter2 Modsource1
+updating / adding VoiceMix Modulation1
+updating / adding VoiceMix Modulation2
+AM_ViewMan::initialize after loadSetup 72.97
+AM_AudioMan::setPreference called but didn't find matching preference value for "NO"
+AM_AudioMan setPreference called but didn't find matching preference for "NKS Colour Fit"
+AM_AudioMan::setPreference called but didn't find matching preference value for "NO"
+AM_AudioMan setPreference called but didn't find matching preference for "NKS Auto Map"
+AM_ViewMan::initialize after loadPreferences 87.45
+Too many messages queued
+Too many messages queued
+Too many messages queued
+Too many messages queued
+AM_AudioMan received INTERCOM_MESSAGE_REQUEST_AUDIO_PREF but didn't find matching preference for message: NKS Auto Map
+AM_AudioMan received INTERCOM_MESSAGE_REQUEST_AUDIO_PREF but didn't find matching preference for message: NKS Colour Fit
+Too many messages queued
+Too many messages queued
+AM_ViewMan::initialize before collectPreferencesFromControls 87.50
+AM_ViewMan::initialize before AM_Message_ViewInitialized 87.83
+notifyPreferenceChanged DataGraph 9337 Graph Mode, glow
+notifyPreferenceChanged DataGraph 27322 Graph Mode, glow
+AM_ViewMan::initialize after AM_Message_ViewInitialized 90.31
+AM_ViewMan::initialize after scheduleModulatorActivityUpdate 90.58
+WARNING: Automatable Parameter w/o UI Control: main:#LFOG
+WARNING: Automatable Parameter w/o UI Control: main:#LFOG2
+WARNING: Automatable Parameter w/o UI Control: VCC:#LFO1
+WARNING: Automatable Parameter w/o UI Control: VCC:#LFO2
+WARNING: Automatable Parameter w/o UI Control: VCC:#LFO3
+WARNING: Automatable Parameter w/o UI Control: VCC:#LFO4
+WARNING: Automatable Parameter w/o UI Control: VCC:Voicing
+WARNING: Automatable Parameter w/o UI Control: D-HPF1:KeyScl
+WARNING: Automatable Parameter w/o UI Control: D-HPF2:KeyScl
+WARNING: Automatable Parameter w/o UI Control: D-HPF3:KeyScl
+WARNING: Automatable Parameter w/o UI Control: D-HPF4:KeyScl
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FFM
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FfmSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FfmDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FbSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FbDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FFM
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FfmSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FfmDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FbSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FbDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FFM
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FfmSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FfmDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FbSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FbDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FFM
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FfmSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FfmDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FbSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FbDpt
+WARNING: Automatable Parameter w/o UI Control: NuRev1:Pan
+AM_ViewMan::initialize ended 90.61
+guiBounds: 1130 800
+ViewTimer started (120 FPS).
+Cocoa draws asynchronously
+presentPresetChanged(); from attach Editor ...
+/ presentPresetChanged(); from attach Editor ...
+/ handlePresetNameChanged(); from attach Editor ...
+clef> PreRenderImage - ColorSpace kCGColorSpaceDeviceRGB
+AM_Cocoa_ViewMan::paintRegion time since ViewMan started 136.15
+bounds: 0.00 0.00 1130.00 800.00
+AM_VST3_ViewInterface::removed ()
+AM_VST3_ViewInterface::setFrame. frame == nullptr 1
+AM_ViewMan::beforeDelete()
+AM_ViewMan::unregisterViewsPreferenceListeners
+unregister ViewMan:AudioPrefs:'BaseLatencyBuffer16' from prefs
+unregister ViewMan:AudioPrefs:'SmoothMidiCtrls' from prefs
+unregister ViewMan:AudioPrefs:'Control A Default' from prefs
+unregister ViewMan:AudioPrefs:'Control B Default' from prefs
+unregister ViewMan:AllViews:'Graphics Gamma' from prefs
+unregister ViewMan:AudioPrefs:'NKS Auto Map' from prefs
+unregister ViewMan:AudioPrefs:'NKS Colour Fit' from prefs
+unregister ViewMan:AudioPrefs:'PrefixParamNamesWithModule' from prefs
+unregister ViewMan:AudioPrefs:'ShortModuleName' from prefs
+unregister DataGraph 9337:DataGraph:'Graph Mode' from prefs
+unregister DataGraph 27322:DataGraph:'Graph Mode' from prefs
+flushing Undo History
+instantCounter: 79
+instantCounter: 78
+instantCounter: 77
+instantCounter: 76
+instantCounter: 75
+instantCounter: 74
+instantCounter: 73
+instantCounter: 72
+instantCounter: 71
+instantCounter: 70
+instantCounter: 69
+instantCounter: 68
+instantCounter: 67
+instantCounter: 66
+instantCounter: 65
+instantCounter: 64
+instantCounter: 63
+instantCounter: 62
+instantCounter: 61
+instantCounter: 60
+instantCounter: 59
+instantCounter: 58
+instantCounter: 57
+instantCounter: 56
+instantCounter: 55
+instantCounter: 54
+instantCounter: 53
+instantCounter: 52
+instantCounter: 51
+instantCounter: 50
+instantCounter: 49
+instantCounter: 48
+instantCounter: 47
+instantCounter: 46
+instantCounter: 45
+instantCounter: 44
+instantCounter: 43
+instantCounter: 42
+instantCounter: 41
+instantCounter: 40
+instantCounter: 39
+instantCounter: 38
+instantCounter: 37
+instantCounter: 36
+instantCounter: 35
+instantCounter: 34
+instantCounter: 33
+instantCounter: 32
+instantCounter: 31
+instantCounter: 30
+instantCounter: 29
+instantCounter: 28
+instantCounter: 27
+instantCounter: 26
+instantCounter: 25
+instantCounter: 24
+instantCounter: 23
+instantCounter: 22
+instantCounter: 21
+instantCounter: 20
+instantCounter: 19
+instantCounter: 18
+instantCounter: 17
+instantCounter: 16
+instantCounter: 15
+instantCounter: 14
+instantCounter: 13
+instantCounter: 12
+instantCounter: 11
+instantCounter: 10
+instantCounter: 9
+instantCounter: 8
+instantCounter: 7
+instantCounter: 6
+instantCounter: 5
+instantCounter: 4
+instantCounter: 3
+instantCounter: 2
+instantCounter: 1
+instantCounter: 0
+max CPU @ watch: watch: 0.00
+~AM_ViewInstanceRecord for ZebraHZ
+AM_PreferencesView::destroy instance destroyed
+AM_PreferencesView::~AM_PreferencesView(), instanceCount after destruction: 0
+AM_PreferencesView::~AM_PreferencesView(), all preference entries in this instance deleted
+ViewTimer removed!
+max CPU @ StopWatch: 0.00
+no listeners to be removed
+AM_VST3_ViewInterface::removed: delete cocoaView
+AM_VST3_ViewInterface::setFrame. frame == nullptr 1
+clef> AM_VST3_ViewInterface::setFrame. frame == nullptr 0
+AM_VST3_ViewInterface::attached
+AM_View_ControlsRegistrar instanceCounter: 10
+LEDParam 349
+PAGEParam 350
+PagesOn 354
+Warning: AM_View_Interface::createModulatorList probably called multiple times ( ModSourceString != nullptr )
+Starting REVISION 16765
+void AM_AudioMan::createModules()
+create viewMan 0x59400000
+Running View with AudioMan access.
+setUpGUI
+AM_ViewMan::initialize
+AM_Locale: System Locale 'en' selected Locale 'en'
+new instance of AM_PreferencesView created for ZebraHZ # 1, 1406499264
+numInstances 1
+AM_PreferencesView::getSetupPreferences: NO PREFS LOADED
+AM_PreferencesView::getSetupPreferences: NO PREFS LOADED
+Too many messages queued
+Too many messages queued
+Too many messages queued
+Too many messages queued
+AM_AudioMan received INTERCOM_MESSAGE_REQUEST_AUDIO_PREF but didn't find matching preference for message: NKS Auto Map
+AM_AudioMan received INTERCOM_MESSAGE_REQUEST_AUDIO_PREF but didn't find matching preference for message: NKS Colour Fit
+Too many messages queued
+Too many messages queued
+AM_AudioMan::setPreference called but didn't find matching preference value for "NO"
+AM_AudioMan setPreference called but didn't find matching preference for "NKS Colour Fit"
+AM_AudioMan::setPreference called but didn't find matching preference value for "NO"
+AM_AudioMan setPreference called but didn't find matching preference for "NKS Auto Map"
+added folders for 'Presets' in 0.000 sec.
+inGamma == graphicsGamma - 2
+No instance-specific GUI scale value found. Trying to load default GUI scale from preferences.
+Using default GUI scale value on init from preferences. Applying 5 -> 1.00
+AM_ViewMan::initialize before loadSetup 6.92
+LOADING /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZ.txt
+filename default
+loadSetup /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZdefault.txt
+LOADING /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZdefault.txt
+filename ZebraHZorig.txt
+loadSetup /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZorig.txt
+LOADING /Library/Application Support/u-he/ZebraHZ/Scripts/ZebraHZorig.txt
+addFilterConfigurationForName is called with id 0 and string LS-Peak-Peak-HS
+adding configuration for id 0, LS-Peak-Peak-HS
+addFilterConfigurationForName is called with id 0 and string LS-Peak-Peak-HS
+adding configuration for id 0, LS-Peak-Peak-HS
+AM_View_MidiAssignMenu::AM_View_MidiAssignMenu number of graphics: 3
+updating / adding Core Matrix1 Source
+updating / adding Core Matrix3 Source
+updating / adding Oscillator1 WarpModSrc
+updating / adding Oscillator1 SFX1ModSrc
+updating / adding Oscillator1 VolumeModSrc
+updating / adding Oscillator2 VolumeModSrc
+updating / adding Oscillator3 WarpModSrc
+updating / adding Oscillator3 SFX1ModSrc
+updating / adding Oscillator3 VolumeModSrc
+updating / adding Oscillator1 SFX2ModSrc
+updating / adding Noise1 VolumeModSrc
+updating / adding Filter2 Modsource1
+updating / adding VoiceMix Modulation1
+updating / adding VoiceMix Modulation2
+AM_ViewMan::initialize after loadSetup 75.70
+AM_AudioMan::setPreference called but didn't find matching preference value for "NO"
+AM_AudioMan setPreference called but didn't find matching preference for "NKS Colour Fit"
+AM_AudioMan::setPreference called but didn't find matching preference value for "NO"
+AM_AudioMan setPreference called but didn't find matching preference for "NKS Auto Map"
+AM_ViewMan::initialize after loadPreferences 91.84
+Too many messages queued
+Too many messages queued
+Too many messages queued
+Too many messages queued
+AM_AudioMan received INTERCOM_MESSAGE_REQUEST_AUDIO_PREF but didn't find matching preference for message: NKS Auto Map
+AM_AudioMan received INTERCOM_MESSAGE_REQUEST_AUDIO_PREF but didn't find matching preference for message: NKS Colour Fit
+Too many messages queued
+Too many messages queued
+AM_ViewMan::initialize before collectPreferencesFromControls 91.88
+AM_ViewMan::initialize before AM_Message_ViewInitialized 92.18
+notifyPreferenceChanged DataGraph 9337 Graph Mode, glow
+notifyPreferenceChanged DataGraph 27322 Graph Mode, glow
+AM_ViewMan::initialize after AM_Message_ViewInitialized 94.60
+AM_ViewMan::initialize after scheduleModulatorActivityUpdate 94.88
+WARNING: Automatable Parameter w/o UI Control: main:#LFOG
+WARNING: Automatable Parameter w/o UI Control: main:#LFOG2
+WARNING: Automatable Parameter w/o UI Control: VCC:#LFO1
+WARNING: Automatable Parameter w/o UI Control: VCC:#LFO2
+WARNING: Automatable Parameter w/o UI Control: VCC:#LFO3
+WARNING: Automatable Parameter w/o UI Control: VCC:#LFO4
+WARNING: Automatable Parameter w/o UI Control: VCC:Voicing
+WARNING: Automatable Parameter w/o UI Control: D-HPF1:KeyScl
+WARNING: Automatable Parameter w/o UI Control: D-HPF2:KeyScl
+WARNING: Automatable Parameter w/o UI Control: D-HPF3:KeyScl
+WARNING: Automatable Parameter w/o UI Control: D-HPF4:KeyScl
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FFM
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FfmSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FfmDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FbSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF1:FbDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FFM
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FfmSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FfmDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FbSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF2:FbDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FFM
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FfmSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FfmDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FbSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF3:FbDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FFM
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FfmSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FfmDpt
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FbSrc
+WARNING: Automatable Parameter w/o UI Control: D-VCF4:FbDpt
+WARNING: Automatable Parameter w/o UI Control: NuRev1:Pan
+AM_ViewMan::initialize ended 94.92
+guiBounds: 1130 800
+ViewTimer started (120 FPS).
+Cocoa draws asynchronously
+presentPresetChanged(); from attach Editor ...
+/ presentPresetChanged(); from attach Editor ...
+/ handlePresetNameChanged(); from attach Editor ...
+clef> PreRenderImage - ColorSpace kCGColorSpaceDeviceRGB
+AM_Cocoa_ViewMan::paintRegion time since ViewMan started 336.14
+bounds: 0.00 0.00 1130.00 800.00
+AM_VST3_ViewInterface::removed ()
+AM_VST3_ViewInterface::setFrame. frame == nullptr 1
+AM_ViewMan::beforeDelete()
+AM_ViewMan::unregisterViewsPreferenceListeners
+unregister ViewMan:AudioPrefs:'BaseLatencyBuffer16' from prefs
+unregister ViewMan:AudioPrefs:'SmoothMidiCtrls' from prefs
+unregister ViewMan:AudioPrefs:'Control A Default' from prefs
+unregister ViewMan:AudioPrefs:'Control B Default' from prefs
+unregister ViewMan:AllViews:'Graphics Gamma' from prefs
+unregister ViewMan:AudioPrefs:'NKS Auto Map' from prefs
+unregister ViewMan:AudioPrefs:'NKS Colour Fit' from prefs
+unregister ViewMan:AudioPrefs:'PrefixParamNamesWithModule' from prefs
+unregister ViewMan:AudioPrefs:'ShortModuleName' from prefs
+unregister DataGraph 9337:DataGraph:'Graph Mode' from prefs
+unregister DataGraph 27322:DataGraph:'Graph Mode' from prefs
+flushing Undo History
+instantCounter: 79
+instantCounter: 78
+instantCounter: 77
+instantCounter: 76
+instantCounter: 75
+instantCounter: 74
+instantCounter: 73
+instantCounter: 72
+instantCounter: 71
+instantCounter: 70
+instantCounter: 69
+instantCounter: 68
+instantCounter: 67
+instantCounter: 66
+instantCounter: 65
+instantCounter: 64
+instantCounter: 63
+instantCounter: 62
+instantCounter: 61
+instantCounter: 60
+instantCounter: 59
+instantCounter: 58
+instantCounter: 57
+instantCounter: 56
+instantCounter: 55
+instantCounter: 54
+instantCounter: 53
+instantCounter: 52
+instantCounter: 51
+instantCounter: 50
+instantCounter: 49
+instantCounter: 48
+instantCounter: 47
+instantCounter: 46
+instantCounter: 45
+instantCounter: 44
+instantCounter: 43
+instantCounter: 42
+instantCounter: 41
+instantCounter: 40
+instantCounter: 39
+instantCounter: 38
+instantCounter: 37
+instantCounter: 36
+instantCounter: 35
+instantCounter: 34
+instantCounter: 33
+instantCounter: 32
+instantCounter: 31
+instantCounter: 30
+instantCounter: 29
+instantCounter: 28
+instantCounter: 27
+instantCounter: 26
+instantCounter: 25
+instantCounter: 24
+instantCounter: 23
+instantCounter: 22
+instantCounter: 21
+instantCounter: 20
+instantCounter: 19
+instantCounter: 18
+instantCounter: 17
+instantCounter: 16
+instantCounter: 15
+instantCounter: 14
+instantCounter: 13
+instantCounter: 12
+instantCounter: 11
+instantCounter: 10
+instantCounter: 9
+instantCounter: 8
+instantCounter: 7
+instantCounter: 6
+instantCounter: 5
+instantCounter: 4
+instantCounter: 3
+instantCounter: 2
+instantCounter: 1
+instantCounter: 0
+max CPU @ watch: watch: 0.00
+~AM_ViewInstanceRecord for ZebraHZ
+AM_PreferencesView::destroy instance destroyed
+AM_PreferencesView::~AM_PreferencesView(), instanceCount after destruction: 0
+AM_PreferencesView::~AM_PreferencesView(), all preference entries in this instance deleted
+ViewTimer removed!
+max CPU @ StopWatch: 0.00
+no listeners to be removed
+AM_VST3_ViewInterface::removed: delete cocoaView
+AM_VST3_ViewInterface::setFrame. frame == nullptr 1
+clef> {"callbacks":2106,"deadline_missed_blocks":0,"discarded_stale_blocks":0,"late_midi_events":0,"max_callback_frames":128,"midi_overflows":0,"midi_received":0,"min_callback_frames":128,"output_errors":0,"played_frames":269568,"requested_buffer_frames":128,"sample_rate":48000,"transport_buffering_samples":512,"worker_failed":false}
+clef> {"callbacks":2106,"deadline_missed_blocks":0,"discarded_stale_blocks":0,"late_midi_events":0,"max_callback_frames":128,"midi_overflows":0,"midi_received":0,"min_callback_frames":128,"output_errors":0,"played_frames":269568,"requested_buffer_frames":128,"sample_rate":48000,"transport_buffering_samples":512,"worker_failed":false}
+clef> 

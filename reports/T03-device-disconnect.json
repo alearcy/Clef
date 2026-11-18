@@ -1,0 +1,28 @@
+{
+  "test": "removed_midi_device_stops_audio_and_preserves_the_missing_selection",
+  "result": "passed",
+  "device": "Audient EVO16",
+  "output_pair": [
+    1,
+    2
+  ],
+  "sample_rate": 44100,
+  "requested_buffer_frames": 256,
+  "observed_callback_frames": [
+    256,
+    256
+  ],
+  "transport_lead_samples": 1024,
+  "short_probe": {
+    "callbacks": 18,
+    "played_frames": 4608,
+    "midi_received": 1,
+    "worker_peak": 0.11636236310005188,
+    "deadline_missed_blocks": 0,
+    "output_errors": 0
+  },
+  "removed_device": "temporary owned virtual MIDI source",
+  "resulting_audio_state": "stopped",
+  "missing_selection": "preserved",
+  "scope": "Short software/driver probe; no physical unplug or acoustic latency measurement."
+}

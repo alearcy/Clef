@@ -1,0 +1,149 @@
+{
+  "device": {
+    "buffer": 256,
+    "device": "coreaudio:AppleUSBAudioEngine:Audient:Audient EVO16:110000:1,2",
+    "midi": "207292712",
+    "pair": [
+      0,
+      1
+    ],
+    "rate": 44100
+  },
+  "miss_counter_scope": "Reset after warm-up; block counts and maxima are lifetime values",
+  "observation_start_frame": 115456,
+  "scope": "Native processing and virtual MIDI; not physical keyboard or listening acceptance",
+  "summary": "44100 Hz · requested 256 frames · actual 256–256 frames · lead 1024 samples · plugin latency 16 samples · clipped samples 0",
+  "tracks": [
+    {
+      "blocks": 1509,
+      "id": 1,
+      "latency": 0,
+      "max_rpc_us": 76611,
+      "max_worker_us": 75936,
+      "midi": 2,
+      "misses": 0,
+      "peak": 0.059718191623687744,
+      "transition_frames": 0
+    },
+    {
+      "blocks": 1524,
+      "id": 7,
+      "latency": 16,
+      "max_rpc_us": 5806,
+      "max_worker_us": 3954,
+      "midi": 2,
+      "misses": 0,
+      "peak": 0.07261549681425095,
+      "transition_frames": 0
+    },
+    {
+      "blocks": 1516,
+      "id": 6,
+      "latency": 16,
+      "max_rpc_us": 1377,
+      "max_worker_us": 678,
+      "midi": 2,
+      "misses": 0,
+      "peak": 0.05037398263812065,
+      "transition_frames": 0
+    },
+    {
+      "blocks": 1512,
+      "id": 4,
+      "latency": 16,
+      "max_rpc_us": 1350,
+      "max_worker_us": 542,
+      "midi": 2,
+      "misses": 0,
+      "peak": 0.04427076503634453,
+      "transition_frames": 0
+    },
+    {
+      "blocks": 1506,
+      "id": 5,
+      "latency": 16,
+      "max_rpc_us": 4499,
+      "max_worker_us": 3981,
+      "midi": 2,
+      "misses": 0,
+      "peak": 0.07446197420358658,
+      "transition_frames": 0
+    },
+    {
+      "blocks": 1500,
+      "id": 3,
+      "latency": 16,
+      "max_rpc_us": 4400,
+      "max_worker_us": 995,
+      "midi": 2,
+      "misses": 0,
+      "peak": 0.08215249329805374,
+      "transition_frames": 0
+    },
+    {
+      "blocks": 1494,
+      "id": 2,
+      "latency": 16,
+      "max_rpc_us": 2572,
+      "max_worker_us": 730,
+      "midi": 2,
+      "misses": 0,
+      "peak": 0.059417154639959335,
+      "transition_frames": 0
+    },
+    {
+      "blocks": 1490,
+      "id": 8,
+      "latency": 16,
+      "max_rpc_us": 1249,
+      "max_worker_us": 1133,
+      "midi": 2,
+      "misses": 0,
+      "peak": 0.05046062543988228,
+      "transition_frames": 0
+    }
+  ],
+  "warmup_counters": [
+    {
+      "id": 1,
+      "misses": 0,
+      "transition_frames": 3328
+    },
+    {
+      "id": 7,
+      "misses": 0,
+      "transition_frames": 1024
+    },
+    {
+      "id": 6,
+      "misses": 0,
+      "transition_frames": 1536
+    },
+    {
+      "id": 4,
+      "misses": 0,
+      "transition_frames": 1024
+    },
+    {
+      "id": 5,
+      "misses": 0,
+      "transition_frames": 1024
+    },
+    {
+      "id": 3,
+      "misses": 0,
+      "transition_frames": 1024
+    },
+    {
+      "id": 2,
+      "misses": 0,
+      "transition_frames": 1024
+    },
+    {
+      "id": 8,
+      "misses": 0,
+      "transition_frames": 1024
+    }
+  ],
+  "warmup_ms": 500
+}

@@ -1,0 +1,38 @@
+--- a/vst3-host/src/internal/plugin_impl.rs
++++ b/vst3-host/src/internal/plugin_impl.rs
+@@ -3263,6 +3263,10 @@
+                 }
+             }
+         }
++        // Requests from the removed view must not resize a detached or subsequent editor.
++        if let Ok(mut pending) = self.editor_resize.lock() {
++            *pending = None;
++        }
+         // Drop any run-loop registrations the editor left behind. A well-behaved plugin
+         // unregisters its own handlers and timers during `removed()`, but one that doesn't would
+         // otherwise leave live ComPtrs into a view that no longer exists — and since
+@@ -5891,6 +5895,24 @@
+         audio::AudioBuffers,
+         midi::{MidiChannel, MidiEvent},
+     };
++
++    #[test]
++    #[ignore = "requires the built TestSynth VST3 bundle"]
++    fn closing_editor_discards_pending_resize_requests() {
++        let path =
++            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../test_plugins/TestSynth.vst3");
++        assert!(
++            path.exists(),
++            "build and bundle TestSynth before running this test"
++        );
++        let mut plugin = PluginImpl::load(&path).expect("load deterministic fixture");
++        *plugin.editor_resize.lock().unwrap() = Some((640, 480));
++        plugin.close_editor().expect("close detached editor");
++        assert_eq!(plugin.take_editor_resize_request(), None);
++        // A request from a subsequent editor must still be delivered.
++        *plugin.editor_resize.lock().unwrap() = Some((800, 600));
++        assert_eq!(plugin.take_editor_resize_request(), Some((800, 600)));
++    }
+ 
+     #[test]
+     #[ignore = "requires the built TestSynth VST3 bundle"]

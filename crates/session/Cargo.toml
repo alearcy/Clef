@@ -1,0 +1,16 @@
+[package]
+name = "clef-session"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+publish = false
+
+[dependencies]
+clef-model = { path = "../model" }
+clef-audio-io = { path = "../audio-io" }
+clef-plugin-host = { path = "../plugin-host" }
+clef-engine = { path = "../engine" }
+
+[dev-dependencies]
+midir = "=0.11.1"
+serde_json = { workspace = true }

@@ -1,0 +1,428 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.15s
+     Running unittests src/main.rs (target/debug/deps/clef-a94ebbf4d731d2a4)
+
+running 1 test
+log path:'/Users/arcy/Desktop/ZebraHZ.log'
+checking deskTopFile at: /Users/arcy/Desktop/ZebraHZ.log
+INIT AudioProcessor -1365200896
+Path: '/Library/Audio/Plug-Ins/VST3/ZebraHZ.vst3'
+MacOS: Version 26.6.2 (Build 25G83)
+CPU Vendor: ''
+CPU Type: 'Apple M4 Pro'
+CPU Architecture: 'arm64'
+Binary: 'ARM 64 bit'
+Machine Model: 'Mac16,11'
+Logical Cores: 12/12 Physical Cores: 12/12 Frequency: 0.0GHz (Range: 0.0 to 0.0Ghz) RAM: 24GB
+ZebraHZ Plugin ID: 534D485A
+Hostname: 'clef'
+Plugin API: 'VST3'
+Starting REVISION 16765
+totalSize 3025
+Zebra2_Wavefolder::Zebra2_Wavefolder plot figures: 1 256 0.00
+buffer[0] = 7.00
+Zebra2_Wavefolder::Zebra2_Wavefolder plot figures: 1 256 0.00
+buffer[0] = 7.00
+void AM_AudioMan::createModules()
+new instance of  AM_PreferencesAudio created for ZebraHZ # 1
+Warning! AudioPreferenceExtractor::setPreference didn't find matching preference for "NKS Colour Fit"
+Warning! AudioPreferenceExtractor::setPreference didn't find matching preference for "NKS Auto Map"
+Parm 1868 TrimPots same ptr as param 1843 V1Tune1
+loadPreferences() - ZebraHZ
+void AM_AudioMan::createMidiPrograms()
+Preset from 'ZebraHZ'
+publicparams path: /Library/Application Support/u-he file: com.u-he.ZebraHZ.publicparams.txt
+CustomParamTable::createCrossReference sorted 0 automatable parameters
+getMidiAssignPath(): '/Users/arcy/Library/Application Support/u-he/com.u-he.ZebraHZ.midiassign.txt'
+READING midiAssignFile
+Preset from 'ZebraHZ'
+Preset from 'ZebraHZ'
+Preset for rev 10218 loaded into rev 16765, Revision
+Created AudioMan at -1381744640
+/ INIT AudioProcessor -1365200896
+AM_VST3_Processor::setBusArrangements 0 1 vs 0 1
+setState called on processor
+IN SONG!
+hasProgramName initialize.h2p
+setting stateinfo startOffset 0 streamLength 31344 inSong 1
+strlen of state 31342
+Preset from 'ZebraHZ'
+No PresetAttributes::kFilePathStringType
+done with setState on processor
+setState called on processor
+hasProgramName initialize.h2p
+setting stateinfo startOffset 0 streamLength 31260 inSong 0
+strlen of state 31258
+Preset from 'ZebraHZ'
+No PresetAttributes::kFilePathStringType
+done with setState on processor
+log path:'/Users/arcy/Desktop/ZebraHZ.log'
+checking deskTopFile at: /Users/arcy/Desktop/ZebraHZ.log
+INIT AudioProcessor -1835585536
+Path: '/Library/Audio/Plug-Ins/VST3/ZebraHZ.vst3'
+MacOS: Version 26.6.2 (Build 25G83)
+CPU Vendor: ''
+CPU Type: 'Apple M4 Pro'
+CPU Architecture: 'arm64'
+Binary: 'ARM 64 bit'
+Machine Model: 'Mac16,11'
+Logical Cores: 12/12 Physical Cores: 12/12 Frequency: 0.0GHz (Range: 0.0 to 0.0Ghz) RAM: 24GB
+ZebraHZ Plugin ID: 534D485A
+Hostname: 'clef'
+Plugin API: 'VST3'
+Starting REVISION 16765
+totalSize 3025
+Zebra2_Wavefolder::Zebra2_Wavefolder plot figures: 1 256 0.00
+buffer[0] = 7.00
+Zebra2_Wavefolder::Zebra2_Wavefolder plot figures: 1 256 0.00
+buffer[0] = 7.00
+void AM_AudioMan::createModules()
+new instance of  AM_PreferencesAudio created for ZebraHZ # 1
+Warning! AudioPreferenceExtractor::setPreference didn't find matching preference for "NKS Colour Fit"
+Warning! AudioPreferenceExtractor::setPreference didn't find matching preference for "NKS Auto Map"
+Parm 1868 TrimPots same ptr as param 1843 V1Tune1
+loadPreferences() - ZebraHZ
+void AM_AudioMan::createMidiPrograms()
+Preset from 'ZebraHZ'
+publicparams path: /Library/Application Support/u-he file: com.u-he.ZebraHZ.publicparams.txt
+CustomParamTable::createCrossReference sorted 0 automatable parameters
+getMidiAssignPath(): '/Users/arcy/Library/Application Support/u-he/com.u-he.ZebraHZ.midiassign.txt'
+READING midiAssignFile
+Preset from 'ZebraHZ'
+Preset from 'ZebraHZ'
+Preset for rev 10218 loaded into rev 16765, Revision
+Created AudioMan at -1847951360
+/ INIT AudioProcessor -1835585536
+AM_VST3_Processor::setBusArrangements 0 1 vs 0 1
+setState called on processor
+IN SONG!
+hasProgramName initialize.h2p
+setting stateinfo startOffset 0 streamLength 31261 inSong 1
+strlen of state 31259
+Preset from 'ZebraHZ'
+No PresetAttributes::kFilePathStringType
+done with setState on processor
+Passed changed-state project roundtrip: T03-GUI-ZebraHZ-VST3.clef
+log path:'/Users/arcy/Desktop/ZebraHZ.log'
+checking deskTopFile at: /Users/arcy/Desktop/ZebraHZ.log
+Path: '/Library/Audio/Plug-Ins/CLAP/u-he/ZebraHZ.clap'
+MacOS: Version 26.6.2 (Build 25G83)
+CPU Vendor: ''
+CPU Type: 'Apple M4 Pro'
+CPU Architecture: 'arm64'
+Binary: 'ARM 64 bit'
+Machine Model: 'Mac16,11'
+Logical Cores: 12/12 Physical Cores: 12/12 Frequency: 0.0GHz (Range: 0.0 to 0.0Ghz) RAM: 24GB
+ZebraHZ Plugin ID: 534D485A
+Plugin API: 'CLAP'
+Hostname: 'Clef'
+AM_CLAP_Plugin::audioPortsSetConfig set to ID 1799648728
+CLAP host supports thread pool: no
+Starting REVISION 16765
+totalSize 3025
+Zebra2_Wavefolder::Zebra2_Wavefolder plot figures: 1 256 0.00
+buffer[0] = 7.00
+Zebra2_Wavefolder::Zebra2_Wavefolder plot figures: 1 256 0.00
+buffer[0] = 7.00
+void AM_AudioMan::createModules()
+new instance of  AM_PreferencesAudio created for ZebraHZ # 1
+Warning! AudioPreferenceExtractor::setPreference didn't find matching preference for "NKS Colour Fit"
+Warning! AudioPreferenceExtractor::setPreference didn't find matching preference for "NKS Auto Map"
+Parm 1868 TrimPots same ptr as param 1843 V1Tune1
+loadPreferences() - ZebraHZ
+void AM_AudioMan::createMidiPrograms()
+Preset from 'ZebraHZ'
+publicparams path: /Library/Application Support/u-he file: com.u-he.ZebraHZ.publicparams.txt
+CustomParamTable::createCrossReference sorted 0 automatable parameters
+getMidiAssignPath(): '/Users/arcy/Library/Application Support/u-he/com.u-he.ZebraHZ.midiassign.txt'
+READING midiAssignFile
+Preset from 'ZebraHZ'
+Preset from 'ZebraHZ'
+Preset for rev 10218 loaded into rev 16765, Revision
+AM_Message_RenderModeChanged! 0
+AM_CLAP_Plugin::init with latency of 16 samples
+Preset from 'ZebraHZ'
+ALERT! AM_AudioMan::setParameterValueComplex text too long for PatchFileName (14)
+0   ZebraHZ                             0x000000011f436234 _ZN17AM_VST3_Processor12process16765ERN9Steinberg3Vst11ProcessDataE + 3704244
+1   ZebraHZ                             0x000000011f3df214 _ZN17AM_VST3_Processor12process16765ERN9Steinberg3Vst11ProcessDataE + 3347860
+2   ZebraHZ                             0x000000011ef589b0 _ZN14AudioModulesMD11Render16765ERjRK14AudioTimeStampj + 58084
+3   clef                                0x00000001049dcc90 _RINvMNtNtCsl9peLayfNQK_16clack_extensions5state4hostNtB5_11PluginState4loadRShECs9DEPFxiHbo1_4clef + 212
+4   clef                                0x0000000104a93f6c _RNvMs7_NtCs9DEPFxiHbo1_4clef9clap_hostNtB5_8ClapMain7restore + 312
+5   clef                                0x00000001049b0e08 _RNvMs_NtCs9DEPFxiHbo1_4clef6workerNtB4_10MainPlugin7control + 4356
+6   clef                                0x00000001049b2784 _RNvXs0_NtCs9DEPFxiHbo1_4clef6workerNtB5_9WorkerAppNtNtCs7ZwG6SYUYMJ_6eframe3epi3App5logic + 1304
+7   clef                                0x0000000104b9e774 _RNCNvMNtNtCs7ZwG6SYUYMJ_6eframe6native15epi_integrationNtB4_14EpiIntegration6update0B8_ + 160
+8   clef                                0x0000000104f162f4 _RNCNvMs9_NtCs1hOoEByqhH1_4egui7contextNtB7_7Context10run_ui_dyns_0B9_ + 448
+9   clef                                0x0000000104f1afd0 _RNvMs9_NtCs1hOoEByqhH1_4egui7contextNtB5_7Context7run_dyn + 428
+10  clef                                0x0000000104ef6a24 _RINvMs9_NtCs1hOoEByqhH1_4egui7contextNtB6_7Context3runNCNvB2_10run_ui_dyns_0EB8_ + 80
+11  clef                                0x0000000104f1add0 _RNvMs9_NtCs1hOoEByqhH1_4egui7contextNtB5_7Context10run_ui_dyn + 176
+12  clef                                0x0000000104b868c0 _RINvMs9_NtCs1hOoEByqhH1_4egui7contextNtB6_7Context6run_uiNCNvMNtNtCs7ZwG6SYUYMJ_6eframe6native15epi_integrationNtBY_14EpiIntegration6update0EB12_ + 80
+13  clef                                0x0000000104ba08f8 _RNvMNtNtCs7ZwG6SYUYMJ_6eframe6native15epi_integrationNtB2_14EpiIntegration6update + 356
+14  clef                                0x0000000104b6c864 _RNvMs0_NtNtCs7ZwG6SYUYMJ_6eframe6native16glow_integrationNtB5_16GlowWinitRunning16run_ui_and_paint + 2944
+15  clef                                0x0000000104b73008 _RNvXs_NtNtCs7ZwG6SYUYMJ_6eframe6native16glow_integrationNtB4_12GlowWinitAppNtNtB6_17winit_integration8WinitApp16run_ui_and_paint + 96
+16  clef                                0x0000000104ba1894 _RNvMNtNtCs7ZwG6SYUYMJ_6eframe6native3runINtB2_15WinitAppWrapperNtNtB4_16glow_integration12GlowWinitAppE21check_redraw_requestsB6_ + 256
+17  clef                                0x0000000104ba1338 _RNvMNtNtCs7ZwG6SYUYMJ_6eframe6native3runINtB2_15WinitAppWrapperNtNtB4_16glow_integration12GlowWinitAppE19handle_event_resultB6_ + 1620
+18  clef                                0x0000000104b9faa0 _RNCNvXs_NtNtCs7ZwG6SYUYMJ_6eframe6native3runINtB6_15WinitAppWrapperNtNtB8_16glow_integration12GlowWinitAppEINtNtCs9OsvkeiaKpI_5winit11application18ApplicationHandlerNtNtB8_17winit_integration9UserEventE7resumed0Ba_ + 88
+19  clef                                0x0000000104b9d5c0 _RINvNtNtCs7ZwG6SYUYMJ_6eframe6native18event_loop_context23with_event_loop_contextNCNvXs_NtB4_3runINtB1o_15WinitAppWrapperNtNtB4_16glow_integration12GlowWinitAppEINtNtCs9OsvkeiaKpI_5winit11application18ApplicationHandlerNtNtB4_17winit_integration9UserEventE7resumed0EB6_ + 100
+20  clef                                0x0000000104ba49e8 _RNvXs_NtNtCs7ZwG6SYUYMJ_6eframe6native3runINtB4_15WinitAppWrapperNtNtB6_16glow_integration12GlowWinitAppEINtNtCs9OsvkeiaKpI_5winit11application18ApplicationHandlerNtNtB6_17winit_integration9UserEventE7resumedB8_ + 48
+21  clef                                0x0000000104b95a78 _RNCINvYINtNtCs9OsvkeiaKpI_5winit10event_loop9EventLoopNtNtNtCs7ZwG6SYUYMJ_6eframe6native17winit_integration9UserEventENtNtNtBa_8platform13run_on_demand23EventLoopExtRunOnDemand17run_app_on_demandINtNtBU_3run15WinitAppWrapperNtNtBU_16glow_integration12GlowWinitAppEE0BW_ + 540
+22  clef                                0x0000000104b8812c _RNCINvNtNtNtCs9OsvkeiaKpI_5winit13platform_impl5macos10event_loop14map_user_eventNtNtNtCs7ZwG6SYUYMJ_6eframe6native17winit_integration9UserEventNCINvYINtNtBa_10event_loop9EventLoopB1h_ENtNtNtBa_8platform13run_on_demand23EventLoopExtRunOnDemand17run_app_on_demandINtNtB1l_3run15WinitAppWrapperNtNtB1l_16glow_integration12GlowWinitAppEE0E0B1n_ + 184
+23  clef                                0x0000000104e5b020 _RNvXsu_NtCshxvaOLs88l5_5alloc5boxedINtB5_3BoxDG_INtNtNtCs8Mbv00yxnRz_4core3ops8function5FnMutTINtNtCs9OsvkeiaKpI_5winit5event5EventNtNtNtNtB1z_13platform_impl5macos9app_state23HandlePendingUserEventsERL0_NtNtB1z_10event_loop15ActiveEventLoopEEp6OutputuEL_EIBL_TB1u_RB3g_EE8call_mutB1z_ + 84
+24  clef                                0x0000000104e301e8 _RNvMs_NtNtNtCs9OsvkeiaKpI_5winit13platform_impl5macos13event_handlerNtB4_12EventHandler12handle_event + 328
+25  clef                                0x0000000104e652e4 _RNvMNtNtNtCs9OsvkeiaKpI_5winit13platform_impl5macos9app_stateNtB2_19ApplicationDelegate12handle_event + 208
+26  clef                                0x0000000104e661f4 _RNvMNtNtNtCs9OsvkeiaKpI_5winit13platform_impl5macos9app_stateNtB2_19ApplicationDelegate20dispatch_init_events + 116
+27  clef                                0x0000000104e660bc _RNvMNtNtNtCs9OsvkeiaKpI_5winit13platform_impl5macos9app_stateNtB2_19ApplicationDelegate20did_finish_launching + 840
+28  clef                                0x0000000104e68238 _RNvMsi_NtNtNtCs9OsvkeiaKpI_5winit13platform_impl5macos9app_stateNtB5_19ApplicationDelegate24app_did_finish_launching + 76
+29  CoreFoundation                      0x00000001815219ec __CFNOTIFICATIONCENTER_IS_CALLING_OUT_TO_AN_OBSERVER__ + 148
+30  CoreFoundation                      0x00000001815ae0bc ___CFXRegistrationPost_block_invoke + 92
+31  CoreFoundation                      0x00000001815ae000 _CFXRegistrationPost + 440
+32  CoreFoundation                      0x00000001814f0408 _CFXNotificationPost + 740
+33  Foundation                          0x0000000182d274a4 -[NSNotificationCenter postNotificationName:object:userInfo:] + 88
+34  AppKit                              0x000000018596a5e8 -[NSApplication _postDidFinishNotification] + 308
+35  AppKit                              0x000000018596a380 -[NSApplication _sendFinishLaunchingNotification] + 172
+36  AppKit                              0x00000001859689c4 -[NSApplication(NSAppleEventHandling) _handleAEOpenEvent:] + 488
+37  AppKit                              0x00000001859685d8 -[NSApplication(NSAppleEventHandling) _handleCoreEvent:withReplyEvent:] + 488
+38  Foundation                          0x0000000182d4ffcc -[NSAppleEventManager dispatchRawAppleEvent:withRawReply:handlerRefCon:] + 316
+39  Foundation                          0x0000000182d4fdc4 _NSAppleEventManagerGenericHandler + 80
+40  AE                                  0x0000000189762f34 _AppleEventsCheckInAppWithBlock + 13900
+41  AE                                  0x000000018976288c _AppleEventsCheckInAppWithBlock + 12196
+42  AE                                  0x000000018975bfb8 aeProcessAppleEvent + 484
+43  HIToolbox                           0x000000018e270344 AEProcessAppleEvent + 68
+44  AppKit                              0x0000000185962348 _DPSNextEvent + 1284
+45  AppKit                              0x00000001864f796c -[NSApplication(NSEventRouting) _nextEventMatchingEventMask:untilDate:inMode:dequeue:] + 688
+46  AppKit                              0x00000001864f7678 -[NSApplication(NSEventRouting) nextEventMatchingMask:untilDate:inMode:dequeue:] + 72
+47  AppKit                              0x000000018595513c -[NSApplication run] + 368
+48  clef                                0x0000000104ea5978 _RINvXsh_NtCs4pJUaiXPfB8_5objc26encodeuNtB6_15EncodeArguments8___invokeuECs16wuxoWWoNS_16objc2_foundation + 52
+49  clef                                0x0000000104ea6d88 _RINvNtNtNtCs4pJUaiXPfB8_5objc27runtime16message_receiver18msg_send_primitive4senduuECs16wuxoWWoNS_16objc2_foundation + 60
+50  clef                                0x0000000104e9f984 _RINvYONtNtCs4pJUaiXPfB8_5objc27runtime9AnyObjectNtNtB6_16message_receiver15MessageReceiver12send_messageuuECs16wuxoWWoNS_16objc2_foundation + 176
+51  clef                                0x0000000104e98310 _RINvYRNtNtNtCs7mN4Y0ZKom1_13objc2_app_kit9generated15___NSApplication13NSApplicationNtNtNtCs4pJUaiXPfB8_5objc215___macro_helpers8msg_send7MsgSend12send_messageuuEBa_ + 172
+52  clef                                0x0000000104e986a4 _RNvMs1G_NtNtCs7mN4Y0ZKom1_13objc2_app_kit9generated15___NSApplicationNtB6_13NSApplication3run + 68
+53  clef                                0x0000000104b88454 _RNCNCINvMs3_NtNtNtCs9OsvkeiaKpI_5winit13platform_impl5macos10event_loopINtBa_9EventLoopNtNtNtCs7ZwG6SYUYMJ_6eframe6native17winit_integration9UserEventE13run_on_demandNCINvYINtNtBg_10event_loop9EventLoopB1n_ENtNtNtBg_8platform13run_on_demand23EventLoopExtRunOnDemand17run_app_on_demandINtNtB1r_3run15WinitAppWrapperNtNtB1r_16glow_integration12GlowWinitAppEE0E00B1t_ + 156
+54  clef                                0x0000000104b8aad4 _RINvNtNtCs4pJUaiXPfB8_5objc22rc11autorelease15autoreleasepooluNCNCINvMs3_NtNtNtCs9OsvkeiaKpI_5winit13platform_impl5macos10event_loopINtB19_9EventLoopNtNtNtCs7ZwG6SYUYMJ_6eframe6native17winit_integration9UserEventE13run_on_demandNCINvYINtNtB1f_10event_loop9EventLoopB2n_ENtNtNtB1f_8platform13run_on_demand23EventLoopExtRunOnDemand17run_app_on_demandINtNtB2r_3run15WinitAppWrapperNtNtB2r_16glow_integration12GlowWinitAppEE0E00EB2t_ + 180
+55  clef                                0x0000000104b87730 _RNCINvMs3_NtNtNtCs9OsvkeiaKpI_5winit13platform_impl5macos10event_loopINtB8_9EventLoopNtNtNtCs7ZwG6SYUYMJ_6eframe6native17winit_integration9UserEventE13run_on_demandNCINvYINtNtBe_10event_loop9EventLoopB1l_ENtNtNtBe_8platform13run_on_demand23EventLoopExtRunOnDemand17run_app_on_demandINtNtB1p_3run15WinitAppWrapperNtNtB1p_16glow_integration12GlowWinitAppEE0E0B1r_ + 44
+56  clef                                0x0000000104ba8ef8 _RINvMs_NtNtNtCs9OsvkeiaKpI_5winit13platform_impl5macos13event_handlerNtB5_12EventHandler3setuNCINvNtB7_10event_loop14map_user_eventNtNtNtCs7ZwG6SYUYMJ_6eframe6native17winit_integration9UserEventNCINvYINtNtBb_10event_loop9EventLoopB25_ENtNtNtBb_8platform13run_on_demand23EventLoopExtRunOnDemand17run_app_on_demandINtNtB29_3run15WinitAppWrapperNtNtB29_16glow_integration12GlowWinitAppEE0E0NCINvMs3_B1y_INtB1y_9EventLoopB25_E13run_on_demandB36_E0EB2b_ + 620
+57  clef                                0x0000000104bae8d0 _RINvMNtNtNtCs9OsvkeiaKpI_5winit13platform_impl5macos9app_stateNtB3_19ApplicationDelegate17set_event_handleruNCINvNtB5_10event_loop14map_user_eventNtNtNtCs7ZwG6SYUYMJ_6eframe6native17winit_integration9UserEventNCINvYINtNtB9_10event_loop9EventLoopB2k_ENtNtNtB9_8platform13run_on_demand23EventLoopExtRunOnDemand17run_app_on_demandINtNtB2o_3run15WinitAppWrapperNtNtB2o_16glow_integration12GlowWinitAppEE0E0NCINvMs3_B1N_INtB1N_9EventLoopB2k_E13run_on_demandB3l_E0EB2q_ + 152
+58  clef                                0x0000000104b861c4 _RINvMs3_NtNtNtCs9OsvkeiaKpI_5winit13platform_impl5macos10event_loopINtB6_9EventLoopNtNtNtCs7ZwG6SYUYMJ_6eframe6native17winit_integration9UserEventE13run_on_demandNCINvYINtNtBc_10event_loop9EventLoopB1j_ENtNtNtBc_8platform13run_on_demand23EventLoopExtRunOnDemand17run_app_on_demandINtNtB1n_3run15WinitAppWrapperNtNtB1n_16glow_integration12GlowWinitAppEE0EB1p_ + 256
+59  clef                                0x0000000104b9540c _RINvXNtNtCs9OsvkeiaKpI_5winit8platform13run_on_demandINtNtB7_10event_loop9EventLoopNtNtNtCs7ZwG6SYUYMJ_6eframe6native17winit_integration9UserEventENtB3_23EventLoopExtRunOnDemand13run_on_demandNCINvYBP_B2l_17run_app_on_demandINtNtB1n_3run15WinitAppWrapperNtNtB1n_16glow_integration12GlowWinitAppEE0EB1p_ + 120
+60  clef                                0x0000000104b955a0 _RINvYINtNtCs9OsvkeiaKpI_5winit10event_loop9EventLoopNtNtNtCs7ZwG6SYUYMJ_6eframe6native17winit_integration9UserEventENtNtNtB8_8platform13run_on_demand23EventLoopExtRunOnDemand17run_app_on_demandINtNtBS_3run15WinitAppWrapperNtNtBS_16glow_integration12GlowWinitAppEEBU_ + 32
+61  clef                                0x0000000104b9dca4 _RINvNtNtCs7ZwG6SYUYMJ_6eframe6native3run14run_and_returnNtNtB4_16glow_integration12GlowWinitAppEB6_ + 464
+62  clef                                0x0000000104b9f2a0 _RNCNvNtNtCs7ZwG6SYUYMJ_6eframe6native3run8run_glow0B7_ + 168
+63  clef                                0x0000000104b9e2f4 _RNCINvNtNtCs7ZwG6SYUYMJ_6eframe6native3run15with_event_loopINtNtCs8Mbv00yxnRz_4core6result6ResultuNtB8_5ErrorENCNvB4_8run_glow0E0B8_ + 356
+64  clef                                0x0000000104baf0fc _RINvMs2_NtNtCs82bWklYMk3w_3std6thread5localINtB6_8LocalKeyINtNtCs8Mbv00yxnRz_4core4cell7RefCellINtNtBZ_6option6OptionINtNtCs9OsvkeiaKpI_5winit10event_loop9EventLoopNtNtNtCs7ZwG6SYUYMJ_6eframe6native17winit_integration9UserEventEEEE8try_withNCINvNtB2G_3run15with_event_loopINtNtBZ_6result6ResultuNtB2I_5ErrorENCNvB3V_8run_glow0E0IB4n_B4m_B4J_EEB2I_ + 224
+65  clef                                0x0000000104baefd8 _RINvMs2_NtNtCs82bWklYMk3w_3std6thread5localINtB6_8LocalKeyINtNtCs8Mbv00yxnRz_4core4cell7RefCellINtNtBZ_6option6OptionINtNtCs9OsvkeiaKpI_5winit10event_loop9EventLoopNtNtNtCs7ZwG6SYUYMJ_6eframe6native17winit_integration9UserEventEEEE4withNCINvNtB2G_3run15with_event_loopINtNtBZ_6result6ResultuNtB2I_5ErrorENCNvB3R_8run_glow0E0IB4j_B4i_B4F_EEB2I_ + 32
+66  clef                                0x0000000104b9df58 _RINvNtNtCs7ZwG6SYUYMJ_6eframe6native3run15with_event_loopINtNtCs8Mbv00yxnRz_4core6result6ResultuNtB6_5ErrorENCNvB2_8run_glow0EB6_ + 96
+67  clef                                0x0000000104ba2978 _RNvNtNtCs7ZwG6SYUYMJ_6eframe6native3run8run_glow + 184
+68  clef                                0x0000000104b9fc14 _RNvCs7ZwG6SYUYMJ_6eframe10run_native + 212
+69  clef                                0x00000001049b1fa8 _RNvNtCs9DEPFxiHbo1_4clef6worker3run + 1324
+70  clef                                0x0000000104a19e74 _RNvCs9DEPFxiHbo1_4clef3run + 6600
+71  clef                                0x0000000104a19ee8 _RNvCs9DEPFxiHbo1_4clef4main + 16
+72  clef                                0x0000000104a0a90c _RNvYFEuINtNtNtCs8Mbv00yxnRz_4core3ops8function6FnOnceuE9call_onceCs9DEPFxiHbo1_4clef + 20
+73  clef                                0x0000000104aaa940 _RINvNtNtCs82bWklYMk3w_3std3sys9backtrace28___rust_begin_short_backtraceFEuuECs9DEPFxiHbo1_4clef + 24
+74  clef                                0x0000000104a843cc _RNCINvNtCs82bWklYMk3w_3std2rt10lang_startuE0Cs9DEPFxiHbo1_4clef + 28
+75  clef                                0x00000001058d5234 _RNvNtCs82bWklYMk3w_3std2rt19lang_start_internal + 952
+76  clef                                0x0000000104a842f0 _RINvNtCs82bWklYMk3w_3std2rt10lang_startuECs9DEPFxiHbo1_4clef + 84
+77  clef                                0x0000000104a1aa38 main + 36
+78  dyld                                0x00000001810a44e4 start + 6992
+Preset from 'ZebraHZ'
+ALERT! AM_AudioMan::setParameterValueComplex text too long for PatchFileName (14)
+0   ZebraHZ                             0x000000011f436234 _ZN17AM_VST3_Processor12process16765ERN9Steinberg3Vst11ProcessDataE + 3704244
+1   ZebraHZ                             0x000000011f3df214 _ZN17AM_VST3_Processor12process16765ERN9Steinberg3Vst11ProcessDataE + 3347860
+2   ZebraHZ                             0x000000011ef589b0 _ZN14AudioModulesMD11Render16765ERjRK14AudioTimeStampj + 58084
+3   clef                                0x00000001049dcc90 _RINvMNtNtCsl9peLayfNQK_16clack_extensions5state4hostNtB5_11PluginState4loadRShECs9DEPFxiHbo1_4clef + 212
+4   clef                                0x0000000104a93f6c _RNvMs7_NtCs9DEPFxiHbo1_4clef9clap_hostNtB5_8ClapMain7restore + 312
+5   clef                                0x00000001049b0e08 _RNvMs_NtCs9DEPFxiHbo1_4clef6workerNtB4_10MainPlugin7control + 4356
+6   clef                                0x00000001049b2784 _RNvXs0_NtCs9DEPFxiHbo1_4clef6workerNtB5_9WorkerAppNtNtCs7ZwG6SYUYMJ_6eframe3epi3App5logic + 1304
+7   clef                                0x0000000104b9e774 _RNCNvMNtNtCs7ZwG6SYUYMJ_6eframe6native15epi_integrationNtB4_14EpiIntegration6update0B8_ + 160
+8   clef                                0x0000000104f162f4 _RNCNvMs9_NtCs1hOoEByqhH1_4egui7contextNtB7_7Context10run_ui_dyns_0B9_ + 448
+9   clef                                0x0000000104f1afd0 _RNvMs9_NtCs1hOoEByqhH1_4egui7contextNtB5_7Context7run_dyn + 428
+10  clef                                0x0000000104ef6a24 _RINvMs9_NtCs1hOoEByqhH1_4egui7contextNtB6_7Context3runNCNvB2_10run_ui_dyns_0EB8_ + 80
+11  clef                                0x0000000104f1add0 _RNvMs9_NtCs1hOoEByqhH1_4egui7contextNtB5_7Context10run_ui_dyn + 176
+12  clef                                0x0000000104b868c0 _RINvMs9_NtCs1hOoEByqhH1_4egui7contextNtB6_7Context6run_uiNCNvMNtNtCs7ZwG6SYUYMJ_6eframe6native15epi_integrationNtBY_14EpiIntegration6update0EB12_ + 80
+13  clef                                0x0000000104ba08f8 _RNvMNtNtCs7ZwG6SYUYMJ_6eframe6native15epi_integrationNtB2_14EpiIntegration6update + 356
+14  clef                                0x0000000104b6c864 _RNvMs0_NtNtCs7ZwG6SYUYMJ_6eframe6native16glow_integrationNtB5_16GlowWinitRunning16run_ui_and_paint + 2944
+15  clef                                0x0000000104b73008 _RNvXs_NtNtCs7ZwG6SYUYMJ_6eframe6native16glow_integrationNtB4_12GlowWinitAppNtNtB6_17winit_integration8WinitApp16run_ui_and_paint + 96
+16  clef                                0x0000000104b9f92c _RNCNvXs_NtNtCs7ZwG6SYUYMJ_6eframe6native3runINtB6_15WinitAppWrapperNtNtB8_16glow_integration12GlowWinitAppEINtNtCs9OsvkeiaKpI_5winit11application18ApplicationHandlerNtNtB8_17winit_integration9UserEventE12window_event0Ba_ + 100
+17  clef                                0x0000000104b9d460 _RINvNtNtCs7ZwG6SYUYMJ_6eframe6native18event_loop_context23with_event_loop_contextNCNvXs_NtB4_3runINtB1o_15WinitAppWrapperNtNtB4_16glow_integration12GlowWinitAppEINtNtCs9OsvkeiaKpI_5winit11application18ApplicationHandlerNtNtB4_17winit_integration9UserEventE12window_event0EB6_ + 124
+18  clef                                0x0000000104ba486c _RNvXs_NtNtCs7ZwG6SYUYMJ_6eframe6native3runINtB4_15WinitAppWrapperNtNtB6_16glow_integration12GlowWinitAppEINtNtCs9OsvkeiaKpI_5winit11application18ApplicationHandlerNtNtB6_17winit_integration9UserEventE12window_eventB8_ + 100
+19  clef                                0x0000000104b959d8 _RNCINvYINtNtCs9OsvkeiaKpI_5winit10event_loop9EventLoopNtNtNtCs7ZwG6SYUYMJ_6eframe6native17winit_integration9UserEventENtNtNtBa_8platform13run_on_demand23EventLoopExtRunOnDemand17run_app_on_demandINtNtBU_3run15WinitAppWrapperNtNtBU_16glow_integration12GlowWinitAppEE0BW_ + 380
+20  clef                                0x0000000104b8812c _RNCINvNtNtNtCs9OsvkeiaKpI_5winit13platform_impl5macos10event_loop14map_user_eventNtNtNtCs7ZwG6SYUYMJ_6eframe6native17winit_integration9UserEventNCINvYINtNtBa_10event_loop9EventLoopB1h_ENtNtNtBa_8platform13run_on_demand23EventLoopExtRunOnDemand17run_app_on_demandINtNtB1l_3run15WinitAppWrapperNtNtB1l_16glow_integration12GlowWinitAppEE0E0B1n_ + 184
+21  clef                                0x0000000104e5b020 _RNvXsu_NtCshxvaOLs88l5_5alloc5boxedINtB5_3BoxDG_INtNtNtCs8Mbv00yxnRz_4core3ops8function5FnMutTINtNtCs9OsvkeiaKpI_5winit5event5EventNtNtNtNtB1z_13platform_impl5macos9app_state23HandlePendingUserEventsERL0_NtNtB1z_10event_loop15ActiveEventLoopEEp6OutputuEL_EIBL_TB1u_RB3g_EE8call_mutB1z_ + 84
+22  clef                                0x0000000104e301e8 _RNvMs_NtNtNtCs9OsvkeiaKpI_5winit13platform_impl5macos13event_handlerNtB4_12EventHandler12handle_event + 328
+23  clef                                0x0000000104e652e4 _RNvMNtNtNtCs9OsvkeiaKpI_5winit13platform_impl5macos9app_stateNtB2_19ApplicationDelegate12handle_event + 208
+24  clef                                0x0000000104e654d0 _RNvMNtNtNtCs9OsvkeiaKpI_5winit13platform_impl5macos9app_stateNtB2_19ApplicationDelegate13handle_redraw + 132
+25  clef                                0x0000000104e29b54 _RNvMsF_NtNtNtCs9OsvkeiaKpI_5winit13platform_impl5macos4viewNtB5_9WinitView9draw_rect + 376
+26  AppKit                              0x000000018646a744 -[_NSOpenGLViewBackingLayer display] + 716
+27  QuartzCore                          0x000000018b5807e4 _ZN2CA5Layer17display_if_neededEPNS_11TransactionE + 784
+28  QuartzCore                          0x000000018b72dd38 _ZN2CA7Context18commit_transactionEPNS_11TransactionEdPd + 620
+29  QuartzCore                          0x000000018b561520 _ZN2CA11Transaction6commitEv + 652
+30  QuartzCore                          0x000000018b75f2bc _ZN2CA11Transaction25flush_as_runloop_observerEb + 140
+31  AppKit                              0x000000018629c0c8 stepTransactionFlush + 220
+32  UpdateCycle                         0x00000002794e92f4 _ZN2UC10DriverCore18continueProcessingEv + 84
+33  CoreFoundation                      0x000000018152c344 __CFRUNLOOP_IS_CALLING_OUT_TO_AN_OBSERVER_CALLBACK_FUNCTION__ + 36
+34  CoreFoundation                      0x000000018152c240 __CFRunLoopDoObservers + 648
+35  CoreFoundation                      0x00000001815fe234 _CFRunLoopRunSpecificWithOptions + 484
+36  HIToolbox                           0x000000018e317560 RunCurrentEventLoopInMode + 320
+37  HIToolbox                           0x000000018e31a8bc ReceiveNextEventCommon + 488
+38  HIToolbox                           0x000000018e4a414c _BlockUntilNextEventMatchingListInMode + 48
+39  AppKit                              0x000000018600e3d0 _DPSBlockUntilNextEventMatchingListInMode + 228
+40  AppKit                              0x0000000185962084 _DPSNextEvent + 576
+41  AppKit                              0x00000001864f796c -[NSApplication(NSEventRouting) _nextEventMatchingEventMask:untilDate:inMode:dequeue:] + 688
+42  AppKit                              0x00000001864f7678 -[NSApplication(NSEventRouting) nextEventMatchingMask:untilDate:inMode:dequeue:] + 72
+43  AppKit                              0x000000018595513c -[NSApplication run] + 368
+44  clef                                0x0000000104ea5978 _RINvXsh_NtCs4pJUaiXPfB8_5objc26encodeuNtB6_15EncodeArguments8___invokeuECs16wuxoWWoNS_16objc2_foundation + 52
+45  clef                                0x0000000104ea6d88 _RINvNtNtNtCs4pJUaiXPfB8_5objc27runtime16message_receiver18msg_send_primitive4senduuECs16wuxoWWoNS_16objc2_foundation + 60
+46  clef                                0x0000000104e9f984 _RINvYONtNtCs4pJUaiXPfB8_5objc27runtime9AnyObjectNtNtB6_16message_receiver15MessageReceiver12send_messageuuECs16wuxoWWoNS_16objc2_foundation + 176
+47  clef                                0x0000000104e98310 _RINvYRNtNtNtCs7mN4Y0ZKom1_13objc2_app_kit9generated15___NSApplication13NSApplicationNtNtNtCs4pJUaiXPfB8_5objc215___macro_helpers8msg_send7MsgSend12send_messageuuEBa_ + 172
+48  clef                                0x0000000104e986a4 _RNvMs1G_NtNtCs7mN4Y0ZKom1_13objc2_app_kit9generated15___NSApplicationNtB6_13NSApplication3run + 68
+49  clef                                0x0000000104b88454 _RNCNCINvMs3_NtNtNtCs9OsvkeiaKpI_5winit13platform_impl5macos10event_loopINtBa_9EventLoopNtNtNtCs7ZwG6SYUYMJ_6eframe6native17winit_integration9UserEventE13run_on_demandNCINvYINtNtBg_10event_loop9EventLoopB1n_ENtNtNtBg_8platform13run_on_demand23EventLoopExtRunOnDemand17run_app_on_demandINtNtB1r_3run15WinitAppWrapperNtNtB1r_16glow_integration12GlowWinitAppEE0E00B1t_ + 156
+50  clef                                0x0000000104b8aad4 _RINvNtNtCs4pJUaiXPfB8_5objc22rc11autorelease15autoreleasepooluNCNCINvMs3_NtNtNtCs9OsvkeiaKpI_5winit13platform_impl5macos10event_loopINtB19_9EventLoopNtNtNtCs7ZwG6SYUYMJ_6eframe6native17winit_integration9UserEventE13run_on_demandNCINvYINtNtB1f_10event_loop9EventLoopB2n_ENtNtNtB1f_8platform13run_on_demand23EventLoopExtRunOnDemand17run_app_on_demandINtNtB2r_3run15WinitAppWrapperNtNtB2r_16glow_integration12GlowWinitAppEE0E00EB2t_ + 180
+51  clef                                0x0000000104b87730 _RNCINvMs3_NtNtNtCs9OsvkeiaKpI_5winit13platform_impl5macos10event_loopINtB8_9EventLoopNtNtNtCs7ZwG6SYUYMJ_6eframe6native17winit_integration9UserEventE13run_on_demandNCINvYINtNtBe_10event_loop9EventLoopB1l_ENtNtNtBe_8platform13run_on_demand23EventLoopExtRunOnDemand17run_app_on_demandINtNtB1p_3run15WinitAppWrapperNtNtB1p_16glow_integration12GlowWinitAppEE0E0B1r_ + 44
+52  clef                                0x0000000104ba8ef8 _RINvMs_NtNtNtCs9OsvkeiaKpI_5winit13platform_impl5macos13event_handlerNtB5_12EventHandler3setuNCINvNtB7_10event_loop14map_user_eventNtNtNtCs7ZwG6SYUYMJ_6eframe6native17winit_integration9UserEventNCINvYINtNtBb_10event_loop9EventLoopB25_ENtNtNtBb_8platform13run_on_demand23EventLoopExtRunOnDemand17run_app_on_demandINtNtB29_3run15WinitAppWrapperNtNtB29_16glow_integration12GlowWinitAppEE0E0NCINvMs3_B1y_INtB1y_9EventLoopB25_E13run_on_demandB36_E0EB2b_ + 620
+53  clef                                0x0000000104bae8d0 _RINvMNtNtNtCs9OsvkeiaKpI_5winit13platform_impl5macos9app_stateNtB3_19ApplicationDelegate17set_event_handleruNCINvNtB5_10event_loop14map_user_eventNtNtNtCs7ZwG6SYUYMJ_6eframe6native17winit_integration9UserEventNCINvYINtNtB9_10event_loop9EventLoopB2k_ENtNtNtB9_8platform13run_on_demand23EventLoopExtRunOnDemand17run_app_on_demandINtNtB2o_3run15WinitAppWrapperNtNtB2o_16glow_integration12GlowWinitAppEE0E0NCINvMs3_B1N_INtB1N_9EventLoopB2k_E13run_on_demandB3l_E0EB2q_ + 152
+54  clef                                0x0000000104b861c4 _RINvMs3_NtNtNtCs9OsvkeiaKpI_5winit13platform_impl5macos10event_loopINtB6_9EventLoopNtNtNtCs7ZwG6SYUYMJ_6eframe6native17winit_integration9UserEventE13run_on_demandNCINvYINtNtBc_10event_loop9EventLoopB1j_ENtNtNtBc_8platform13run_on_demand23EventLoopExtRunOnDemand17run_app_on_demandINtNtB1n_3run15WinitAppWrapperNtNtB1n_16glow_integration12GlowWinitAppEE0EB1p_ + 256
+55  clef                                0x0000000104b9540c _RINvXNtNtCs9OsvkeiaKpI_5winit8platform13run_on_demandINtNtB7_10event_loop9EventLoopNtNtNtCs7ZwG6SYUYMJ_6eframe6native17winit_integration9UserEventENtB3_23EventLoopExtRunOnDemand13run_on_demandNCINvYBP_B2l_17run_app_on_demandINtNtB1n_3run15WinitAppWrapperNtNtB1n_16glow_integration12GlowWinitAppEE0EB1p_ + 120
+56  clef                                0x0000000104b955a0 _RINvYINtNtCs9OsvkeiaKpI_5winit10event_loop9EventLoopNtNtNtCs7ZwG6SYUYMJ_6eframe6native17winit_integration9UserEventENtNtNtB8_8platform13run_on_demand23EventLoopExtRunOnDemand17run_app_on_demandINtNtBS_3run15WinitAppWrapperNtNtBS_16glow_integration12GlowWinitAppEEBU_ + 32
+57  clef                                0x0000000104b9dca4 _RINvNtNtCs7ZwG6SYUYMJ_6eframe6native3run14run_and_returnNtNtB4_16glow_integration12GlowWinitAppEB6_ + 464
+58  clef                                0x0000000104b9f2a0 _RNCNvNtNtCs7ZwG6SYUYMJ_6eframe6native3run8run_glow0B7_ + 168
+59  clef                                0x0000000104b9e2f4 _RNCINvNtNtCs7ZwG6SYUYMJ_6eframe6native3run15with_event_loopINtNtCs8Mbv00yxnRz_4core6result6ResultuNtB8_5ErrorENCNvB4_8run_glow0E0B8_ + 356
+60  clef                                0x0000000104baf0fc _RINvMs2_NtNtCs82bWklYMk3w_3std6thread5localINtB6_8LocalKeyINtNtCs8Mbv00yxnRz_4core4cell7RefCellINtNtBZ_6option6OptionINtNtCs9OsvkeiaKpI_5winit10event_loop9EventLoopNtNtNtCs7ZwG6SYUYMJ_6eframe6native17winit_integration9UserEventEEEE8try_withNCINvNtB2G_3run15with_event_loopINtNtBZ_6result6ResultuNtB2I_5ErrorENCNvB3V_8run_glow0E0IB4n_B4m_B4J_EEB2I_ + 224
+61  clef                                0x0000000104baefd8 _RINvMs2_NtNtCs82bWklYMk3w_3std6thread5localINtB6_8LocalKeyINtNtCs8Mbv00yxnRz_4core4cell7RefCellINtNtBZ_6option6OptionINtNtCs9OsvkeiaKpI_5winit10event_loop9EventLoopNtNtNtCs7ZwG6SYUYMJ_6eframe6native17winit_integration9UserEventEEEE4withNCINvNtB2G_3run15with_event_loopINtNtBZ_6result6ResultuNtB2I_5ErrorENCNvB3R_8run_glow0E0IB4j_B4i_B4F_EEB2I_ + 32
+62  clef                                0x0000000104b9df58 _RINvNtNtCs7ZwG6SYUYMJ_6eframe6native3run15with_event_loopINtNtCs8Mbv00yxnRz_4core6result6ResultuNtB6_5ErrorENCNvB2_8run_glow0EB6_ + 96
+63  clef                                0x0000000104ba2978 _RNvNtNtCs7ZwG6SYUYMJ_6eframe6native3run8run_glow + 184
+64  clef                                0x0000000104b9fc14 _RNvCs7ZwG6SYUYMJ_6eframe10run_native + 212
+65  clef                                0x00000001049b1fa8 _RNvNtCs9DEPFxiHbo1_4clef6worker3run + 1324
+66  clef                                0x0000000104a19e74 _RNvCs9DEPFxiHbo1_4clef3run + 6600
+67  clef                                0x0000000104a19ee8 _RNvCs9DEPFxiHbo1_4clef4main + 16
+68  clef                                0x0000000104a0a90c _RNvYFEuINtNtNtCs8Mbv00yxnRz_4core3ops8function6FnOnceuE9call_onceCs9DEPFxiHbo1_4clef + 20
+69  clef                                0x0000000104aaa940 _RINvNtNtCs82bWklYMk3w_3std3sys9backtrace28___rust_begin_short_backtraceFEuuECs9DEPFxiHbo1_4clef + 24
+70  clef                                0x0000000104a843cc _RNCINvNtCs82bWklYMk3w_3std2rt10lang_startuE0Cs9DEPFxiHbo1_4clef + 28
+71  clef                                0x00000001058d5234 _RNvNtCs82bWklYMk3w_3std2rt19lang_start_internal + 952
+72  clef                                0x0000000104a842f0 _RINvNtCs82bWklYMk3w_3std2rt10lang_startuECs9DEPFxiHbo1_4clef + 84
+73  clef                                0x0000000104a1aa38 main + 36
+74  dyld                                0x00000001810a44e4 start + 6992
+log path:'/Users/arcy/Desktop/ZebraHZ.log'
+checking deskTopFile at: /Users/arcy/Desktop/ZebraHZ.log
+Path: '/Library/Audio/Plug-Ins/CLAP/u-he/ZebraHZ.clap'
+MacOS: Version 26.6.2 (Build 25G83)
+CPU Vendor: ''
+CPU Type: 'Apple M4 Pro'
+CPU Architecture: 'arm64'
+Binary: 'ARM 64 bit'
+Machine Model: 'Mac16,11'
+Logical Cores: 12/12 Physical Cores: 12/12 Frequency: 0.0GHz (Range: 0.0 to 0.0Ghz) RAM: 24GB
+ZebraHZ Plugin ID: 534D485A
+Plugin API: 'CLAP'
+Hostname: 'Clef'
+AM_CLAP_Plugin::audioPortsSetConfig set to ID 1808168408
+CLAP host supports thread pool: no
+Starting REVISION 16765
+totalSize 3025
+Zebra2_Wavefolder::Zebra2_Wavefolder plot figures: 1 256 0.00
+buffer[0] = 7.00
+Zebra2_Wavefolder::Zebra2_Wavefolder plot figures: 1 256 0.00
+buffer[0] = 7.00
+void AM_AudioMan::createModules()
+new instance of  AM_PreferencesAudio created for ZebraHZ # 1
+Warning! AudioPreferenceExtractor::setPreference didn't find matching preference for "NKS Colour Fit"
+Warning! AudioPreferenceExtractor::setPreference didn't find matching preference for "NKS Auto Map"
+Parm 1868 TrimPots same ptr as param 1843 V1Tune1
+loadPreferences() - ZebraHZ
+void AM_AudioMan::createMidiPrograms()
+Preset from 'ZebraHZ'
+publicparams path: /Library/Application Support/u-he file: com.u-he.ZebraHZ.publicparams.txt
+CustomParamTable::createCrossReference sorted 0 automatable parameters
+getMidiAssignPath(): '/Users/arcy/Library/Application Support/u-he/com.u-he.ZebraHZ.midiassign.txt'
+READING midiAssignFile
+Preset from 'ZebraHZ'
+Preset from 'ZebraHZ'
+Preset for rev 10218 loaded into rev 16765, Revision
+AM_Message_RenderModeChanged! 0
+AM_CLAP_Plugin::init with latency of 16 samples
+Preset from 'ZebraHZ'
+ALERT! AM_AudioMan::setParameterValueComplex text too long for PatchFileName (14)
+0   ZebraHZ                             0x000000011eb76234 _ZN17AM_VST3_Processor12process16765ERN9Steinberg3Vst11ProcessDataE + 3704244
+1   ZebraHZ                             0x000000011eb1f214 _ZN17AM_VST3_Processor12process16765ERN9Steinberg3Vst11ProcessDataE + 3347860
+2   ZebraHZ                             0x000000011e6989b0 _ZN14AudioModulesMD11Render16765ERjRK14AudioTimeStampj + 58084
+3   clef                                0x00000001041bcc90 _RINvMNtNtCsl9peLayfNQK_16clack_extensions5state4hostNtB5_11PluginState4loadRShECs9DEPFxiHbo1_4clef + 212
+4   clef                                0x0000000104273f6c _RNvMs7_NtCs9DEPFxiHbo1_4clef9clap_hostNtB5_8ClapMain7restore + 312
+5   clef                                0x0000000104190e08 _RNvMs_NtCs9DEPFxiHbo1_4clef6workerNtB4_10MainPlugin7control + 4356
+6   clef                                0x0000000104192784 _RNvXs0_NtCs9DEPFxiHbo1_4clef6workerNtB5_9WorkerAppNtNtCs7ZwG6SYUYMJ_6eframe3epi3App5logic + 1304
+7   clef                                0x000000010437e774 _RNCNvMNtNtCs7ZwG6SYUYMJ_6eframe6native15epi_integrationNtB4_14EpiIntegration6update0B8_ + 160
+8   clef                                0x00000001046f62f4 _RNCNvMs9_NtCs1hOoEByqhH1_4egui7contextNtB7_7Context10run_ui_dyns_0B9_ + 448
+9   clef                                0x00000001046fafd0 _RNvMs9_NtCs1hOoEByqhH1_4egui7contextNtB5_7Context7run_dyn + 428
+10  clef                                0x00000001046d6a24 _RINvMs9_NtCs1hOoEByqhH1_4egui7contextNtB6_7Context3runNCNvB2_10run_ui_dyns_0EB8_ + 80
+11  clef                                0x00000001046fadd0 _RNvMs9_NtCs1hOoEByqhH1_4egui7contextNtB5_7Context10run_ui_dyn + 176
+12  clef                                0x00000001043668c0 _RINvMs9_NtCs1hOoEByqhH1_4egui7contextNtB6_7Context6run_uiNCNvMNtNtCs7ZwG6SYUYMJ_6eframe6native15epi_integrationNtBY_14EpiIntegration6update0EB12_ + 80
+13  clef                                0x00000001043808f8 _RNvMNtNtCs7ZwG6SYUYMJ_6eframe6native15epi_integrationNtB2_14EpiIntegration6update + 356
+14  clef                                0x000000010434c864 _RNvMs0_NtNtCs7ZwG6SYUYMJ_6eframe6native16glow_integrationNtB5_16GlowWinitRunning16run_ui_and_paint + 2944
+15  clef                                0x0000000104353008 _RNvXs_NtNtCs7ZwG6SYUYMJ_6eframe6native16glow_integrationNtB4_12GlowWinitAppNtNtB6_17winit_integration8WinitApp16run_ui_and_paint + 96
+16  clef                                0x0000000104381894 _RNvMNtNtCs7ZwG6SYUYMJ_6eframe6native3runINtB2_15WinitAppWrapperNtNtB4_16glow_integration12GlowWinitAppE21check_redraw_requestsB6_ + 256
+17  clef                                0x0000000104381338 _RNvMNtNtCs7ZwG6SYUYMJ_6eframe6native3runINtB2_15WinitAppWrapperNtNtB4_16glow_integration12GlowWinitAppE19handle_event_resultB6_ + 1620
+18  clef                                0x000000010437faa0 _RNCNvXs_NtNtCs7ZwG6SYUYMJ_6eframe6native3runINtB6_15WinitAppWrapperNtNtB8_16glow_integration12GlowWinitAppEINtNtCs9OsvkeiaKpI_5winit11application18ApplicationHandlerNtNtB8_17winit_integration9UserEventE7resumed0Ba_ + 88
+19  clef                                0x000000010437d5c0 _RINvNtNtCs7ZwG6SYUYMJ_6eframe6native18event_loop_context23with_event_loop_contextNCNvXs_NtB4_3runINtB1o_15WinitAppWrapperNtNtB4_16glow_integration12GlowWinitAppEINtNtCs9OsvkeiaKpI_5winit11application18ApplicationHandlerNtNtB4_17winit_integration9UserEventE7resumed0EB6_ + 100
+20  clef                                0x00000001043849e8 _RNvXs_NtNtCs7ZwG6SYUYMJ_6eframe6native3runINtB4_15WinitAppWrapperNtNtB6_16glow_integration12GlowWinitAppEINtNtCs9OsvkeiaKpI_5winit11application18ApplicationHandlerNtNtB6_17winit_integration9UserEventE7resumedB8_ + 48
+21  clef                                0x0000000104375a78 _RNCINvYINtNtCs9OsvkeiaKpI_5winit10event_loop9EventLoopNtNtNtCs7ZwG6SYUYMJ_6eframe6native17winit_integration9UserEventENtNtNtBa_8platform13run_on_demand23EventLoopExtRunOnDemand17run_app_on_demandINtNtBU_3run15WinitAppWrapperNtNtBU_16glow_integration12GlowWinitAppEE0BW_ + 540
+22  clef                                0x000000010436812c _RNCINvNtNtNtCs9OsvkeiaKpI_5winit13platform_impl5macos10event_loop14map_user_eventNtNtNtCs7ZwG6SYUYMJ_6eframe6native17winit_integration9UserEventNCINvYINtNtBa_10event_loop9EventLoopB1h_ENtNtNtBa_8platform13run_on_demand23EventLoopExtRunOnDemand17run_app_on_demandINtNtB1l_3run15WinitAppWrapperNtNtB1l_16glow_integration12GlowWinitAppEE0E0B1n_ + 184
+23  clef                                0x000000010463b020 _RNvXsu_NtCshxvaOLs88l5_5alloc5boxedINtB5_3BoxDG_INtNtNtCs8Mbv00yxnRz_4core3ops8function5FnMutTINtNtCs9OsvkeiaKpI_5winit5event5EventNtNtNtNtB1z_13platform_impl5macos9app_state23HandlePendingUserEventsERL0_NtNtB1z_10event_loop15ActiveEventLoopEEp6OutputuEL_EIBL_TB1u_RB3g_EE8call_mutB1z_ + 84
+24  clef                                0x00000001046101e8 _RNvMs_NtNtNtCs9OsvkeiaKpI_5winit13platform_impl5macos13event_handlerNtB4_12EventHandler12handle_event + 328
+25  clef                                0x00000001046452e4 _RNvMNtNtNtCs9OsvkeiaKpI_5winit13platform_impl5macos9app_stateNtB2_19ApplicationDelegate12handle_event + 208
+26  clef                                0x00000001046461f4 _RNvMNtNtNtCs9OsvkeiaKpI_5winit13platform_impl5macos9app_stateNtB2_19ApplicationDelegate20dispatch_init_events + 116
+27  clef                                0x00000001046460bc _RNvMNtNtNtCs9OsvkeiaKpI_5winit13platform_impl5macos9app_stateNtB2_19ApplicationDelegate20did_finish_launching + 840
+28  clef                                0x0000000104648238 _RNvMsi_NtNtNtCs9OsvkeiaKpI_5winit13platform_impl5macos9app_stateNtB5_19ApplicationDelegate24app_did_finish_launching + 76
+29  CoreFoundation                      0x00000001815219ec __CFNOTIFICATIONCENTER_IS_CALLING_OUT_TO_AN_OBSERVER__ + 148
+30  CoreFoundation                      0x00000001815ae0bc ___CFXRegistrationPost_block_invoke + 92
+31  CoreFoundation                      0x00000001815ae000 _CFXRegistrationPost + 440
+32  CoreFoundation                      0x00000001814f0408 _CFXNotificationPost + 740
+33  Foundation                          0x0000000182d274a4 -[NSNotificationCenter postNotificationName:object:userInfo:] + 88
+34  AppKit                              0x000000018596a5e8 -[NSApplication _postDidFinishNotification] + 308
+35  AppKit                              0x000000018596a380 -[NSApplication _sendFinishLaunchingNotification] + 172
+36  AppKit                              0x00000001859689c4 -[NSApplication(NSAppleEventHandling) _handleAEOpenEvent:] + 488
+37  AppKit                              0x00000001859685d8 -[NSApplication(NSAppleEventHandling) _handleCoreEvent:withReplyEvent:] + 488
+38  Foundation                          0x0000000182d4ffcc -[NSAppleEventManager dispatchRawAppleEvent:withRawReply:handlerRefCon:] + 316
+39  Foundation                          0x0000000182d4fdc4 _NSAppleEventManagerGenericHandler + 80
+40  AE                                  0x0000000189762f34 _AppleEventsCheckInAppWithBlock + 13900
+41  AE                                  0x000000018976288c _AppleEventsCheckInAppWithBlock + 12196
+42  AE                                  0x000000018975bfb8 aeProcessAppleEvent + 484
+43  HIToolbox                           0x000000018e270344 AEProcessAppleEvent + 68
+44  AppKit                              0x0000000185962348 _DPSNextEvent + 1284
+45  AppKit                              0x00000001864f796c -[NSApplication(NSEventRouting) _nextEventMatchingEventMask:untilDate:inMode:dequeue:] + 688
+46  AppKit                              0x00000001864f7678 -[NSApplication(NSEventRouting) nextEventMatchingMask:untilDate:inMode:dequeue:] + 72
+47  AppKit                              0x000000018595513c -[NSApplication run] + 368
+48  clef                                0x0000000104685978 _RINvXsh_NtCs4pJUaiXPfB8_5objc26encodeuNtB6_15EncodeArguments8___invokeuECs16wuxoWWoNS_16objc2_foundation + 52
+49  clef                                0x0000000104686d88 _RINvNtNtNtCs4pJUaiXPfB8_5objc27runtime16message_receiver18msg_send_primitive4senduuECs16wuxoWWoNS_16objc2_foundation + 60
+50  clef                                0x000000010467f984 _RINvYONtNtCs4pJUaiXPfB8_5objc27runtime9AnyObjectNtNtB6_16message_receiver15MessageReceiver12send_messageuuECs16wuxoWWoNS_16objc2_foundation + 176
+51  clef                                0x0000000104678310 _RINvYRNtNtNtCs7mN4Y0ZKom1_13objc2_app_kit9generated15___NSApplication13NSApplicationNtNtNtCs4pJUaiXPfB8_5objc215___macro_helpers8msg_send7MsgSend12send_messageuuEBa_ + 172
+52  clef                                0x00000001046786a4 _RNvMs1G_NtNtCs7mN4Y0ZKom1_13objc2_app_kit9generated15___NSApplicationNtB6_13NSApplication3run + 68
+53  clef                                0x0000000104368454 _RNCNCINvMs3_NtNtNtCs9OsvkeiaKpI_5winit13platform_impl5macos10event_loopINtBa_9EventLoopNtNtNtCs7ZwG6SYUYMJ_6eframe6native17winit_integration9UserEventE13run_on_demandNCINvYINtNtBg_10event_loop9EventLoopB1n_ENtNtNtBg_8platform13run_on_demand23EventLoopExtRunOnDemand17run_app_on_demandINtNtB1r_3run15WinitAppWrapperNtNtB1r_16glow_integration12GlowWinitAppEE0E00B1t_ + 156
+54  clef                                0x000000010436aad4 _RINvNtNtCs4pJUaiXPfB8_5objc22rc11autorelease15autoreleasepooluNCNCINvMs3_NtNtNtCs9OsvkeiaKpI_5winit13platform_impl5macos10event_loopINtB19_9EventLoopNtNtNtCs7ZwG6SYUYMJ_6eframe6native17winit_integration9UserEventE13run_on_demandNCINvYINtNtB1f_10event_loop9EventLoopB2n_ENtNtNtB1f_8platform13run_on_demand23EventLoopExtRunOnDemand17run_app_on_demandINtNtB2r_3run15WinitAppWrapperNtNtB2r_16glow_integration12GlowWinitAppEE0E00EB2t_ + 180
+55  clef                                0x0000000104367730 _RNCINvMs3_NtNtNtCs9OsvkeiaKpI_5winit13platform_impl5macos10event_loopINtB8_9EventLoopNtNtNtCs7ZwG6SYUYMJ_6eframe6native17winit_integration9UserEventE13run_on_demandNCINvYINtNtBe_10event_loop9EventLoopB1l_ENtNtNtBe_8platform13run_on_demand23EventLoopExtRunOnDemand17run_app_on_demandINtNtB1p_3run15WinitAppWrapperNtNtB1p_16glow_integration12GlowWinitAppEE0E0B1r_ + 44
+56  clef                                0x0000000104388ef8 _RINvMs_NtNtNtCs9OsvkeiaKpI_5winit13platform_impl5macos13event_handlerNtB5_12EventHandler3setuNCINvNtB7_10event_loop14map_user_eventNtNtNtCs7ZwG6SYUYMJ_6eframe6native17winit_integration9UserEventNCINvYINtNtBb_10event_loop9EventLoopB25_ENtNtNtBb_8platform13run_on_demand23EventLoopExtRunOnDemand17run_app_on_demandINtNtB29_3run15WinitAppWrapperNtNtB29_16glow_integration12GlowWinitAppEE0E0NCINvMs3_B1y_INtB1y_9EventLoopB25_E13run_on_demandB36_E0EB2b_ + 620
+57  clef                                0x000000010438e8d0 _RINvMNtNtNtCs9OsvkeiaKpI_5winit13platform_impl5macos9app_stateNtB3_19ApplicationDelegate17set_event_handleruNCINvNtB5_10event_loop14map_user_eventNtNtNtCs7ZwG6SYUYMJ_6eframe6native17winit_integration9UserEventNCINvYINtNtB9_10event_loop9EventLoopB2k_ENtNtNtB9_8platform13run_on_demand23EventLoopExtRunOnDemand17run_app_on_demandINtNtB2o_3run15WinitAppWrapperNtNtB2o_16glow_integration12GlowWinitAppEE0E0NCINvMs3_B1N_INtB1N_9EventLoopB2k_E13run_on_demandB3l_E0EB2q_ + 152
+58  clef                                0x00000001043661c4 _RINvMs3_NtNtNtCs9OsvkeiaKpI_5winit13platform_impl5macos10event_loopINtB6_9EventLoopNtNtNtCs7ZwG6SYUYMJ_6eframe6native17winit_integration9UserEventE13run_on_demandNCINvYINtNtBc_10event_loop9EventLoopB1j_ENtNtNtBc_8platform13run_on_demand23EventLoopExtRunOnDemand17run_app_on_demandINtNtB1n_3run15WinitAppWrapperNtNtB1n_16glow_integration12GlowWinitAppEE0EB1p_ + 256
+59  clef                                0x000000010437540c _RINvXNtNtCs9OsvkeiaKpI_5winit8platform13run_on_demandINtNtB7_10event_loop9EventLoopNtNtNtCs7ZwG6SYUYMJ_6eframe6native17winit_integration9UserEventENtB3_23EventLoopExtRunOnDemand13run_on_demandNCINvYBP_B2l_17run_app_on_demandINtNtB1n_3run15WinitAppWrapperNtNtB1n_16glow_integration12GlowWinitAppEE0EB1p_ + 120
+60  clef                                0x00000001043755a0 _RINvYINtNtCs9OsvkeiaKpI_5winit10event_loop9EventLoopNtNtNtCs7ZwG6SYUYMJ_6eframe6native17winit_integration9UserEventENtNtNtB8_8platform13run_on_demand23EventLoopExtRunOnDemand17run_app_on_demandINtNtBS_3run15WinitAppWrapperNtNtBS_16glow_integration12GlowWinitAppEEBU_ + 32
+61  clef                                0x000000010437dca4 _RINvNtNtCs7ZwG6SYUYMJ_6eframe6native3run14run_and_returnNtNtB4_16glow_integration12GlowWinitAppEB6_ + 464
+62  clef                                0x000000010437f2a0 _RNCNvNtNtCs7ZwG6SYUYMJ_6eframe6native3run8run_glow0B7_ + 168
+63  clef                                0x000000010437e2f4 _RNCINvNtNtCs7ZwG6SYUYMJ_6eframe6native3run15with_event_loopINtNtCs8Mbv00yxnRz_4core6result6ResultuNtB8_5ErrorENCNvB4_8run_glow0E0B8_ + 356
+64  clef                                0x000000010438f0fc _RINvMs2_NtNtCs82bWklYMk3w_3std6thread5localINtB6_8LocalKeyINtNtCs8Mbv00yxnRz_4core4cell7RefCellINtNtBZ_6option6OptionINtNtCs9OsvkeiaKpI_5winit10event_loop9EventLoopNtNtNtCs7ZwG6SYUYMJ_6eframe6native17winit_integration9UserEventEEEE8try_withNCINvNtB2G_3run15with_event_loopINtNtBZ_6result6ResultuNtB2I_5ErrorENCNvB3V_8run_glow0E0IB4n_B4m_B4J_EEB2I_ + 224
+65  clef                                0x000000010438efd8 _RINvMs2_NtNtCs82bWklYMk3w_3std6thread5localINtB6_8LocalKeyINtNtCs8Mbv00yxnRz_4core4cell7RefCellINtNtBZ_6option6OptionINtNtCs9OsvkeiaKpI_5winit10event_loop9EventLoopNtNtNtCs7ZwG6SYUYMJ_6eframe6native17winit_integration9UserEventEEEE4withNCINvNtB2G_3run15with_event_loopINtNtBZ_6result6ResultuNtB2I_5ErrorENCNvB3R_8run_glow0E0IB4j_B4i_B4F_EEB2I_ + 32
+66  clef                                0x000000010437df58 _RINvNtNtCs7ZwG6SYUYMJ_6eframe6native3run15with_event_loopINtNtCs8Mbv00yxnRz_4core6result6ResultuNtB6_5ErrorENCNvB2_8run_glow0EB6_ + 96
+67  clef                                0x0000000104382978 _RNvNtNtCs7ZwG6SYUYMJ_6eframe6native3run8run_glow + 184
+68  clef                                0x000000010437fc14 _RNvCs7ZwG6SYUYMJ_6eframe10run_native + 212
+69  clef                                0x0000000104191fa8 _RNvNtCs9DEPFxiHbo1_4clef6worker3run + 1324
+70  clef                                0x00000001041f9e74 _RNvCs9DEPFxiHbo1_4clef3run + 6600
+71  clef                                0x00000001041f9ee8 _RNvCs9DEPFxiHbo1_4clef4main + 16
+72  clef                                0x00000001041ea90c _RNvYFEuINtNtNtCs8Mbv00yxnRz_4core3ops8function6FnOnceuE9call_onceCs9DEPFxiHbo1_4clef + 20
+73  clef                                0x000000010428a940 _RINvNtNtCs82bWklYMk3w_3std3sys9backtrace28___rust_begin_short_backtraceFEuuECs9DEPFxiHbo1_4clef + 24
+74  clef                                0x00000001042643cc _RNCINvNtCs82bWklYMk3w_3std2rt10lang_startuE0Cs9DEPFxiHbo1_4clef + 28
+75  clef                                0x00000001050b5234 _RNvNtCs82bWklYMk3w_3std2rt19lang_start_internal + 952
+76  clef                                0x00000001042642f0 _RINvNtCs82bWklYMk3w_3std2rt10lang_startuECs9DEPFxiHbo1_4clef + 84
+77  clef                                0x00000001041faa38 main + 36
+78  dyld                                0x00000001810a44e4 start + 6992
+Passed changed-state project roundtrip: T03-GUI-ZebraHZ-CLAP.clef
+lua:engine NoteFilterRes.get: unknown filter type
+lua:engine NoteFilterRes.get: unknown filter type
+lua:engine NoteFilterRes.get: unknown filter type
+Passed changed-state project roundtrip: T03-GUI-Pianoverse.clef
+test session::tests::commercial_changed_state_survives_project_save_and_fresh_worker_open ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 39 filtered out; finished in 10.48s
+

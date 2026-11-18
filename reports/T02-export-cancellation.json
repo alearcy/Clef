@@ -1,0 +1,7 @@
+{
+  "passed": true,
+  "returncode": 1,
+  "stdout": "",
+  "stderr": "Error: render cancelled; no completed file was published\n",
+  "scope": "Real SIGINT during an isolated-fixture render; no partial/final file left."
+}

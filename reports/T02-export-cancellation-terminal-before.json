@@ -1,0 +1,26 @@
+{
+  "binary_sha256": "0e88cc5e9634a9ba246ae26d64e6d81cc12ff81c4258e629833ee7f00ec728ac",
+  "cases": [
+    {
+      "signal_scope": "parent",
+      "returncode": 1,
+      "stdout": "",
+      "stderr": "Error: render cancelled; no completed file was published\n",
+      "final_exists": false,
+      "partial_exists": false,
+      "passed": true
+    },
+    {
+      "signal_scope": "process_group",
+      "returncode": 1,
+      "stdout": "",
+      "stderr": "Error: failed to fill whole buffer\n",
+      "final_exists": false,
+      "partial_exists": false,
+      "passed": false,
+      "error": "Error: failed to fill whole buffer\n"
+    }
+  ],
+  "passed": false,
+  "scope": "Actual SIGINT while rendering isolated fixtures; parent-only and terminal process-group paths."
+}

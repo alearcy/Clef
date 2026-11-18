@@ -1,0 +1,113 @@
+{
+  "plugin": "/Library/Audio/Plug-Ins/VST3/ZebraHZ.vst3",
+  "error": "worker generated only silence",
+  "worker_returncode": 0,
+  "completed_cycles": 10,
+  "processing_failures": [],
+  "processed_blocks": 963,
+  "peak": 0.0,
+  "max_process_exchange_ms": 518.2474160000083,
+  "editor_exchanges": [
+    {
+      "cycle": 1,
+      "open": true,
+      "ms": 151.00804200000084
+    },
+    {
+      "cycle": 1,
+      "open": false,
+      "ms": 97.04595799996696
+    },
+    {
+      "cycle": 2,
+      "open": true,
+      "ms": 180.7212090000121
+    },
+    {
+      "cycle": 2,
+      "open": false,
+      "ms": 18.82575000001907
+    },
+    {
+      "cycle": 3,
+      "open": true,
+      "ms": 164.34091600001466
+    },
+    {
+      "cycle": 3,
+      "open": false,
+      "ms": 16.218041000001904
+    },
+    {
+      "cycle": 4,
+      "open": true,
+      "ms": 169.00941600005126
+    },
+    {
+      "cycle": 4,
+      "open": false,
+      "ms": 872.5882909999996
+    },
+    {
+      "cycle": 5,
+      "open": true,
+      "ms": 205.59195800001362
+    },
+    {
+      "cycle": 5,
+      "open": false,
+      "ms": 8.193000000005668
+    },
+    {
+      "cycle": 6,
+      "open": true,
+      "ms": 166.1087909999992
+    },
+    {
+      "cycle": 6,
+      "open": false,
+      "ms": 25.749334000011004
+    },
+    {
+      "cycle": 7,
+      "open": true,
+      "ms": 167.27862499999446
+    },
+    {
+      "cycle": 7,
+      "open": false,
+      "ms": 7.446916999981568
+    },
+    {
+      "cycle": 8,
+      "open": true,
+      "ms": 164.11429099997576
+    },
+    {
+      "cycle": 8,
+      "open": false,
+      "ms": 867.9534160000344
+    },
+    {
+      "cycle": 9,
+      "open": true,
+      "ms": 202.54120900000316
+    },
+    {
+      "cycle": 9,
+      "open": false,
+      "ms": 40.219874999991134
+    },
+    {
+      "cycle": 10,
+      "open": true,
+      "ms": 158.64225000001397
+    },
+    {
+      "cycle": 10,
+      "open": false,
+      "ms": 41.37804200001938
+    }
+  ],
+  "scope": "Failed worker-only diagnostic; no audio device or acceptance pass."
+}

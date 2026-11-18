@@ -1,0 +1,25 @@
+{
+  "binary_sha256": "eaf857da58df1fe2cbc03cf2381894a4b58d9bfc18991113632f6d179888d5e6",
+  "cases": [
+    {
+      "signal_scope": "parent",
+      "returncode": 1,
+      "stdout": "",
+      "stderr": "Error: render cancelled; no completed file was published\n",
+      "final_exists": false,
+      "partial_exists": false,
+      "passed": true
+    },
+    {
+      "signal_scope": "process_group",
+      "returncode": 1,
+      "stdout": "",
+      "stderr": "Error: render cancelled; no completed file was published\n",
+      "final_exists": false,
+      "partial_exists": false,
+      "passed": true
+    }
+  ],
+  "passed": true,
+  "scope": "Actual SIGINT while rendering isolated fixtures; parent-only and terminal process-group paths."
+}

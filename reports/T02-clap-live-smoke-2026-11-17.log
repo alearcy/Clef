@@ -1,0 +1,47 @@
+log path:'/Users/arcy/Desktop/ZebraHZ.log'
+checking deskTopFile at: /Users/arcy/Desktop/ZebraHZ.log
+Path: '/Library/Audio/Plug-Ins/CLAP/u-he/ZebraHZ.clap'
+MacOS: Version 26.6.2 (Build 25G83)
+CPU Vendor: ''
+CPU Type: 'Apple M4 Pro'
+CPU Architecture: 'arm64'
+Binary: 'ARM 64 bit'
+Machine Model: 'Mac16,11'
+Logical Cores: 12/12 Physical Cores: 12/12 Frequency: 0.0GHz (Range: 0.0 to 0.0Ghz) RAM: 24GB
+ZebraHZ Plugin ID: 534D485A
+Plugin API: 'CLAP'
+Hostname: 'Clef'
+AM_CLAP_Plugin::audioPortsSetConfig set to ID 1874818888
+CLAP host supports thread pool: no
+Starting REVISION 16765
+totalSize 3025
+Zebra2_Wavefolder::Zebra2_Wavefolder plot figures: 1 256 0.00
+buffer[0] = 7.00
+Zebra2_Wavefolder::Zebra2_Wavefolder plot figures: 1 256 0.00
+buffer[0] = 7.00
+void AM_AudioMan::createModules()
+new instance of  AM_PreferencesAudio created for ZebraHZ # 1
+Warning! AudioPreferenceExtractor::setPreference didn't find matching preference for "NKS Colour Fit"
+Warning! AudioPreferenceExtractor::setPreference didn't find matching preference for "NKS Auto Map"
+Parm 1868 TrimPots same ptr as param 1843 V1Tune1
+loadPreferences() - ZebraHZ
+void AM_AudioMan::createMidiPrograms()
+Preset from 'ZebraHZ'
+publicparams path: /Library/Application Support/u-he file: com.u-he.ZebraHZ.publicparams.txt
+CustomParamTable::createCrossReference sorted 0 automatable parameters
+getMidiAssignPath(): '/Users/arcy/Library/Application Support/u-he/com.u-he.ZebraHZ.midiassign.txt'
+READING midiAssignFile
+Preset from 'ZebraHZ'
+Preset from 'ZebraHZ'
+Preset for rev 10218 loaded into rev 16765, Revision
+AM_Message_RenderModeChanged! 0
+AM_CLAP_Plugin::init with latency of 16 samples
+Loaded ZebraHZ (latency: 0 samples). Commands: open, close, save PATH, restore PATH, recreate, render PATH, quit.
+clef> Audio output: Audient EVO16, channels 1–2, 48000 Hz, requested buffer 128, IPC lead 512 samples, graph latency 0 samples, plugin latency 16 samples.
+clef> Updating tuning tables for qlty 2 OS 4
+Updating for 48000.00
+GETTING FILTER TUNING 4 48000.00
+SVF12Table[ 3 ] = 3B660B00
+{"callbacks":1773,"deadline_missed_blocks":0,"discarded_stale_blocks":0,"late_midi_events":0,"max_callback_frames":128,"midi_overflows":0,"midi_received":0,"min_callback_frames":128,"output_errors":0,"played_frames":226944,"requested_buffer_frames":128,"sample_rate":48000,"transport_buffering_samples":512,"worker_failed":false}
+clef> {"callbacks":1773,"deadline_missed_blocks":0,"discarded_stale_blocks":0,"late_midi_events":0,"max_callback_frames":128,"midi_overflows":0,"midi_received":0,"min_callback_frames":128,"output_errors":0,"played_frames":226944,"requested_buffer_frames":128,"sample_rate":48000,"transport_buffering_samples":512,"worker_failed":false}
+clef> 

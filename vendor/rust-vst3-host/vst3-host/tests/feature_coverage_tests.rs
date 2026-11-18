@@ -1,0 +1,2945 @@
+//! Broad end-to-end coverage of shipped features against the bundled Dexed plugin.
+//!
+//! These tests complement `integration_tests.rs` (state/vstpreset round-trips,
+//! automation, isolation, realtime) by covering the features that previously had
+//! thin coverage: parameter set/get/format round-trips, JSON preset save/load
+//! (incl. wrong-uid rejection), transport audio for a held note, variable block
+//! sizes, and builder tempo/time-signature config.
+//!
+//! Plugin-dependent tests are `#[ignore]`d (run with `--ignored`); the pure-logic
+//! tests at the bottom run in CI without a plugin.
+//!
+//! ```
+//! cargo test -p vst3-host --test feature_coverage_tests -- --ignored --nocapture
+//! ```
+
+#![cfg(feature = "cpal-backend")]
+
+use std::sync::{Mutex, MutexGuard};
+use vst3_host::prelude::*;
+
+/// Dexed is a C++ plugin with process-global state that does not tolerate two
+/// instances being loaded concurrently in the same process. The default test
+/// harness runs tests in parallel, so the plugin-dependent tests below take this
+/// lock for their whole body to load/drive Dexed one at a time.
+static PLUGIN_LOCK: Mutex<()> = Mutex::new(());
+
+fn plugin_guard() -> MutexGuard<'static, ()> {
+    PLUGIN_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Path to the bundled test plugin; `None` (with a printed note) if it is missing,
+/// so an `#[ignore]`d run on a machine without it degrades gracefully.
+fn dexed_path() -> Option<&'static str> {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../test_plugins/Dexed.vst3");
+    if std::path::Path::new(path).exists() {
+        Some(path)
+    } else {
+        println!("Test plugin not found at {path}, skipping");
+        None
+    }
+}
+
+fn load_dexed() -> Option<(Vst3Host, Plugin)> {
+    let path = dexed_path()?;
+    let mut host = Vst3Host::builder()
+        .sample_rate(48000.0)
+        .block_size(512)
+        .build()
+        .expect("build host");
+    let plugin = host.load_plugin(path).expect("load Dexed");
+    Some((host, plugin))
+}
+
+/// Path to our own bundled test synth (built by `just test-plugin`), or `None` with a note.
+/// Unlike Dexed, it implements `INoteExpressionController`, so it can prove note expression.
+fn test_synth_path() -> Option<&'static str> {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../test_plugins/TestSynth.vst3"
+    );
+    if std::path::Path::new(path).exists() {
+        Some(path)
+    } else {
+        println!("TestSynth.vst3 not found at {path} — run `just test-plugin`, skipping");
+        None
+    }
+}
+
+fn load_test_synth() -> Option<(Vst3Host, Plugin)> {
+    let path = test_synth_path()?;
+    // Large block so one process_audio call yields enough samples to measure pitch (the host
+    // clamps numSamples to the configured block size).
+    let mut host = Vst3Host::builder()
+        .sample_rate(48000.0)
+        .block_size(4096)
+        .build()
+        .expect("build host");
+    let plugin = host.load_plugin(path).expect("load TestSynth");
+    Some((host, plugin))
+}
+
+#[test]
+#[ignore = "requires bundled TestSynth.vst3 (run `just test-plugin`)"]
+fn test_testsynth_data_exchange_blocks() {
+    let _guard = plugin_guard();
+    let Some((_host, mut plugin)) = load_test_synth() else {
+        return;
+    };
+    plugin.start_processing().expect("start processing");
+    let mut buffers = AudioBuffers::new(0, 2, 64, 48_000.0);
+    plugin.process_audio(&mut buffers).expect("process");
+
+    let blocks = plugin.take_data_exchange_blocks();
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0].user_context_id, 0x5453_0001);
+    assert_eq!(&blocks[0].data[..4], b"DXB1");
+    assert_eq!(
+        u32::from_le_bytes(blocks[0].data[4..8].try_into().unwrap()),
+        0
+    );
+}
+
+#[test]
+#[ignore = "requires bundled TestSynth.vst3 (run `just test-plugin`)"]
+fn test_testsynth_bus_audio_api() {
+    let _guard = plugin_guard();
+    let Some((_host, mut plugin)) = load_test_synth() else {
+        return;
+    };
+    let layout = plugin.audio_bus_layout().expect("bus layout");
+    assert!(layout.inputs.is_empty());
+    assert_eq!(layout.outputs.len(), 1);
+    assert!(layout.outputs[0].active);
+    assert_eq!(layout.outputs[0].channel_count, 2);
+
+    let mut buffers = plugin.create_bus_audio_buffers(64).expect("bus buffers");
+    plugin.start_processing().expect("start processing");
+    plugin
+        .send_midi_event(MidiEvent::NoteOn {
+            channel: MidiChannel::Ch1,
+            note: 60,
+            velocity: 100,
+        })
+        .expect("note on");
+    plugin.process_bus_audio(&mut buffers).expect("bus process");
+    assert!(buffers.outputs[0]
+        .channels
+        .iter()
+        .flatten()
+        .any(|sample| sample.abs() > 0.0));
+}
+
+/// Estimate a held voice's fundamental frequency by counting zero-crossings over one block of
+/// channel-0 output. Rough but enough to prove a pitch change.
+fn measure_freq(plugin: &mut Plugin) -> f64 {
+    let frames = 4096; // == the configured block size, so the host doesn't clamp
+    let sr = 48000.0;
+    let mut buffers = AudioBuffers::new(0, 2, frames, sr);
+    plugin.process_audio(&mut buffers).expect("process_audio");
+    let ch = &buffers.outputs[0];
+    let mut crossings = 0;
+    for w in ch.windows(2) {
+        if (w[0] <= 0.0 && w[1] > 0.0) || (w[0] >= 0.0 && w[1] < 0.0) {
+            crossings += 1;
+        }
+    }
+    // Two zero-crossings per cycle.
+    (crossings as f64 / 2.0) / (frames as f64 / sr)
+}
+
+/// Note expression (MPE) end-to-end against our own TestSynth: a per-note Tuning expression
+/// audibly bends one voice's pitch. Dexed can't demonstrate this (no INoteExpressionController).
+#[test]
+#[ignore = "Requires the bundled TestSynth (just test-plugin)"]
+fn test_note_expression_bends_pitch() {
+    use vst3_host::{NoteExpressionType, NoteId};
+
+    let _guard = plugin_guard();
+    let Some((_host, mut plugin)) = load_test_synth() else {
+        return;
+    };
+
+    // The plugin advertises a Tuning note-expression.
+    let exprs = plugin.note_expressions().expect("note_expressions");
+    println!("TestSynth note expressions: {exprs:?}");
+    assert!(
+        exprs.iter().any(|e| e.kind == NoteExpressionType::Tuning),
+        "TestSynth should advertise a Tuning note expression"
+    );
+
+    plugin.start_processing().expect("start_processing");
+    let id: NoteId = plugin
+        .note_on(MidiChannel::Ch1, 60, 100)
+        .expect("note_on returns a NoteId");
+
+    // Unbent: note 60 ≈ 261.6 Hz.
+    let freq_unbent = measure_freq(&mut plugin);
+    // Tuning value 1.0 = max bend = +1 octave in our synth → ≈ 523 Hz.
+    plugin
+        .send_note_expression(id, NoteExpressionType::Tuning, 1.0)
+        .expect("send_note_expression");
+    let freq_bent = measure_freq(&mut plugin);
+
+    plugin.note_off(id).ok();
+    plugin.stop_processing().ok();
+
+    println!("note-expression pitch: unbent={freq_unbent:.1} Hz, bent={freq_bent:.1} Hz");
+    assert!(
+        freq_unbent > 200.0 && freq_unbent < 320.0,
+        "unbent ~261 Hz, got {freq_unbent}"
+    );
+    assert!(
+        freq_bent > freq_unbent * 1.7,
+        "Tuning expression should raise the pitch ~1 octave: {freq_unbent} -> {freq_bent}"
+    );
+}
+
+/// Same as [`load_test_synth`], but runs the plugin out-of-process (process isolation).
+#[cfg(feature = "process-isolation")]
+fn load_test_synth_isolated() -> Option<(Vst3Host, Plugin)> {
+    let path = test_synth_path()?;
+    let mut host = Vst3Host::builder()
+        .sample_rate(48000.0)
+        .block_size(4096)
+        .with_process_isolation(true)
+        .build()
+        .expect("build isolated host");
+    let plugin = host.load_plugin(path).expect("load TestSynth (isolated)");
+    Some((host, plugin))
+}
+
+#[cfg(feature = "process-isolation")]
+#[test]
+#[ignore = "Requires the bundled TestSynth and helper binary"]
+fn test_isolated_testsynth_data_exchange_blocks() {
+    let _guard = plugin_guard();
+    let Some((_host, mut plugin)) = load_test_synth_isolated() else {
+        return;
+    };
+    plugin.start_processing().expect("start processing");
+    let mut buffers = AudioBuffers::new(0, 2, 64, 48_000.0);
+    plugin.process_audio(&mut buffers).expect("process");
+    let blocks = plugin.take_data_exchange_blocks();
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0].user_context_id, 0x5453_0001);
+    assert_eq!(&blocks[0].data[..4], b"DXB1");
+}
+
+#[cfg(feature = "process-isolation")]
+#[test]
+#[ignore = "Requires the bundled TestSynth and helper binary"]
+fn test_isolated_testsynth_bus_audio_api() {
+    let _guard = plugin_guard();
+    let Some((_host, mut plugin)) = load_test_synth_isolated() else {
+        return;
+    };
+    let mut buffers = plugin.create_bus_audio_buffers(64).expect("bus buffers");
+    plugin.start_processing().expect("start processing");
+    plugin
+        .send_midi_event(MidiEvent::NoteOn {
+            channel: MidiChannel::Ch1,
+            note: 60,
+            velocity: 100,
+        })
+        .expect("note on");
+    plugin.process_bus_audio(&mut buffers).expect("bus process");
+    assert!(buffers.outputs[0]
+        .channels
+        .iter()
+        .flatten()
+        .any(|sample| sample.abs() > 0.0));
+}
+
+/// Regression for the isolated `set_process_mode` / `reconfigure` gap: an out-of-process
+/// plugin must accept an offline-mode switch and a sample-rate / block-size change (both
+/// returned `Err("… not supported")` before the fix, because `IsolatedPluginImpl` didn't
+/// override them), then still process audio at the new config across the IPC boundary.
+#[cfg(feature = "process-isolation")]
+#[test]
+#[ignore = "Requires the bundled TestSynth (just test-plugin)"]
+fn test_isolated_reconfigure_and_process_mode() {
+    let Some((_host, mut plugin)) = load_test_synth_isolated() else {
+        return;
+    };
+    // Both of these returned Err on isolated plugins before the fix.
+    plugin
+        .set_process_mode(ProcessMode::Offline)
+        .expect("isolated set_process_mode(Offline)");
+    plugin
+        .reconfigure(44100.0, 512)
+        .expect("isolated reconfigure(44100, 512)");
+
+    // The plugin still works at the new config: a held note produces audio.
+    plugin.start_processing().expect("start_processing");
+    let _id = plugin.note_on(MidiChannel::Ch1, 60, 100).expect("note_on");
+    let mut buffers = AudioBuffers::new(0, 2, 512, 44100.0);
+    plugin.process_audio(&mut buffers).expect("process_audio");
+    let peak = buffers.outputs[0]
+        .iter()
+        .fold(0.0f32, |m, &s| m.max(s.abs()));
+    plugin.stop_processing().ok();
+    assert!(
+        peak > 0.0,
+        "reconfigured isolated plugin should produce audio, peak={peak}"
+    );
+}
+
+/// Crash recovery replays the runtime config: after `reconfigure(96000)` +
+/// `set_process_mode(Offline)`, a killed helper must be respawned at the *new* sample rate,
+/// not the load-time 48000. Proven by pitch: TestSynth's phase increment depends on the
+/// sample rate its `setupProcessing` saw, so a reload at the wrong rate shifts the rendered
+/// frequency of the same note by the rate ratio (~2x here).
+#[cfg(feature = "process-isolation")]
+#[test]
+#[ignore = "Requires the bundled TestSynth (just test-plugin) and the helper binary"]
+fn test_isolated_recover_replays_reconfigured_config() {
+    let _guard = plugin_guard();
+    let Some((_host, mut plugin)) = load_test_synth_isolated() else {
+        return;
+    };
+
+    plugin
+        .set_process_mode(ProcessMode::Offline)
+        .expect("offline over IPC");
+    plugin
+        .reconfigure(96000.0, 4096)
+        .expect("reconfigure to 96k over IPC");
+
+    // Measure a held note's frequency at the new rate.
+    fn held_note_freq(plugin: &mut Plugin) -> f64 {
+        let (frames, sr) = (4096usize, 96000.0);
+        plugin.start_processing().expect("start");
+        let _ = plugin.note_on(MidiChannel::Ch1, 69, 100).expect("note_on");
+        let mut buffers = AudioBuffers::new(0, 2, frames, sr);
+        // Two blocks: let the attack envelope open before measuring.
+        plugin.process_audio(&mut buffers).expect("process");
+        plugin.process_audio(&mut buffers).expect("process");
+        let mut crossings = 0;
+        for w in buffers.outputs[0].windows(2) {
+            if (w[0] <= 0.0 && w[1] > 0.0) || (w[0] >= 0.0 && w[1] < 0.0) {
+                crossings += 1;
+            }
+        }
+        plugin.stop_processing().ok();
+        (crossings as f64 / 2.0) / (frames as f64 / sr)
+    }
+    let freq_before = held_note_freq(&mut plugin);
+    assert!(freq_before > 20.0, "baseline note is silent: {freq_before}");
+
+    // Kill the helper out from under the plugin, then recover (retrying the known
+    // C++-init load flake). The reload must replay the cached 96000/4096 (and Offline).
+    let pid = plugin.isolation_pid().expect("helper pid");
+    let killed = std::process::Command::new("kill")
+        .arg("-9")
+        .arg(pid.to_string())
+        .status()
+        .expect("kill helper");
+    assert!(killed.success(), "failed to kill helper {pid}");
+    let mut recovered = plugin.recover();
+    for _ in 0..4 {
+        if recovered.is_ok() {
+            break;
+        }
+        recovered = plugin.recover();
+    }
+    recovered.expect("recover");
+    assert!(plugin.recovery_count() >= 1, "recovery not counted");
+
+    let freq_after = held_note_freq(&mut plugin);
+    let ratio = freq_after / freq_before;
+    assert!(
+        (0.9..=1.1).contains(&ratio),
+        "recovered helper renders at a different rate: {freq_before:.1} Hz -> {freq_after:.1} Hz \
+         (reload did not replay the reconfigured sample rate)"
+    );
+}
+
+/// Note expression (MPE) end-to-end across the *process-isolation* boundary: the helper owns
+/// the real plugin (and allocates the NoteId), and a per-note Tuning expression marshaled over
+/// IPC still audibly bends the voice's pitch. Mirrors [`test_note_expression_bends_pitch`].
+#[cfg(feature = "process-isolation")]
+#[test]
+#[ignore = "Requires the bundled TestSynth (just test-plugin) and the helper binary"]
+fn test_note_expression_bends_pitch_isolated() {
+    use vst3_host::{NoteExpressionType, NoteId};
+
+    let _guard = plugin_guard();
+    let Some((_host, mut plugin)) = load_test_synth_isolated() else {
+        return;
+    };
+
+    // note_expressions() must now marshal across IPC (previously "not supported").
+    let exprs = plugin
+        .note_expressions()
+        .expect("note_expressions over IPC");
+    println!("TestSynth (isolated) note expressions: {exprs:?}");
+    assert!(
+        exprs.iter().any(|e| e.kind == NoteExpressionType::Tuning),
+        "isolated TestSynth should advertise a Tuning note expression"
+    );
+
+    plugin.start_processing().expect("start_processing");
+    // note_on over IPC: the helper allocates the NoteId and returns it across the boundary.
+    let id: NoteId = plugin
+        .note_on(MidiChannel::Ch1, 60, 100)
+        .expect("note_on over IPC returns a NoteId");
+
+    let freq_unbent = measure_freq(&mut plugin);
+    // Tuning 1.0 = +1 octave in our synth; the expression event must survive the marshal.
+    plugin
+        .send_note_expression(id, NoteExpressionType::Tuning, 1.0)
+        .expect("send_note_expression over IPC");
+    let freq_bent = measure_freq(&mut plugin);
+
+    plugin.note_off(id).ok();
+    plugin.stop_processing().ok();
+
+    println!("isolated note-expression pitch: unbent={freq_unbent:.1} Hz, bent={freq_bent:.1} Hz");
+    assert!(
+        freq_unbent > 200.0 && freq_unbent < 320.0,
+        "unbent ~261 Hz, got {freq_unbent}"
+    );
+    assert!(
+        freq_bent > freq_unbent * 1.7,
+        "Tuning expression should raise the pitch ~1 octave across IPC: {freq_unbent} -> {freq_bent}"
+    );
+}
+
+/// Same as [`load_dexed`], but runs the plugin out-of-process (process isolation).
+#[cfg(feature = "process-isolation")]
+fn load_dexed_isolated() -> Option<(Vst3Host, Plugin)> {
+    let path = dexed_path()?;
+    let mut host = Vst3Host::builder()
+        .sample_rate(48000.0)
+        .block_size(512)
+        .with_process_isolation(true)
+        .build()
+        .expect("build isolated host");
+    // Dexed intermittently crashes ("Pure virtual function called!") during C++ init while
+    // *loading* in a fresh helper — the same known flake integration_tests' auto-recover
+    // test retries around. Each attempt spawns a fresh helper, so just retry a few times.
+    let mut last_err = None;
+    for _ in 0..5 {
+        match host.load_plugin(path) {
+            Ok(plugin) => return Some((host, plugin)),
+            Err(e) => last_err = Some(e),
+        }
+    }
+    panic!("load Dexed (isolated) failed after 5 attempts: {last_err:?}");
+}
+
+/// Program selection through `IUnitInfo` against Dexed (32 cartridge programs on the root
+/// unit). Selecting a valid program succeeds; out-of-range and unknown-unit selections are
+/// rejected; and a `ProgramChange` MIDI event is honored (routed to the root unit).
+#[test]
+#[ignore = "Requires the bundled Dexed plugin"]
+fn test_program_selection() {
+    let _guard = plugin_guard();
+    let Some((_host, mut plugin)) = load_dexed() else {
+        return;
+    };
+
+    let units = plugin.get_units().expect("get_units");
+    let Some(unit) = units.iter().find(|u| !u.programs.is_empty()).cloned() else {
+        println!("Plugin exposes no program list, skipping");
+        return;
+    };
+    let count = unit.programs.len();
+    println!("Unit {} has {count} programs", unit.id);
+    assert!(count >= 2, "expected a multi-program unit");
+
+    plugin
+        .select_program(unit.id, (count - 1) as i32)
+        .expect("select last program");
+    plugin
+        .select_program(unit.id, 0)
+        .expect("select first program");
+
+    assert!(
+        plugin.select_program(unit.id, count as i32).is_err(),
+        "an out-of-range index must be rejected"
+    );
+    assert!(plugin.select_program(unit.id, -1).is_err());
+    assert!(
+        plugin.select_program(9999, 0).is_err(),
+        "an unknown unit must be rejected"
+    );
+
+    plugin
+        .send_midi_event(MidiEvent::ProgramChange {
+            channel: MidiChannel::Ch1,
+            program: 0,
+        })
+        .expect("ProgramChange should be honored (routed to the root unit)");
+}
+
+/// VST3 `ParameterInfo::kIsProgramChange`.
+const K_IS_PROGRAM_CHANGE: u32 = 1 << 15;
+
+/// The parameter a plugin flags as its program-change control (the one `IUnitInfo` program
+/// selection and `MidiEvent::ProgramChange` both drive).
+fn program_change_parameter(plugin: &mut Plugin) -> Parameter {
+    plugin
+        .get_parameters()
+        .expect("get_parameters")
+        .into_iter()
+        .find(|p| p.flags & K_IS_PROGRAM_CHANGE != 0)
+        .expect("TestSynth exposes a kIsProgramChange parameter")
+}
+
+/// `MidiEvent::ProgramChange` has to *move the program*, not just return `Ok(())`.
+///
+/// It is routed to the root unit's `kIsProgramChange` parameter, so the effect is observable as
+/// that parameter's value (and, for TestSynth, as the preset it fans out into the other
+/// parameters). An out-of-range program is silently ignored — matching hardware, which has no
+/// way to report one — and must leave the current program alone rather than jumping or erroring.
+#[test]
+#[ignore = "requires bundled TestSynth.vst3 (run `just test-plugin`)"]
+fn test_midi_program_change_moves_the_program() {
+    let _guard = plugin_guard();
+    let Some((_host, mut plugin)) = load_test_synth() else {
+        return;
+    };
+
+    let program_param = program_change_parameter(&mut plugin);
+    let units = plugin.get_units().expect("get_units");
+    let root = units
+        .iter()
+        .find(|u| u.id == 0 && !u.programs.is_empty())
+        .expect("TestSynth's root unit has a program list");
+    let count = root.programs.len() as i32;
+    assert!(count >= 3, "expected at least three factory programs");
+
+    let normalized_for = |index: i32| (index as f64) / ((count - 1) as f64);
+
+    for index in [count - 1, 1, 0] {
+        plugin
+            .send_midi_event(MidiEvent::ProgramChange {
+                channel: MidiChannel::Ch1,
+                program: index as u8,
+            })
+            .expect("ProgramChange is routed to the root unit");
+        let got = plugin
+            .get_parameter(program_param.id)
+            .expect("read the program parameter");
+        assert!(
+            (got - normalized_for(index)).abs() < 1e-6,
+            "ProgramChange({index}) left the program parameter at {got}, \
+             expected {}",
+            normalized_for(index)
+        );
+        assert_eq!(
+            plugin
+                .format_parameter(program_param.id, got)
+                .ok()
+                .as_deref(),
+            Some(root.programs[index as usize].as_str()),
+            "the plugin should name the program it just switched to"
+        );
+    }
+
+    // Out of range: documented silent ignore, and the program must not move.
+    let before = plugin
+        .get_parameter(program_param.id)
+        .expect("read program");
+    plugin
+        .send_midi_event(MidiEvent::ProgramChange {
+            channel: MidiChannel::Ch1,
+            program: 127,
+        })
+        .expect("an out-of-range program is ignored, not an error");
+    assert_eq!(
+        plugin
+            .get_parameter(program_param.id)
+            .expect("read program"),
+        before,
+        "an out-of-range program must leave the current one alone"
+    );
+
+    // Servicing host requests can invalidate the controller-derived program table; the route
+    // has to rebuild itself rather than silently no-op from then on.
+    plugin
+        .service_host_requests()
+        .expect("service host requests");
+    plugin.take_host_notifications();
+    plugin
+        .send_midi_event(MidiEvent::ProgramChange {
+            channel: MidiChannel::Ch1,
+            program: 2,
+        })
+        .expect("ProgramChange after a cache refresh");
+    assert!(
+        (plugin
+            .get_parameter(program_param.id)
+            .expect("read program")
+            - normalized_for(2))
+        .abs()
+            < 1e-6,
+        "ProgramChange stopped working after the program cache was invalidated"
+    );
+}
+
+/// MIDI's note-on with velocity 0 is a note-off alias, and VST3 has no running status to carry
+/// it. Sending it must actually release the voice — a zero-velocity `kNoteOnEvent` leaves the
+/// plugin sounding while the host's tracker has already counted the release.
+#[test]
+#[ignore = "requires bundled TestSynth.vst3 (run `just test-plugin`)"]
+fn test_velocity_zero_note_on_releases_the_voice() {
+    let _guard = plugin_guard();
+    let Some((_host, mut plugin)) = load_test_synth() else {
+        return;
+    };
+    plugin.start_processing().expect("start processing");
+
+    let mut buffers = AudioBuffers::new(0, 2, 4096, 48_000.0);
+    let peak = |buffers: &AudioBuffers| {
+        buffers.outputs[0]
+            .iter()
+            .fold(0.0_f32, |acc, s| acc.max(s.abs()))
+    };
+
+    plugin
+        .send_midi_event(MidiEvent::NoteOn {
+            channel: MidiChannel::Ch1,
+            note: 60,
+            velocity: 100,
+        })
+        .expect("note on");
+    plugin.process_audio(&mut buffers).expect("process");
+    assert!(peak(&buffers) > 0.01, "the held note should sound");
+
+    plugin
+        .send_midi_event(MidiEvent::NoteOn {
+            channel: MidiChannel::Ch1,
+            note: 60,
+            velocity: 0,
+        })
+        .expect("velocity-0 note on");
+    // The synth's default release is ~90 ms; a handful of 4096-frame blocks covers it.
+    let mut tail = 0.0_f32;
+    for _ in 0..6 {
+        plugin.process_audio(&mut buffers).expect("process");
+        tail = peak(&buffers);
+    }
+    assert!(
+        tail < 0.001,
+        "a velocity-0 note-on must release the voice; still sounding at {tail}"
+    );
+}
+
+/// `save_state` wraps the component and controller streams in one envelope. For a
+/// single-component plugin the "controller" is the component, so asking it for its state
+/// returns the same bytes a second time — doubling the blob, halving the effective size cap and
+/// making `load_state` apply `setState` twice. Whatever the plugin's shape, the two halves must
+/// never be byte-identical copies.
+#[test]
+#[ignore = "requires bundled TestSynth.vst3 (run `just test-plugin`)"]
+fn test_saved_state_does_not_carry_the_component_blob_twice() {
+    let _guard = plugin_guard();
+    let Some((_host, plugin)) = load_test_synth() else {
+        return;
+    };
+    let state = plugin.save_state().expect("save_state");
+
+    // The envelope: 16-byte magic, u32 version, u32 component length, u32 controller length
+    // (u32::MAX for "no controller stream"), then the payloads back to back.
+    const MAGIC: &[u8; 16] = b"VST3HOST_STATE\0\0";
+    const HEADER: usize = 16 + 4 + 4 + 4;
+    assert!(
+        state.starts_with(MAGIC),
+        "state is not a vst3-host envelope"
+    );
+    let read_u32 = |at: usize| u32::from_le_bytes(state[at..at + 4].try_into().unwrap());
+    let component_len = read_u32(20) as usize;
+    let controller_len = read_u32(24);
+
+    let component = &state[HEADER..HEADER + component_len];
+    if controller_len != u32::MAX {
+        let controller = &state[HEADER + component_len..][..controller_len as usize];
+        assert_ne!(
+            component, controller,
+            "the controller half repeats the component blob verbatim"
+        );
+    }
+    assert_eq!(
+        state.len(),
+        HEADER
+            + component_len
+            + if controller_len == u32::MAX {
+                0
+            } else {
+                controller_len as usize
+            },
+        "envelope length disagrees with its own header"
+    );
+}
+
+/// Program selection across the *process-isolation* boundary: the helper owns Dexed, and
+/// `select_program` marshaled over IPC switches a program (and rejects a bad index).
+#[cfg(feature = "process-isolation")]
+#[test]
+#[ignore = "Requires the bundled Dexed plugin and the helper binary"]
+fn test_program_selection_isolated() {
+    let _guard = plugin_guard();
+    let Some((_host, mut plugin)) = load_dexed_isolated() else {
+        return;
+    };
+
+    // get_units now marshals across isolation (previously fell back to a guessed root unit).
+    let units = plugin.get_units().expect("get_units over IPC");
+    let unit = units
+        .iter()
+        .find(|u| !u.programs.is_empty())
+        .expect("Dexed should report a unit with a program list, even over IPC");
+    let (unit_id, count) = (unit.id, unit.programs.len() as i32);
+    println!("isolated unit {unit_id} reports {count} programs");
+    assert!(count >= 2, "expected a multi-program unit");
+
+    plugin
+        .select_program(unit_id, 1)
+        .expect("select_program over IPC");
+    assert!(
+        plugin.select_program(unit_id, count + 1000).is_err(),
+        "an out-of-range index must be rejected across IPC"
+    );
+}
+
+/// Pick a writable, automatable parameter (falling back to the first one).
+fn pick_writable_param(plugin: &mut Plugin) -> Parameter {
+    let params = plugin.get_parameters().expect("get_parameters");
+    params
+        .iter()
+        .find(|p| p.can_automate && !p.is_read_only && !p.is_bypass)
+        .or_else(|| params.first())
+        .expect("plugin has at least one parameter")
+        .clone()
+}
+
+/// Parameter set/get/format round-trip: set a normalized value, read it back, and
+/// confirm `format_parameter` renders a non-empty display string for it.
+#[test]
+#[ignore = "Requires the bundled test plugin"]
+fn test_parameter_set_get_format_roundtrip() {
+    let _guard = plugin_guard();
+    let Some((_host, mut plugin)) = load_dexed() else {
+        return;
+    };
+    let param = pick_writable_param(&mut plugin);
+    let id = param.id;
+
+    for &v in &[0.0_f64, 0.25, 0.5, 0.9] {
+        plugin.set_parameter(id, v).expect("set_parameter");
+        let got = plugin.get_parameter(id).expect("get_parameter");
+        assert!(
+            (got - v).abs() < 0.05,
+            "param '{}' (id {id}) did not round-trip: set {v}, got {got}",
+            param.name
+        );
+
+        // The plugin's own display string for that value must be non-empty.
+        let formatted = plugin.format_parameter(id, v).expect("format_parameter");
+        assert!(
+            !formatted.is_empty(),
+            "format_parameter produced an empty string for {v}"
+        );
+        println!(
+            "param '{}' = {v} -> got {got}, display '{formatted}'",
+            param.name
+        );
+    }
+}
+
+/// JSON preset save/load round-trip: save -> change param -> load -> value restored.
+#[test]
+#[ignore = "Requires the bundled test plugin"]
+fn test_json_preset_save_load_roundtrip() {
+    let _guard = plugin_guard();
+    let Some((_host, mut plugin)) = load_dexed() else {
+        return;
+    };
+    let param = pick_writable_param(&mut plugin);
+    let id = param.id;
+
+    // Establish a known value, save it to a JSON preset.
+    plugin.set_parameter(id, 0.3).expect("set v1");
+    let v1 = plugin.get_parameter(id).expect("get v1");
+
+    let mut preset_path = std::env::temp_dir();
+    preset_path.push(format!("vst3-host-json-preset-{}.json", std::process::id()));
+    plugin.save_preset(&preset_path).expect("save_preset");
+
+    // Move the parameter away, then load the preset back and confirm restoration.
+    plugin.set_parameter(id, 0.85).expect("set v2");
+    plugin.load_preset(&preset_path).expect("load_preset");
+    let v3 = plugin.get_parameter(id).expect("get after restore");
+
+    let _ = std::fs::remove_file(&preset_path);
+
+    println!("json preset round-trip: v1={v1} restored={v3}");
+    assert!(
+        (v3 - v1).abs() < 0.05,
+        "parameter not restored from JSON preset: {v3} (expected ~{v1})"
+    );
+}
+
+/// A JSON preset whose uid belongs to a different plugin must be rejected.
+#[test]
+#[ignore = "Requires the bundled test plugin"]
+fn test_json_preset_wrong_uid_rejected() {
+    let _guard = plugin_guard();
+    let Some((_host, mut plugin)) = load_dexed() else {
+        return;
+    };
+    let param = pick_writable_param(&mut plugin);
+    plugin.set_parameter(param.id, 0.4).expect("set");
+
+    // Save a real preset, then corrupt its uid on disk so it claims another plugin.
+    let mut preset_path = std::env::temp_dir();
+    preset_path.push(format!(
+        "vst3-host-wrong-uid-preset-{}.json",
+        std::process::id()
+    ));
+    plugin.save_preset(&preset_path).expect("save_preset");
+
+    let raw = std::fs::read_to_string(&preset_path).expect("read preset");
+    let real_uid = plugin.info().uid.clone();
+    let bogus = "deadbeefdeadbeefdeadbeefdeadbeef";
+    assert_ne!(real_uid, bogus, "test's bogus uid accidentally matched");
+    let tampered = raw
+        .replacen(&real_uid, bogus, 1)
+        .replacen("Dexed", "SomeOtherPlugin", 1);
+    assert_ne!(tampered, raw, "uid was not present to replace");
+    std::fs::write(&preset_path, tampered).expect("write tampered preset");
+
+    let err = plugin
+        .load_preset(&preset_path)
+        .expect_err("loading a wrong-uid preset must fail");
+    let _ = std::fs::remove_file(&preset_path);
+
+    println!("wrong-uid preset correctly rejected: {err}");
+}
+
+/// Transport: a held note must produce audio (peak > 0) after processing several blocks.
+/// This is the offline `process_audio` path, not the device callback, so no hardware.
+#[test]
+#[ignore = "Requires the bundled test plugin"]
+fn test_held_note_produces_audio() {
+    let _guard = plugin_guard();
+    let Some((_host, mut plugin)) = load_dexed() else {
+        return;
+    };
+    plugin.start_processing().expect("start_processing");
+    plugin
+        .send_midi_note(60, 110, MidiChannel::Ch1)
+        .expect("send note on");
+
+    let mut peak = 0.0f32;
+    for _ in 0..40 {
+        let mut buffers = AudioBuffers::new(0, 2, 512, 48000.0);
+        plugin.process_audio(&mut buffers).expect("process_audio");
+        for ch in &buffers.outputs {
+            for &s in ch {
+                peak = peak.max(s.abs());
+            }
+        }
+    }
+    plugin
+        .send_midi_note_off(60, MidiChannel::Ch1)
+        .expect("send note off");
+    plugin.stop_processing().ok();
+
+    println!("held-note peak: {peak:.4}");
+    assert!(peak > 0.0, "held note produced no audio (peak {peak})");
+}
+
+/// Sample-accurate MIDI (`send_midi_event_at`): a note scheduled at a non-zero sample
+/// offset must leave the block's leading samples silent and only start sounding at the
+/// offset. We prove this differentially — the *same* note at offset 0 fills the leading
+/// window with audio, while at offset 256 that window stays (near) silent.
+#[test]
+#[ignore = "Requires the bundled test plugin"]
+fn test_sample_accurate_midi_offset_delays_onset() {
+    let _guard = plugin_guard();
+
+    const BLOCK: usize = 512;
+    const OFFSET: i32 = 256;
+    // Measure peak amplitude in the block's leading window (before the offset).
+    const WINDOW: usize = 200;
+
+    // Render one 512-frame block with a note-on scheduled at `offset`, returning the
+    // peak amplitude in [0, WINDOW) and in [OFFSET, BLOCK).
+    fn render_onset(offset: i32) -> Option<(f32, f32)> {
+        let (_host, mut plugin) = load_dexed()?;
+        plugin.start_processing().expect("start_processing");
+        let note = MidiEvent::NoteOn {
+            channel: MidiChannel::Ch1,
+            note: 60,
+            velocity: 110,
+        };
+        plugin
+            .send_midi_event_at(note, offset)
+            .expect("send_midi_event_at");
+
+        let mut buffers = AudioBuffers::new(0, 2, BLOCK, 48000.0);
+        plugin.process_audio(&mut buffers).expect("process_audio");
+
+        let peak = |range: std::ops::Range<usize>| {
+            buffers
+                .outputs
+                .iter()
+                .flat_map(|ch| ch[range.clone()].iter())
+                .fold(0.0f32, |m, &s| m.max(s.abs()))
+        };
+        let early = peak(0..WINDOW);
+        let late = peak(OFFSET as usize..BLOCK);
+        plugin.stop_processing().ok();
+        Some((early, late))
+    }
+
+    // Control: offset 0 — audio is present from the very first sample.
+    let Some((early_at_0, _)) = render_onset(0) else {
+        return;
+    };
+    // Test: offset 256 — the leading window must be (near) silent, audio starts later.
+    let (early_at_256, late_at_256) = render_onset(OFFSET).expect("second load");
+
+    println!(
+        "offset0 early-peak={early_at_0:.5}  offset256 early-peak={early_at_256:.5} late-peak={late_at_256:.5}"
+    );
+
+    // The control must actually make sound in the leading window (else the test proves nothing).
+    assert!(
+        early_at_0 > 1e-4,
+        "control (offset 0) produced no audio in the leading window (peak {early_at_0})"
+    );
+    // The scheduled note must produce audio somewhere in the block.
+    assert!(
+        late_at_256 > 1e-4,
+        "offset-256 note produced no audio at all (late peak {late_at_256})"
+    );
+    // The heart of the test: scheduling at offset 256 keeps the leading window quiet —
+    // dramatically quieter than the offset-0 control over the same samples.
+    assert!(
+        early_at_256 < early_at_0 * 0.1,
+        "offset did not delay onset: leading-window peak {early_at_256} (offset 256) \
+         vs {early_at_0} (offset 0) — expected the offset window to be near-silent"
+    );
+}
+
+/// `IMidiMapping`: querying CC→parameter assignments returns valid parameter ids (when the
+/// plugin implements the interface) and never panics. Mappings are stable across repeat calls.
+#[test]
+#[ignore = "Requires the bundled test plugin"]
+fn test_midi_cc_to_parameter_mapping() {
+    let _guard = plugin_guard();
+    let Some((_host, plugin)) = load_dexed() else {
+        return;
+    };
+
+    // Collect the set of valid parameter ids to validate any returned mapping against.
+    let param_ids: std::collections::HashSet<u32> = plugin
+        .get_parameters()
+        .unwrap()
+        .iter()
+        .map(|p| p.id)
+        .collect();
+
+    // Sweep the standard MIDI CCs plus the VST3 specials (modwheel, aftertouch, pitch-bend…)
+    // on bus 0, channel 0.
+    let mut mappings = Vec::new();
+    for cc in 0u16..=129 {
+        if let Some(id) = plugin.midi_cc_to_parameter(0, 0, cc) {
+            mappings.push((cc, id));
+            assert!(
+                param_ids.contains(&id),
+                "CC {cc} mapped to id {id}, which is not a real parameter"
+            );
+        }
+    }
+
+    println!(
+        "Dexed reported {} CC→param mappings: {mappings:?}",
+        mappings.len()
+    );
+
+    // The query must be deterministic: a second pass returns identical results.
+    for &(cc, id) in &mappings {
+        assert_eq!(
+            plugin.midi_cc_to_parameter(0, 0, cc),
+            Some(id),
+            "CC {cc} mapping changed between calls"
+        );
+    }
+
+    // Dexed implements IMidiMapping (modulation, breath, foot, pitch-bend → DX7 controllers),
+    // so we expect at least one mapping. (If a future test plugin doesn't implement it this
+    // would need relaxing — see the printed count above.)
+    assert!(
+        !mappings.is_empty(),
+        "expected at least one CC→param mapping from Dexed"
+    );
+
+    // Out-of-range controller numbers (beyond the VST3 0..=129 range) are rejected with None,
+    // not forwarded as a meaningless controller.
+    assert_eq!(plugin.midi_cc_to_parameter(0, 0, 200), None);
+    assert_eq!(plugin.midi_cc_to_parameter(0, 0, u16::MAX), None);
+}
+
+/// `midi_cc_to_parameter` across the *process-isolation* boundary: the same CC→param
+/// mappings Dexed reports in-process must survive the IPC round trip. Mirrors
+/// [`test_midi_cc_to_parameter_mapping`].
+#[cfg(feature = "process-isolation")]
+#[test]
+#[ignore = "Requires the bundled Dexed plugin and the helper binary"]
+fn test_midi_cc_to_parameter_mapping_isolated() {
+    let _guard = plugin_guard();
+    let Some((_host, plugin)) = load_dexed_isolated() else {
+        return;
+    };
+
+    let param_ids: std::collections::HashSet<u32> = plugin
+        .get_parameters()
+        .unwrap()
+        .iter()
+        .map(|p| p.id)
+        .collect();
+
+    let mut mappings = Vec::new();
+    for cc in 0u16..=129 {
+        if let Some(id) = plugin.midi_cc_to_parameter(0, 0, cc) {
+            mappings.push((cc, id));
+            assert!(
+                param_ids.contains(&id),
+                "CC {cc} mapped to id {id} over IPC, which is not a real parameter"
+            );
+        }
+    }
+    println!(
+        "Dexed (isolated) reported {} CC→param mappings: {mappings:?}",
+        mappings.len()
+    );
+    assert!(
+        !mappings.is_empty(),
+        "expected at least one CC→param mapping from Dexed over IPC"
+    );
+
+    assert_eq!(plugin.midi_cc_to_parameter(0, 0, 200), None);
+    assert_eq!(plugin.midi_cc_to_parameter(0, 0, u16::MAX), None);
+}
+
+/// Mirrors the inspector's "Export WAV" path (roadmap 4.5): snapshot a live plugin's state,
+/// load a fresh instance, restore the state, and offline-render to a non-silent WAV via the
+/// library's `render_to_wav`. Exercised here against Dexed (single-instance: the first is
+/// dropped before the second loads).
+#[test]
+#[ignore = "Requires the bundled test plugin"]
+fn test_export_render_with_state_roundtrip() {
+    use vst3_host::midi::{MidiChannel, MidiEvent};
+
+    let _guard = plugin_guard();
+    let Some(path) = dexed_path() else {
+        return;
+    };
+
+    // First instance: tweak a parameter, snapshot state, then drop it.
+    let state = {
+        let mut host = Vst3Host::builder()
+            .sample_rate(48000.0)
+            .block_size(512)
+            .build()
+            .expect("build host");
+        let mut plugin = host.load_plugin(path).expect("load Dexed");
+        let param = pick_writable_param(&mut plugin);
+        plugin.set_parameter(param.id, 0.42).expect("set param");
+        plugin.save_state().expect("save_state")
+    };
+
+    // Fresh instance: restore the state and render offline to a WAV.
+    let mut host = Vst3Host::builder()
+        .sample_rate(48000.0)
+        .block_size(512)
+        .build()
+        .expect("build host 2");
+    let mut plugin = host.load_plugin(path).expect("reload Dexed");
+    plugin.load_state(&state).expect("load_state");
+
+    let out = std::env::temp_dir().join(format!("vst3-host-export-{}.wav", std::process::id()));
+    let note = MidiEvent::NoteOn {
+        channel: MidiChannel::Ch1,
+        note: 60,
+        velocity: 110,
+    };
+    vst3_host::simple::render_to_wav(&mut plugin, 1.0, &[note], &out).expect("render_to_wav");
+
+    // The file exists and is a non-trivial WAV (44-byte header + a second of stereo f32).
+    let bytes = std::fs::read(&out).expect("read exported wav");
+    let _ = std::fs::remove_file(&out);
+    assert_eq!(&bytes[0..4], b"RIFF", "not a RIFF/WAV file");
+    assert!(
+        bytes.len() > 44 + 48000 * 2 * 4 / 2,
+        "exported WAV is implausibly small: {} bytes",
+        bytes.len()
+    );
+
+    // Confirm the audio isn't pure silence: scan the f32 sample data for a non-zero.
+    let any_nonzero = bytes[44..]
+        .chunks_exact(4)
+        .any(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]).abs() > 1e-4);
+    assert!(any_nonzero, "exported WAV is silent");
+}
+
+/// Offline render-with-input: feed a sine test signal into the plugin while rendering to WAV.
+/// (Dexed is an instrument and ignores audio input, so this verifies the input plumbing +
+/// render path, not effect output — a bundled effect would be needed for that.)
+#[test]
+#[ignore = "Requires the bundled test plugin"]
+fn test_render_to_wav_with_input_signal() {
+    use vst3_host::SignalSource;
+
+    let _guard = plugin_guard();
+    let Some((_host, mut plugin)) = load_dexed() else {
+        return;
+    };
+    let mut source = SignalSource::sine(440.0, 0.5);
+    let out = std::env::temp_dir().join(format!("vh_render_in_{}.wav", std::process::id()));
+    let note = MidiEvent::NoteOn {
+        channel: MidiChannel::Ch1,
+        note: 60,
+        velocity: 100,
+    };
+    vst3_host::simple::render_to_wav_with_input(&mut plugin, 0.5, &[note], &mut source, &out)
+        .expect("render_to_wav_with_input");
+    let bytes = std::fs::read(&out).expect("read wav");
+    let _ = std::fs::remove_file(&out);
+    assert_eq!(&bytes[0..4], b"RIFF");
+    assert!(bytes.len() > 44, "rendered WAV has no audio data");
+}
+
+/// Bus arrangements: query reports Dexed's stereo output, a stereo re-request is accepted, and
+/// a request the plugin may refuse leaves the reported arrangement consistent with the channel
+/// count (a stereo instrument can prove query + graceful negotiation, not a real layout switch).
+#[test]
+#[ignore = "Requires the bundled test plugin"]
+fn test_bus_arrangements() {
+    use vst3_host::SpeakerArrangement;
+
+    let _guard = plugin_guard();
+    let Some((_host, mut plugin)) = load_dexed() else {
+        return;
+    };
+
+    // Dexed is an instrument: no audio inputs, one stereo output bus.
+    let arr = plugin.bus_arrangements().expect("bus_arrangements");
+    println!(
+        "Dexed buses: inputs={:?} outputs={:?}",
+        arr.inputs, arr.outputs
+    );
+    assert!(
+        arr.inputs.is_empty(),
+        "instrument should have no audio inputs"
+    );
+    assert_eq!(arr.outputs.len(), 1, "expected one output bus");
+    assert_eq!(arr.outputs[0], SpeakerArrangement::STEREO);
+
+    // Re-requesting the current (stereo) layout must succeed and stay stereo.
+    plugin
+        .set_bus_arrangements(&[], &[SpeakerArrangement::STEREO])
+        .expect("set stereo");
+    assert_eq!(
+        plugin.bus_arrangements().expect("re-query").outputs[0],
+        SpeakerArrangement::STEREO
+    );
+
+    // Requesting mono: the plugin may accept or refuse, but must not error the host, and the
+    // reported arrangement must stay consistent with the host's channel count.
+    plugin
+        .set_bus_arrangements(&[], &[SpeakerArrangement::MONO])
+        .expect("mono request should not error the host");
+    let after = plugin.bus_arrangements().expect("re-query after mono");
+    assert_eq!(
+        after.outputs[0].channel_count(),
+        plugin.output_channel_count(),
+        "reported arrangement and channel count must stay consistent"
+    );
+}
+
+/// Bus arrangements across the *process-isolation* boundary: query and negotiation both
+/// marshal over IPC. Mirrors [`test_bus_arrangements`].
+#[cfg(feature = "process-isolation")]
+#[test]
+#[ignore = "Requires the bundled Dexed plugin and the helper binary"]
+fn test_bus_arrangements_isolated() {
+    use vst3_host::SpeakerArrangement;
+
+    let _guard = plugin_guard();
+    let Some((_host, mut plugin)) = load_dexed_isolated() else {
+        return;
+    };
+
+    let arr = plugin
+        .bus_arrangements()
+        .expect("bus_arrangements over IPC");
+    println!(
+        "Dexed (isolated) buses: inputs={:?} outputs={:?}",
+        arr.inputs, arr.outputs
+    );
+    assert!(arr.inputs.is_empty());
+    assert_eq!(arr.outputs.len(), 1);
+    assert_eq!(arr.outputs[0], SpeakerArrangement::STEREO);
+
+    plugin
+        .set_bus_arrangements(&[], &[SpeakerArrangement::STEREO])
+        .expect("set stereo over IPC");
+    assert_eq!(
+        plugin
+            .bus_arrangements()
+            .expect("re-query over IPC")
+            .outputs[0],
+        SpeakerArrangement::STEREO
+    );
+
+    // Requesting mono over IPC: like the in-process original, the plugin may accept or
+    // refuse, but must not error — and the cached channel count must stay consistent with
+    // the arrangement the helper's plugin actually applied.
+    plugin
+        .set_bus_arrangements(&[], &[SpeakerArrangement::MONO])
+        .expect("mono request over IPC should not error the host");
+    let after = plugin.bus_arrangements().expect("re-query after mono");
+    assert_eq!(
+        after.outputs[0].channel_count(),
+        plugin.output_channel_count(),
+        "isolated arrangement and cached channel count must stay consistent"
+    );
+}
+
+/// Offline process mode: `set_process_mode(Offline)` is rejected while processing, accepted
+/// while stopped, and a held note still renders audio in offline mode.
+#[test]
+#[ignore = "Requires the bundled test plugin"]
+fn test_offline_process_mode() {
+    use vst3_host::ProcessMode;
+
+    let _guard = plugin_guard();
+    let Some((_host, mut plugin)) = load_dexed() else {
+        return;
+    };
+
+    // Rejected while processing.
+    plugin.start_processing().expect("start_processing");
+    assert!(
+        plugin.set_process_mode(ProcessMode::Offline).is_err(),
+        "set_process_mode while processing must error"
+    );
+    plugin.stop_processing().ok();
+
+    // Accepted while stopped.
+    plugin
+        .set_process_mode(ProcessMode::Offline)
+        .expect("set Offline while stopped");
+
+    // Still renders audio in offline mode.
+    plugin.start_processing().expect("restart processing");
+    plugin
+        .send_midi_note(60, 110, MidiChannel::Ch1)
+        .expect("note on");
+    let mut peak = 0.0f32;
+    for _ in 0..40 {
+        let mut buffers = AudioBuffers::new(0, 2, 512, 48000.0);
+        plugin.process_audio(&mut buffers).expect("process_audio");
+        for ch in &buffers.outputs {
+            for &s in ch {
+                peak = peak.max(s.abs());
+            }
+        }
+    }
+    plugin.send_midi_note_off(60, MidiChannel::Ch1).ok();
+    plugin.stop_processing().ok();
+
+    // Back to realtime works too.
+    plugin
+        .set_process_mode(ProcessMode::Realtime)
+        .expect("set Realtime while stopped");
+
+    println!("offline-mode peak: {peak:.4}");
+    assert!(peak > 0.0, "offline mode produced no audio (peak {peak})");
+}
+
+/// Runtime reconfigure: after `reconfigure(44100, 256)` the plugin reports the new settings,
+/// still produces audio for a held note at the new rate, and refuses to reconfigure while
+/// processing.
+#[test]
+#[ignore = "Requires the bundled test plugin"]
+fn test_runtime_reconfigure_changes_settings() {
+    let _guard = plugin_guard();
+    let Some((_host, mut plugin)) = load_dexed() else {
+        return;
+    };
+
+    // Starts at the host-configured 48 kHz / 512.
+    assert_eq!(plugin.block_size(), 512);
+    assert!((plugin.sample_rate() - 48000.0).abs() < 1.0);
+
+    // Reconfiguring while processing is rejected.
+    plugin.start_processing().expect("start_processing");
+    let err = plugin.reconfigure(44100.0, 256);
+    assert!(
+        err.is_err(),
+        "reconfigure while processing must error, got {err:?}"
+    );
+    plugin.stop_processing().ok();
+
+    // Now reconfigure to a new sample rate and block size.
+    plugin
+        .reconfigure(44100.0, 256)
+        .expect("reconfigure to 44100/256");
+    assert_eq!(plugin.block_size(), 256);
+    assert!((plugin.sample_rate() - 44100.0).abs() < 1.0);
+
+    // The plugin still produces audio at the new configuration.
+    plugin.start_processing().expect("restart processing");
+    plugin
+        .send_midi_note(60, 110, MidiChannel::Ch1)
+        .expect("note on");
+    let mut peak = 0.0f32;
+    for _ in 0..40 {
+        let mut buffers = AudioBuffers::new(0, 2, 256, 44100.0);
+        plugin.process_audio(&mut buffers).expect("process_audio");
+        assert_eq!(buffers.outputs[0].len(), 256);
+        for ch in &buffers.outputs {
+            for &s in ch {
+                peak = peak.max(s.abs());
+            }
+        }
+    }
+    plugin.send_midi_note_off(60, MidiChannel::Ch1).ok();
+    plugin.stop_processing().ok();
+
+    println!("post-reconfigure peak: {peak:.4}");
+    assert!(peak > 0.0, "no audio after reconfigure (peak {peak})");
+
+    // Invalid arguments are rejected.
+    assert!(plugin.reconfigure(0.0, 256).is_err(), "zero sample rate");
+    assert!(plugin.reconfigure(44100.0, 0).is_err(), "zero block size");
+}
+
+/// Variable block sizes: 64, 128, and 512 frames all process without error and the
+/// configured-max path (512) still produces audio for a held note.
+#[test]
+#[ignore = "Requires the bundled test plugin"]
+fn test_variable_block_sizes_process() {
+    let _guard = plugin_guard();
+    let Some((_host, mut plugin)) = load_dexed() else {
+        return;
+    };
+    plugin.start_processing().expect("start_processing");
+    plugin
+        .send_midi_note(60, 110, MidiChannel::Ch1)
+        .expect("send note on");
+
+    for &block in &[64usize, 128, 512] {
+        let mut peak = 0.0f32;
+        for _ in 0..20 {
+            let mut buffers = AudioBuffers::new(0, 2, block, 48000.0);
+            plugin
+                .process_audio(&mut buffers)
+                .unwrap_or_else(|e| panic!("process_audio failed at block {block}: {e}"));
+            assert_eq!(
+                buffers.outputs[0].len(),
+                block,
+                "output buffer length changed for block {block}"
+            );
+            for ch in &buffers.outputs {
+                for &s in ch {
+                    peak = peak.max(s.abs());
+                }
+            }
+        }
+        println!("block {block}: peak {peak:.4}");
+        assert!(peak > 0.0, "block size {block} produced no audio");
+    }
+
+    plugin
+        .send_midi_note_off(60, MidiChannel::Ch1)
+        .expect("send note off");
+    plugin.stop_processing().ok();
+}
+
+/// Builder tempo / time-signature config is recorded in the host config and the
+/// plugin still processes audio when those values are set.
+#[test]
+#[ignore = "Requires the bundled test plugin"]
+fn test_builder_tempo_time_signature_applies() {
+    let _guard = plugin_guard();
+    let Some(path) = dexed_path() else {
+        return;
+    };
+    let mut host = Vst3Host::builder()
+        .sample_rate(48000.0)
+        .block_size(512)
+        .tempo(140.0)
+        .time_signature(3, 4)
+        .build()
+        .expect("build host with tempo/time-sig");
+
+    // The config carries the requested transport settings.
+    assert_eq!(host.config().tempo, 140.0);
+    assert_eq!(host.config().time_sig_numerator, 3);
+    assert_eq!(host.config().time_sig_denominator, 4);
+
+    let mut plugin = host.load_plugin(path).expect("load Dexed");
+    plugin.start_processing().expect("start_processing");
+    plugin
+        .send_midi_note(60, 110, MidiChannel::Ch1)
+        .expect("send note on");
+
+    let mut peak = 0.0f32;
+    for _ in 0..40 {
+        let mut buffers = AudioBuffers::new(0, 2, 512, 48000.0);
+        plugin.process_audio(&mut buffers).expect("process_audio");
+        for ch in &buffers.outputs {
+            for &s in ch {
+                peak = peak.max(s.abs());
+            }
+        }
+    }
+    plugin
+        .send_midi_note_off(60, MidiChannel::Ch1)
+        .expect("send note off");
+    plugin.stop_processing().ok();
+
+    println!("tempo/time-sig configured (140 bpm, 3/4); held-note peak {peak:.4}");
+    assert!(
+        peak > 0.0,
+        "plugin produced no audio with custom tempo/time signature"
+    );
+}
+
+/// `process_audio` before `start_processing` must error, not panic or produce garbage.
+#[test]
+#[ignore = "Requires the bundled test plugin"]
+fn test_process_before_start_errors() {
+    let _guard = plugin_guard();
+    let Some((_host, mut plugin)) = load_dexed() else {
+        return;
+    };
+    let mut buffers = AudioBuffers::new(0, 2, 512, 48000.0);
+    assert!(
+        plugin.process_audio(&mut buffers).is_err(),
+        "process_audio before start_processing should return Err"
+    );
+}
+
+/// A block larger than the configured maximum must be handled, not crash/overflow. It is split
+/// into chunks of at most the configured block size; see
+/// `oversized_caller_block_is_rendered_in_full` for the assertion that every chunk is actually
+/// rendered (this one only pins down "doesn't error", since silent Dexed can't show coverage).
+#[test]
+#[ignore = "Requires the bundled test plugin"]
+fn test_oversized_block_is_split_not_rejected() {
+    let _guard = plugin_guard();
+    let Some((_host, mut plugin)) = load_dexed() else {
+        return;
+    };
+    plugin.start_processing().expect("start_processing");
+    // Host was built with block_size 512; ask it to process 1024 frames.
+    let mut buffers = AudioBuffers::new(0, 2, 1024, 48000.0);
+    plugin
+        .process_audio(&mut buffers)
+        .expect("oversized block should be split and processed, not error");
+}
+
+/// A `.vstpreset` whose embedded class id doesn't match the loaded plugin is rejected.
+#[test]
+#[ignore = "Requires the bundled test plugin"]
+fn test_vstpreset_wrong_class_id_rejected() {
+    let _guard = plugin_guard();
+    let Some((_host, mut plugin)) = load_dexed() else {
+        return;
+    };
+    let dir = std::env::temp_dir();
+    let path = dir.join("vh_wrong_classid.vstpreset");
+    plugin.save_vstpreset(&path).expect("save_vstpreset");
+
+    // The 32-char ASCII class id lives at bytes 8..40 of the container; corrupt it.
+    let mut bytes = std::fs::read(&path).expect("read preset");
+    for b in &mut bytes[8..40] {
+        *b = b'0';
+    }
+    std::fs::write(&path, &bytes).expect("write tampered preset");
+
+    let result = plugin.load_vstpreset(&path);
+    let _ = std::fs::remove_file(&path);
+    assert!(
+        result.is_err(),
+        "load_vstpreset should reject a preset whose class id differs from the plugin"
+    );
+}
+
+/// `get_units` enumerates IUnitInfo units/program lists without error (a plugin without
+/// IUnitInfo returns an empty list; one with it returns at least the root unit).
+#[test]
+#[ignore = "Requires the bundled test plugin"]
+fn test_get_units_enumerates() {
+    let _guard = plugin_guard();
+    let Some((_host, plugin)) = load_dexed() else {
+        return;
+    };
+    let units = plugin.get_units().expect("get_units should not error");
+    println!("Dexed reports {} unit(s)", units.len());
+    for u in &units {
+        println!(
+            "  unit {} (parent {}): '{}', {} program(s)",
+            u.id,
+            u.parent_id,
+            u.name,
+            u.programs.len()
+        );
+        // Program names, when present, must be readable strings (not garbage/empty-only).
+        for (i, p) in u.programs.iter().take(3).enumerate() {
+            println!("    program[{i}] = '{p}'");
+        }
+    }
+    // Unit ids should be internally consistent. (Names are NOT asserted non-empty: VST3 does
+    // not guarantee a unit name — the root unit in particular is often unnamed.)
+    let ids: std::collections::HashSet<i32> = units.iter().map(|u| u.id).collect();
+    assert_eq!(ids.len(), units.len(), "duplicate unit ids reported");
+}
+
+/// `get_units` across the *process-isolation* boundary: unit/program-list enumeration
+/// marshals over IPC. Mirrors [`test_get_units_enumerates`].
+#[cfg(feature = "process-isolation")]
+#[test]
+#[ignore = "Requires the bundled Dexed plugin and the helper binary"]
+fn test_get_units_enumerates_isolated() {
+    let _guard = plugin_guard();
+    let Some((_host, plugin)) = load_dexed_isolated() else {
+        return;
+    };
+    let units = plugin.get_units().expect("get_units over IPC");
+    println!("Dexed (isolated) reports {} unit(s)", units.len());
+    assert!(
+        !units.is_empty(),
+        "Dexed implements IUnitInfo, expected at least the root unit over IPC"
+    );
+    let ids: std::collections::HashSet<i32> = units.iter().map(|u| u.id).collect();
+    assert_eq!(ids.len(), units.len(), "duplicate unit ids reported");
+}
+
+/// Offline render-to-WAV: bounce a held note from Dexed to a WAV file and verify the file
+/// has a valid float-WAV header and non-silent audio.
+#[test]
+#[ignore = "Requires the bundled test plugin"]
+fn test_render_to_wav_produces_audio() {
+    use vst3_host::midi::{MidiChannel, MidiEvent};
+    let _guard = plugin_guard();
+    let Some((_host, mut plugin)) = load_dexed() else {
+        return;
+    };
+    let path = std::env::temp_dir().join("vh_render_test.wav");
+    let note = MidiEvent::NoteOn {
+        channel: MidiChannel::Ch1,
+        note: 60,
+        velocity: 110,
+    };
+    vst3_host::simple::render_to_wav(&mut plugin, 0.5, &[note], &path).expect("render_to_wav");
+
+    let bytes = std::fs::read(&path).expect("read rendered wav");
+    let _ = std::fs::remove_file(&path);
+    // Header: RIFF/WAVE, IEEE float, 48 kHz (the load_dexed sample rate).
+    assert_eq!(&bytes[0..4], b"RIFF");
+    assert_eq!(&bytes[8..12], b"WAVE");
+    assert_eq!(u16::from_le_bytes([bytes[20], bytes[21]]), 3, "IEEE float");
+    let sr = u32::from_le_bytes([bytes[24], bytes[25], bytes[26], bytes[27]]);
+    assert_eq!(sr, 48_000);
+    // 0.5 s of stereo float at 48 kHz ~ 192 KB of data; assert a substantial file.
+    assert!(
+        bytes.len() > 100_000,
+        "rendered wav too small: {}",
+        bytes.len()
+    );
+    // Scan the float samples for non-silence.
+    let mut peak = 0.0f32;
+    for chunk in bytes[44..].chunks_exact(4) {
+        let s = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        peak = peak.max(s.abs());
+    }
+    assert!(peak > 0.0, "rendered wav is silent");
+    println!("rendered {} bytes, peak {peak:.3}", bytes.len());
+}
+
+/// Offline effect-input path: feed a loud signal through an effect plugin and confirm the
+/// input reaches the plugin's DSP — output with signal must exceed output with silence.
+/// This verifies the audio-input plumbing (used by `play_with_input`) without a live device.
+#[test]
+#[ignore = "Requires an effect VST3 (Surge XT Effects / Valhalla) installed"]
+fn test_effect_processes_audio_input() {
+    let _guard = plugin_guard();
+    // Effects are free system plugins; load by known path (not discovery) to stay safe.
+    let candidates = [
+        "/Library/Audio/Plug-Ins/VST3/Surge XT Effects.vst3",
+        "/Library/Audio/Plug-Ins/VST3/ValhallaSupermassive.vst3",
+    ];
+    let Some(path) = candidates
+        .iter()
+        .find(|p| std::path::Path::new(p).exists())
+        .copied()
+    else {
+        println!("No effect plugin installed, skipping");
+        return;
+    };
+
+    let mut host = Vst3Host::builder()
+        .sample_rate(48000.0)
+        .block_size(512)
+        .build()
+        .expect("build host");
+    let mut plugin = host.load_plugin(path).expect("load effect");
+    assert!(
+        plugin.info().audio_inputs > 0,
+        "expected an effect with audio inputs"
+    );
+    plugin.start_processing().expect("start_processing");
+
+    // Measure output peak over many blocks for: silence input, then loud-sine input.
+    fn run(plugin: &mut Plugin, amp: f32) -> f32 {
+        let mut phase = 0.0f32;
+        let mut peak = 0.0f32;
+        for _ in 0..60 {
+            let mut buf = AudioBuffers::new(2, 2, 512, 48000.0);
+            for frame in 0..512 {
+                let s = amp * (phase).sin();
+                phase += 2.0 * std::f32::consts::PI * 220.0 / 48000.0;
+                for ch in buf.inputs.iter_mut() {
+                    ch[frame] = s;
+                }
+            }
+            plugin.process_audio(&mut buf).expect("process_audio");
+            for ch in &buf.outputs {
+                for &s in ch {
+                    peak = peak.max(s.abs());
+                }
+            }
+        }
+        peak
+    }
+
+    let silent_peak = run(&mut plugin, 0.0);
+    let signal_peak = run(&mut plugin, 0.5);
+    plugin.stop_processing().ok();
+
+    println!("effect output peak: silence={silent_peak:.4}, signal={signal_peak:.4}");
+    assert!(
+        signal_peak > silent_peak + 0.001,
+        "effect output did not respond to input (silence {silent_peak}, signal {signal_peak}) \
+         — audio-input path not delivering"
+    );
+}
+
+/// Latency/tail accessors return the plugin's reported values. TestSynth advertises fixed
+/// nonzero values (32 / 4800) precisely so this can assert a real round trip — a broken
+/// accessor reading the 0 fallback fails.
+#[test]
+#[ignore = "Requires the bundled TestSynth (just test-plugin)"]
+fn test_latency_and_tail_accessors() {
+    let _guard = plugin_guard();
+    let Some((_host, plugin)) = load_test_synth() else {
+        return;
+    };
+    assert_eq!(plugin.latency_samples(), 32, "TestSynth advertises 32");
+    assert_eq!(plugin.tail_samples(), 4800, "TestSynth advertises 4800");
+}
+
+/// Latency/tail accessors across the *process-isolation* boundary: both round-trip over IPC
+/// instead of silently reporting the 0 fallback. Mirrors [`test_latency_and_tail_accessors`]
+/// with the same exact-value assertions.
+#[cfg(feature = "process-isolation")]
+#[test]
+#[ignore = "Requires the bundled TestSynth (just test-plugin) and the helper binary"]
+fn test_latency_and_tail_accessors_isolated() {
+    let _guard = plugin_guard();
+    let Some((_host, plugin)) = load_test_synth_isolated() else {
+        return;
+    };
+    assert_eq!(
+        plugin.latency_samples(),
+        32,
+        "isolated latency must marshal TestSynth's advertised 32, not the 0 fallback"
+    );
+    assert_eq!(
+        plugin.tail_samples(),
+        4800,
+        "isolated tail must marshal TestSynth's advertised 4800, not the 0 fallback"
+    );
+}
+
+// --- Pure-logic tests (run in CI without a plugin) ---------------------------
+
+/// The builder records tempo / time-signature on the config without needing a plugin.
+#[test]
+fn test_builder_tempo_time_signature_recorded() {
+    let host = Vst3Host::builder()
+        .tempo(90.0)
+        .time_signature(6, 8)
+        .build()
+        .expect("build host");
+    assert_eq!(host.config().tempo, 90.0);
+    assert_eq!(host.config().time_sig_numerator, 6);
+    assert_eq!(host.config().time_sig_denominator, 8);
+}
+
+/// Defaults: tempo 120 bpm, 4/4 time signature.
+#[test]
+fn test_default_transport_config() {
+    let host = Vst3Host::new().expect("build host");
+    assert_eq!(host.config().tempo, 120.0);
+    assert_eq!(host.config().time_sig_numerator, 4);
+    assert_eq!(host.config().time_sig_denominator, 4);
+}
+
+/// A PluginPreset serializes and deserializes through serde, preserving uid/name/state.
+/// This is the on-disk wire format used by save_preset/load_preset, exercised without
+/// touching a plugin.
+#[test]
+fn test_plugin_preset_serde_roundtrip() {
+    use vst3_host::plugin::PluginPreset;
+
+    let preset = PluginPreset {
+        uid: "0123456789abcdef0123456789abcdef".to_string(),
+        plugin_name: "TestSynth".to_string(),
+        state: vec![1, 2, 3, 4, 250, 0, 99],
+    };
+    let json = serde_json::to_vec_pretty(&preset).expect("serialize");
+    let back: PluginPreset = serde_json::from_slice(&json).expect("deserialize");
+
+    assert_eq!(back.uid, preset.uid);
+    assert_eq!(back.plugin_name, preset.plugin_name);
+    assert_eq!(back.state, preset.state);
+}
+
+// ---------------------------------------------------------------------------
+// TestSynth capability coverage: these run the library's state, program, MIDI-mapping and
+// sample-accurate-event paths against the in-repo synth, so they need no third-party plugin.
+// ---------------------------------------------------------------------------
+
+/// State persistence: parameter values survive a save_state → fresh instance → load_state trip.
+#[test]
+#[ignore = "Requires the bundled TestSynth (just test-plugin)"]
+fn test_testsynth_state_roundtrip() {
+    let _guard = plugin_guard();
+    let Some((_host, mut plugin)) = load_test_synth() else {
+        return;
+    };
+    plugin.set_parameter(0, 0.33).expect("set cutoff"); // Cutoff
+    plugin.set_parameter(2, 0.77).expect("set detune"); // Detune
+    plugin.set_parameter(7, 0.41).expect("set sustain"); // Amp Sustain
+                                                         // Parameter changes reach the processor as part of process(), so run one block before
+                                                         // asking the processor to serialize its state.
+    plugin.start_processing().expect("start_processing");
+    let mut buffers = AudioBuffers::new(0, 2, 512, 48000.0);
+    plugin.process_audio(&mut buffers).expect("process_audio");
+    plugin.stop_processing().ok();
+    let state = plugin.save_state().expect("save_state");
+    assert!(!state.is_empty(), "saved state is empty");
+    drop(plugin);
+
+    let (_host2, mut restored) = load_test_synth().expect("second load");
+    restored.load_state(&state).expect("load_state");
+    assert_eq!(
+        restored.save_state().expect("save restored state"),
+        state,
+        "component and controller streams must both round-trip exactly"
+    );
+    for (id, expected) in [(0u32, 0.33), (2, 0.77), (7, 0.41)] {
+        let got = restored.get_parameter(id).expect("get_parameter");
+        assert!(
+            (got - expected).abs() < 1e-9,
+            "param {id} did not survive the state round-trip: got {got}, expected {expected}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "Requires the bundled TestSynth (just test-plugin)"]
+fn test_testsynth_vstpreset_contains_and_restores_controller_state() {
+    let _guard = plugin_guard();
+    let Some((_host, mut plugin)) = load_test_synth() else {
+        return;
+    };
+    plugin.set_parameter(0, 0.33).expect("set cutoff");
+    plugin.start_processing().expect("start");
+    let mut buffers = AudioBuffers::new(0, 2, 512, 48000.0);
+    plugin.process_audio(&mut buffers).expect("process");
+    plugin.stop_processing().expect("stop");
+
+    let first = std::env::temp_dir().join(format!(
+        "vst3-host-testsynth-state-{}.vstpreset",
+        std::process::id()
+    ));
+    let second = std::env::temp_dir().join(format!(
+        "vst3-host-testsynth-restored-{}.vstpreset",
+        std::process::id()
+    ));
+    plugin.save_vstpreset(&first).expect("save preset");
+    let first_bytes = std::fs::read(&first).expect("read preset");
+    assert!(
+        first_bytes.windows(4).any(|window| window == b"Cont"),
+        "controller-state chunk missing"
+    );
+
+    plugin.set_parameter(0, 0.91).expect("mutate controller");
+    plugin.load_vstpreset(&first).expect("restore preset");
+    plugin
+        .save_vstpreset(&second)
+        .expect("save restored preset");
+    let second_bytes = std::fs::read(&second).expect("read restored preset");
+    let _ = std::fs::remove_file(first);
+    let _ = std::fs::remove_file(second);
+    assert_eq!(
+        second_bytes, first_bytes,
+        "component and controller chunks must restore byte-for-byte"
+    );
+}
+
+#[test]
+#[ignore = "Requires the bundled TestSynth (just test-plugin)"]
+fn test_testsynth_load_state_restores_running_lifecycle() {
+    let _guard = plugin_guard();
+    let Some((_host, mut plugin)) = load_test_synth() else {
+        return;
+    };
+    plugin.set_parameter(0, 0.31).expect("set cutoff");
+    plugin.start_processing().expect("start");
+    let mut buffers = AudioBuffers::new(0, 2, 512, 48000.0);
+    plugin
+        .process_audio(&mut buffers)
+        .expect("process initial state");
+    let snapshot = plugin.save_state().expect("save while processing");
+
+    plugin.set_parameter(0, 0.88).expect("mutate cutoff");
+    plugin
+        .process_audio(&mut buffers)
+        .expect("process mutation");
+    plugin
+        .load_state(&snapshot)
+        .expect("restore while processing");
+    plugin
+        .process_audio(&mut buffers)
+        .expect("processing must resume after state restore");
+    assert_eq!(
+        plugin.save_state().expect("save resumed state"),
+        snapshot,
+        "running restore must preserve both state streams"
+    );
+    plugin.stop_processing().expect("stop");
+}
+
+#[cfg(feature = "process-isolation")]
+#[test]
+#[ignore = "Requires the bundled TestSynth and helper binary"]
+fn test_isolated_testsynth_component_and_controller_state_roundtrip() {
+    let _guard = plugin_guard();
+    let Some((_host, mut plugin)) = load_test_synth_isolated() else {
+        return;
+    };
+    plugin.set_parameter(0, 0.37).expect("set cutoff");
+    plugin.start_processing().expect("start");
+    let mut buffers = AudioBuffers::new(0, 2, 512, 48000.0);
+    plugin.process_audio(&mut buffers).expect("process");
+    plugin.stop_processing().expect("stop");
+    let snapshot = plugin.save_state().expect("save over isolation");
+
+    plugin.set_parameter(0, 0.82).expect("mutate controller");
+    plugin.load_state(&snapshot).expect("load over isolation");
+    assert_eq!(
+        plugin.save_state().expect("re-save over isolation"),
+        snapshot,
+        "isolated component and controller streams must round-trip exactly"
+    );
+}
+
+/// Factory programs: IUnitInfo exposes the list, and select_program loads the preset.
+#[test]
+#[ignore = "Requires the bundled TestSynth (just test-plugin)"]
+fn test_testsynth_program_selection() {
+    let _guard = plugin_guard();
+    let Some((_host, mut plugin)) = load_test_synth() else {
+        return;
+    };
+    let units = plugin.get_units().expect("get_units");
+    let root = units
+        .iter()
+        .find(|u| !u.programs.is_empty())
+        .expect("TestSynth should expose a unit with programs");
+    assert_eq!(
+        root.programs,
+        vec!["Init Sine", "Trance Pluck", "Super Lead", "Lush Pad"],
+        "unexpected factory program list"
+    );
+
+    plugin
+        .select_program(root.id, 1)
+        .expect("select Trance Pluck");
+    // The Trance Pluck preset sets Cutoff (#0) to 0.42 and Waveform (#1) to Super Saw (1.0).
+    let cutoff = plugin.get_parameter(0).expect("get cutoff");
+    let waveform = plugin.get_parameter(1).expect("get waveform");
+    assert!(
+        (cutoff - 0.42).abs() < 1e-9,
+        "program change did not load preset cutoff (got {cutoff})"
+    );
+    assert!(
+        (waveform - 1.0).abs() < 1e-9,
+        "program change did not load preset waveform (got {waveform})"
+    );
+}
+
+/// Sample-accurate events: a note scheduled at offset 256 keeps the block's leading window
+/// silent (same differential design as the Dexed variant of this test).
+#[test]
+#[ignore = "Requires the bundled TestSynth (just test-plugin)"]
+fn test_testsynth_sample_accurate_offset() {
+    let _guard = plugin_guard();
+
+    const BLOCK: usize = 512;
+    const OFFSET: i32 = 256;
+    const WINDOW: usize = 200;
+
+    fn render_onset(offset: i32) -> Option<(f32, f32)> {
+        let path = test_synth_path()?;
+        let mut host = Vst3Host::builder()
+            .sample_rate(48000.0)
+            .block_size(BLOCK)
+            .build()
+            .expect("build host");
+        let mut plugin = host.load_plugin(path).expect("load TestSynth");
+        plugin.start_processing().expect("start_processing");
+        let note = MidiEvent::NoteOn {
+            channel: MidiChannel::Ch1,
+            note: 60,
+            velocity: 110,
+        };
+        plugin
+            .send_midi_event_at(note, offset)
+            .expect("send at offset");
+        let mut buffers = AudioBuffers::new(0, 2, BLOCK, 48000.0);
+        plugin.process_audio(&mut buffers).expect("process_audio");
+        let peak = |range: std::ops::Range<usize>| {
+            buffers
+                .outputs
+                .iter()
+                .flat_map(|ch| ch[range.clone()].iter())
+                .fold(0.0f32, |m, &s| m.max(s.abs()))
+        };
+        Some((peak(0..WINDOW), peak(OFFSET as usize..BLOCK)))
+    }
+
+    let Some((early_at_0, _)) = render_onset(0) else {
+        return;
+    };
+    let (early_at_256, late_at_256) = render_onset(OFFSET).expect("second load");
+    println!(
+        "TestSynth offset0 early={early_at_0:.5} offset256 early={early_at_256:.5} late={late_at_256:.5}"
+    );
+    assert!(
+        early_at_0 > 1e-4,
+        "control produced no audio in the leading window"
+    );
+    assert!(late_at_256 > 1e-4, "offset note produced no audio at all");
+    assert!(
+        early_at_256 < early_at_0 * 0.1,
+        "offset did not delay onset: early {early_at_256} vs control {early_at_0}"
+    );
+}
+
+/// IMidiMapping: the documented CC assignments resolve, unmapped/invalid CCs do not.
+#[test]
+#[ignore = "Requires the bundled TestSynth (just test-plugin)"]
+fn test_testsynth_midi_cc_mapping() {
+    let _guard = plugin_guard();
+    let Some((_host, plugin)) = load_test_synth() else {
+        return;
+    };
+    // Mod wheel → Filter Env Amount (#13), GM2 sound controllers → filter/env params.
+    assert_eq!(plugin.midi_cc_to_parameter(0, 0, 1), Some(13));
+    assert_eq!(plugin.midi_cc_to_parameter(0, 0, 71), Some(4)); // Resonance
+    assert_eq!(plugin.midi_cc_to_parameter(0, 0, 72), Some(8)); // Amp Release
+    assert_eq!(plugin.midi_cc_to_parameter(0, 0, 73), Some(5)); // Amp Attack
+    assert_eq!(plugin.midi_cc_to_parameter(0, 0, 74), Some(0)); // Cutoff
+    assert_eq!(plugin.midi_cc_to_parameter(0, 0, 7), None); // volume: unmapped
+    assert_eq!(plugin.midi_cc_to_parameter(0, 0, 200), None); // out of range
+}
+
+/// A bundle without moduleinfo.json falls back to the factory's Plugin Compatibility Class,
+/// exposes the validated mapping, and can restore a session through the retired class id.
+#[test]
+#[ignore = "Requires the bundled TestSynth (just test-plugin)"]
+fn test_testsynth_runtime_plugin_compatibility() {
+    const CURRENT_UID: &str = "5445535453594E5450524F4300000001";
+    const OLD_UID: &str = "4F4C44504C5547494E43494400000001";
+
+    let _guard = plugin_guard();
+    let Some(path) = test_synth_path() else {
+        return;
+    };
+    let mappings = vst3_host::discovery::get_plugin_compatibility(std::path::Path::new(path))
+        .expect("runtime compatibility discovery");
+    assert_eq!(mappings.len(), 1);
+    assert_eq!(mappings[0].new_class_id, CURRENT_UID);
+    assert_eq!(mappings[0].old_class_ids, [OLD_UID]);
+
+    let mut host = Vst3Host::builder().build().expect("build host");
+    let plugin = host.load_plugin(path).expect("load current class");
+    assert_eq!(plugin.replaced_class_ids(), [OLD_UID]);
+    drop(plugin);
+
+    let migrated = host
+        .load_plugin_class(path, OLD_UID)
+        .expect("load replacement through retired id");
+    assert_eq!(migrated.info().uid, CURRENT_UID);
+    assert_eq!(migrated.replaced_class_ids(), [OLD_UID]);
+
+    #[cfg(feature = "process-isolation")]
+    {
+        let mut isolated_host = Vst3Host::builder()
+            .with_process_isolation(true)
+            .build()
+            .expect("build isolated host");
+        let isolated = isolated_host
+            .load_plugin_class(path, OLD_UID)
+            .expect("load isolated replacement through retired id");
+        assert_eq!(isolated.info().uid, CURRENT_UID);
+        assert_eq!(isolated.replaced_class_ids(), [OLD_UID]);
+    }
+}
+
+/// IRemapParamID receives the predecessor class id in native TUID byte order and maps its old
+/// cutoff id deterministically. The same canonical text crosses isolation unchanged.
+#[test]
+#[ignore = "Requires the bundled TestSynth (just test-plugin)"]
+fn test_testsynth_parameter_id_remapping() {
+    const OLD_UID: &str = "4F4C44504C5547494E43494400000001";
+    const OLD_CUTOFF_ID: u32 = 0xCAFE_BABE;
+
+    let _guard = plugin_guard();
+    let Some((_host, plugin)) = load_test_synth() else {
+        return;
+    };
+    assert_eq!(
+        plugin
+            .remap_parameter_id(OLD_UID, OLD_CUTOFF_ID)
+            .expect("remap old cutoff"),
+        Some(0)
+    );
+    assert_eq!(
+        plugin
+            .remap_parameter_id(OLD_UID, OLD_CUTOFF_ID + 1)
+            .expect("unmapped old id"),
+        None
+    );
+    assert!(plugin.remap_parameter_id("not-a-class-id", 1).is_err());
+    drop(plugin);
+
+    #[cfg(feature = "process-isolation")]
+    {
+        let (_host, isolated) = load_test_synth_isolated().expect("load isolated TestSynth");
+        assert_eq!(
+            isolated
+                .remap_parameter_id(OLD_UID, OLD_CUTOFF_ID)
+                .expect("remap old cutoff across isolation"),
+            Some(0)
+        );
+        assert_eq!(
+            isolated
+                .remap_parameter_id("00000000000000000000000000000000", OLD_CUTOFF_ID)
+                .expect("unmapped old class across isolation"),
+            None
+        );
+    }
+}
+
+/// Input CC, channel pressure, and pitch bend are IMidiMapping automation, never legacy
+/// controller-output events on the input event list. TestSynth ignores legacy CC input (except
+/// panic), then echoes processor input points through outputParameterChanges, so this proves both
+/// halves of the host path.
+#[test]
+#[ignore = "Requires the bundled TestSynth (just test-plugin)"]
+fn test_testsynth_mapped_midi_reaches_processor_and_returns_feedback() {
+    let _guard = plugin_guard();
+    let Some((_host, mut plugin)) = load_test_synth() else {
+        return;
+    };
+    plugin.start_processing().expect("start_processing");
+    let mut buffers = AudioBuffers::new(0, 2, 64, 48_000.0);
+
+    let cases = [
+        (
+            MidiEvent::ControlChange {
+                channel: MidiChannel::Ch1,
+                controller: 74,
+                value: 63,
+            },
+            0,
+            63.0 / 127.0,
+        ),
+        (
+            MidiEvent::ChannelAftertouch {
+                channel: MidiChannel::Ch1,
+                pressure: 96,
+            },
+            11,
+            96.0 / 127.0,
+        ),
+        (
+            MidiEvent::PitchBend {
+                channel: MidiChannel::Ch1,
+                value: 12_345,
+            },
+            3,
+            12_345.0 / 16_383.0,
+        ),
+    ];
+    for (event, expected_id, expected_value) in cases {
+        plugin.send_midi_event_at(event, 17).expect("queue MIDI");
+        plugin.process_audio(&mut buffers).expect("process");
+        let feedback = plugin.get_parameter_changes();
+        assert!(
+            feedback
+                .iter()
+                .any(|&(id, value)| id == expected_id
+                    && (value - expected_value).abs() < f64::EPSILON),
+            "missing mapped feedback for {event:?}: {feedback:?}"
+        );
+    }
+}
+
+/// Processor-originated parameter feedback must cross the helper boundary instead of being
+/// silently discarded by the isolated `PluginInternal` implementation.
+#[cfg(feature = "process-isolation")]
+#[test]
+#[ignore = "Requires the bundled TestSynth and helper binary"]
+fn test_isolated_testsynth_returns_parameter_feedback() {
+    let _guard = plugin_guard();
+    let Some((_host, mut plugin)) = load_test_synth_isolated() else {
+        return;
+    };
+    plugin.start_processing().expect("start processing");
+    plugin
+        .send_midi_event_at(
+            MidiEvent::ControlChange {
+                channel: MidiChannel::Ch1,
+                controller: 74,
+                value: 63,
+            },
+            17,
+        )
+        .expect("queue mapped MIDI");
+    let mut buffers = AudioBuffers::new(0, 2, 64, 48_000.0);
+    plugin.process_audio(&mut buffers).expect("process");
+
+    let feedback = plugin.get_parameter_changes();
+    assert!(
+        feedback
+            .iter()
+            .any(|&(id, value)| id == 0 && (value - 63.0 / 127.0).abs() < f64::EPSILON),
+        "isolated mapped parameter feedback was not returned: {feedback:?}"
+    );
+    assert!(
+        plugin.get_parameter_changes().is_empty(),
+        "parameter feedback command must drain the helper queue"
+    );
+}
+
+/// The super saw is genuinely stereo: with detune up, left and right differ; the default
+/// sine stays mono (identical channels), which older tests rely on.
+#[test]
+#[ignore = "Requires the bundled TestSynth (just test-plugin)"]
+fn test_testsynth_supersaw_stereo() {
+    let _guard = plugin_guard();
+    let Some((_host, mut plugin)) = load_test_synth() else {
+        return;
+    };
+    plugin.start_processing().expect("start_processing");
+
+    let note = MidiEvent::NoteOn {
+        channel: MidiChannel::Ch1,
+        note: 57,
+        velocity: 100,
+    };
+    let side_energy = |plugin: &mut Plugin| {
+        let mut buffers = AudioBuffers::new(0, 2, 4096, 48000.0);
+        plugin.process_audio(&mut buffers).expect("process_audio");
+        buffers.outputs[0]
+            .iter()
+            .zip(buffers.outputs[1].iter())
+            .map(|(l, r)| ((l - r) * (l - r)) as f64)
+            .sum::<f64>()
+    };
+
+    // Control: default sine is mono — channels identical.
+    plugin.send_midi_event(note).expect("note on (sine)");
+    let sine_side = side_energy(&mut plugin);
+    plugin
+        .send_midi_event(MidiEvent::NoteOff {
+            channel: MidiChannel::Ch1,
+            note: 57,
+            velocity: 0,
+        })
+        .expect("note off");
+    let _ = side_energy(&mut plugin); // let releases die out
+
+    // Super saw with detune: the panned side oscillators must decorrelate the channels.
+    plugin.set_parameter(1, 1.0).expect("waveform → super saw");
+    plugin.set_parameter(2, 0.6).expect("detune");
+    plugin.send_midi_event(note).expect("note on (supersaw)");
+    let saw_side = side_energy(&mut plugin);
+
+    println!("side energy: sine={sine_side:.6}, supersaw={saw_side:.6}");
+    assert!(
+        sine_side < 1e-9,
+        "sine should be mono (side energy {sine_side})"
+    );
+    assert!(
+        saw_side > 1e-4,
+        "super saw should be stereo (side energy {saw_side})"
+    );
+}
+
+/// Multitimbral routing: TestSynth plays MIDI channel 2 with a second timbre gated by its
+/// "Ch2 Level" parameter — channel-2 notes are silent at the default level 0 (proving the
+/// event's channel actually reaches the plugin) and audible once the part is dialed up.
+#[test]
+#[ignore = "Requires the bundled TestSynth (just test-plugin)"]
+fn test_testsynth_multitimbral_channels() {
+    let _guard = plugin_guard();
+    let Some((_host, mut plugin)) = load_test_synth() else {
+        return;
+    };
+    let params = plugin.get_parameters().expect("get_parameters");
+    let ch2_level = params
+        .iter()
+        .find(|p| p.name == "Ch2 Level")
+        .expect("Ch2 Level param")
+        .id;
+    plugin.start_processing().expect("start_processing");
+
+    let peak_of = |plugin: &mut Plugin, channel: MidiChannel| {
+        plugin
+            .send_midi_event(MidiEvent::NoteOn {
+                channel,
+                note: 60,
+                velocity: 100,
+            })
+            .expect("note on");
+        let mut peak = 0.0f32;
+        for _ in 0..4 {
+            let mut buffers = AudioBuffers::new(0, 2, 4096, 48000.0);
+            plugin.process_audio(&mut buffers).expect("process_audio");
+            for ch in &buffers.outputs {
+                for &s in ch {
+                    peak = peak.max(s.abs());
+                }
+            }
+        }
+        plugin
+            .send_midi_event(MidiEvent::NoteOff {
+                channel,
+                note: 60,
+                velocity: 0,
+            })
+            .expect("note off");
+        // Drain the release tail so runs don't bleed into each other.
+        for _ in 0..4 {
+            let mut buffers = AudioBuffers::new(0, 2, 4096, 48000.0);
+            plugin.process_audio(&mut buffers).expect("process_audio");
+        }
+        peak
+    };
+
+    let ch1 = peak_of(&mut plugin, MidiChannel::Ch1);
+    let ch2_muted = peak_of(&mut plugin, MidiChannel::Ch2);
+    plugin.set_parameter(ch2_level, 1.0).expect("set ch2 level");
+    let ch2_live = peak_of(&mut plugin, MidiChannel::Ch2);
+
+    println!(
+        "multitimbral peaks: ch1={ch1:.4} ch2(level 0)={ch2_muted:.4} ch2(level 1)={ch2_live:.4}"
+    );
+    assert!(ch1 > 1e-3, "channel 1 should sound with the live params");
+    assert!(
+        ch2_muted < 1e-5,
+        "channel 2 should be silent at Ch2 Level 0 (got {ch2_muted})"
+    );
+    assert!(
+        ch2_live > 1e-3,
+        "channel 2 should sound once Ch2 Level is up (got {ch2_live})"
+    );
+}
+
+/// A caller block *larger* than the configured block size must still be rendered end to end.
+///
+/// The plugin may only be handed `maxSamplesPerBlock` samples per `process()` call, so the host
+/// splits an oversized block into successive chunks. Before it did, only the first `block_size`
+/// frames were filled and the rest of every buffer stayed at whatever the caller pre-filled —
+/// silence — which is an audible gate at the device's block rate, plus a transport that advances
+/// at a fraction of real time. Reachable in practice because the cpal backend clamps the requested
+/// buffer size *up* into the device's supported range, and `BufferSize::Default` lets the device
+/// pick its own size.
+#[test]
+#[ignore = "Requires the bundled TestSynth (just test-plugin)"]
+fn oversized_caller_block_is_rendered_in_full() {
+    let _guard = plugin_guard();
+    let Some(path) = test_synth_path() else {
+        return;
+    };
+
+    let block = 256usize;
+    let mut host = Vst3Host::builder()
+        .sample_rate(48000.0)
+        .block_size(block)
+        .build()
+        .expect("build host");
+    let mut plugin = host.load_plugin(path).expect("load TestSynth");
+
+    plugin.start_processing().expect("start_processing");
+    let id = plugin
+        .note_on(MidiChannel::Ch1, 60, 100)
+        .expect("note_on returns a NoteId");
+
+    // Ask for four times the configured block in a single call.
+    let chunks = 4;
+    let frames = block * chunks;
+    let mut buffers = AudioBuffers::new(0, 2, frames, 48000.0);
+    plugin
+        .process_audio(&mut buffers)
+        .expect("process_audio with an oversized block");
+
+    plugin.note_off(id).ok();
+    plugin.stop_processing().ok();
+
+    // Every chunk-sized slice must carry signal, not just the first.
+    let peaks: Vec<f32> = buffers.outputs[0]
+        .chunks(block)
+        .map(|c| c.iter().fold(0.0f32, |m, s| m.max(s.abs())))
+        .collect();
+    println!("per-chunk peaks across an oversized block: {peaks:?}");
+    assert_eq!(peaks.len(), chunks);
+    for (i, peak) in peaks.iter().enumerate() {
+        assert!(
+            *peak > 0.0,
+            "chunk {i} of {chunks} was silent (peaks: {peaks:?}) — the oversized block was \
+             truncated to the configured block size instead of being split"
+        );
+    }
+}
+
+/// `AudioBuffers`' channel Vecs are public, so nothing guarantees they are all the same length.
+/// The block length is taken from the first channel, so a shorter later channel meant the chunked
+/// output copy indexed it at an offset past its end — `ch[start..start]` still panics when
+/// `start > len`. Reachable through the documented API, and inside the isolation helper, which
+/// forwards the client's `inputs` verbatim while sizing `outputs` from `frames`.
+#[test]
+#[ignore = "Requires the bundled TestSynth (just test-plugin)"]
+fn ragged_channel_lengths_do_not_panic() {
+    let _guard = plugin_guard();
+    let Some(path) = test_synth_path() else {
+        return;
+    };
+
+    let block = 256usize;
+    let mut host = Vst3Host::builder()
+        .sample_rate(48000.0)
+        .block_size(block)
+        .build()
+        .expect("build host");
+    let mut plugin = host.load_plugin(path).expect("load TestSynth");
+    plugin.start_processing().expect("start_processing");
+    let id = plugin.note_on(MidiChannel::Ch1, 60, 100).expect("note_on");
+
+    // Channel 0 spans four chunks; channel 1 stops partway through the second.
+    let mut buffers = AudioBuffers::new(0, 2, block * 4, 48000.0);
+    buffers.outputs[1].truncate(300);
+    plugin
+        .process_audio(&mut buffers)
+        .expect("ragged output channels must not panic or error");
+
+    // The long channel is still fully rendered; the short one is filled only as far as it goes.
+    let long_peak = buffers.outputs[0][block * 3..]
+        .iter()
+        .fold(0.0f32, |m, s| m.max(s.abs()));
+    assert!(long_peak > 0.0, "the full-length channel lost its tail");
+    assert_eq!(buffers.outputs[1].len(), 300, "short channel was resized");
+
+    // Ragged *inputs* too (an effect-style call with a short input channel).
+    let mut buffers = AudioBuffers::new(2, 2, block * 4, 48000.0);
+    buffers.inputs[1].truncate(17);
+    plugin
+        .process_audio(&mut buffers)
+        .expect("ragged input channels must not panic or error");
+
+    plugin.note_off(id).ok();
+    plugin.stop_processing().ok();
+}
+
+// ---------------------------------------------------------------------------
+// Multi-class factory, single-component state, and the editor handshake.
+//
+// TestSynth's factory exports two audio classes and its controller publishes what the editor
+// view and the component actually saw as read-only parameters. That turns three paths which are
+// otherwise pure side effects inside a plugin — class selection, single-component state, and the
+// `IPlugView` protocol — into things a headless test can assert on. Ids and encodings are
+// documented in `test-plugin/src/lib.rs` under "Editor and state instrumentation"; every scale
+// is a power of two, so the decoding below is exact and needs no tolerance.
+// ---------------------------------------------------------------------------
+
+/// The two audio classes TestSynth's factory exports, in factory order. Canonical
+/// (separator-free) FUID text: identical on every platform, because the host un-swaps the
+/// Windows COM byte order when it formats a class id.
+const DUAL_CLASS_UID: &str = "5445535453594E5450524F4300000001";
+const SINGLE_CLASS_UID: &str = "5445535453594E5453494E4700000001";
+
+const EDITOR_ATTACHED_PARAM_ID: u32 = 1000;
+const EDITOR_WIDTH_PARAM_ID: u32 = 1001;
+const EDITOR_HEIGHT_PARAM_ID: u32 = 1002;
+const STATE_TYPE_PARAM_ID: u32 = 1004;
+const STATE_PATH_PARAM_ID: u32 = 1005;
+const STATE_APPLY_PARAM_ID: u32 = 1010;
+const EDITOR_SIZE_SCALE: f64 = 4096.0;
+const STATE_PROBE_SCALE: f64 = 4.0;
+const STATE_APPLY_SCALE: f64 = 64.0;
+
+/// `StateType` codes the plugin reports through [`STATE_TYPE_PARAM_ID`].
+const STATE_TYPE_PROJECT: u32 = 2;
+
+/// The size TestSynth's view asks the host for, once, right after it is attached.
+const EDITOR_SELF_RESIZE: (i32, i32) = (560, 400);
+/// The size range its `checkSizeConstraint` agrees to.
+const EDITOR_MIN_SIZE: (i32, i32) = (240, 160);
+const EDITOR_MAX_SIZE: (i32, i32) = (960, 640);
+
+/// Decode one instrumentation parameter back into the integer the plugin encoded.
+fn probe_code(plugin: &Plugin, id: u32, scale: f64) -> u32 {
+    let value = plugin
+        .get_parameter(id)
+        .unwrap_or_else(|e| panic!("read probe parameter {id}: {e}"));
+    (value * scale).round() as u32
+}
+
+/// The size of the most recent `IPlugView::onSize` the plugin's view received.
+fn editor_on_size(plugin: &Plugin) -> (i32, i32) {
+    (
+        probe_code(plugin, EDITOR_WIDTH_PARAM_ID, EDITOR_SIZE_SCALE) as i32,
+        probe_code(plugin, EDITOR_HEIGHT_PARAM_ID, EDITOR_SIZE_SCALE) as i32,
+    )
+}
+
+/// Split a `Plugin::save_state` blob into its documented parts: a 16-byte magic, then
+/// little-endian version / component length / controller length, then the payloads. A
+/// controller length of `u32::MAX` is the sentinel for "this plugin has no controller half".
+fn parse_state_envelope(state: &[u8]) -> (u32, &[u8], Option<&[u8]>) {
+    const MAGIC: &[u8; 16] = b"VST3HOST_STATE\0\0";
+    const HEADER: usize = 16 + 4 + 4 + 4;
+    assert!(
+        state.starts_with(MAGIC),
+        "state blob does not start with the VST3HOST_STATE magic: {:?}",
+        &state[..MAGIC.len().min(state.len())]
+    );
+    assert!(
+        state.len() >= HEADER,
+        "state blob is shorter than its header"
+    );
+    let read_u32 =
+        |offset: usize| u32::from_le_bytes(state[offset..offset + 4].try_into().expect("4 bytes"));
+    let version = read_u32(16);
+    let component_len = read_u32(20) as usize;
+    let controller_len = read_u32(24);
+    let component_end = HEADER + component_len;
+    assert!(
+        component_end <= state.len(),
+        "component length overruns the blob"
+    );
+    let controller = (controller_len != u32::MAX).then(|| {
+        let end = component_end + controller_len as usize;
+        assert!(end <= state.len(), "controller length overruns the blob");
+        &state[component_end..end]
+    });
+    (version, &state[HEADER..component_end], controller)
+}
+
+/// Load TestSynth's single-component class by class id, rather than whatever the factory
+/// happens to list first.
+fn load_test_synth_single() -> Option<(Vst3Host, Plugin)> {
+    let path = test_synth_path()?;
+    let mut host = Vst3Host::builder()
+        .sample_rate(48000.0)
+        .block_size(512)
+        .build()
+        .expect("build host");
+    let plugin = host
+        .load_plugin_class(path, SINGLE_CLASS_UID)
+        .expect("load TestSynth's single-component class");
+    Some((host, plugin))
+}
+
+/// A factory with more than one audio class: both must be enumerable and individually loadable,
+/// and the loaded plugin must report the class the caller asked for — not the first one in the
+/// factory. Without this, `load_plugin_class` could silently ignore its argument and every test
+/// that used it would still pass.
+#[test]
+#[ignore = "Requires the bundled TestSynth (just test-plugin)"]
+fn test_testsynth_factory_audio_classes_load_by_uid() {
+    let _guard = plugin_guard();
+    let Some(path) = test_synth_path() else {
+        return;
+    };
+
+    let detailed = vst3_host::discovery::get_detailed_plugin_info(std::path::Path::new(path))
+        .expect("introspect TestSynth");
+    let audio_classes: Vec<_> = detailed
+        .classes
+        .iter()
+        .filter(|class| class.category.contains("Audio Module Class"))
+        .collect();
+    let discovered: Vec<&str> = audio_classes
+        .iter()
+        .map(|class| class.class_id.as_str())
+        .collect();
+    println!("TestSynth audio classes: {discovered:?}");
+    assert_eq!(
+        discovered,
+        vec![DUAL_CLASS_UID, SINGLE_CLASS_UID],
+        "discovery must enumerate both audio classes, dual-object one first"
+    );
+
+    for class in &audio_classes {
+        let mut host = Vst3Host::builder()
+            .sample_rate(48000.0)
+            .block_size(512)
+            .build()
+            .expect("build host");
+        let plugin = host
+            .load_plugin_class(path, &class.class_id)
+            .unwrap_or_else(|e| panic!("load class {} ({}): {e}", class.name, class.class_id));
+        assert!(
+            plugin.info().uid.eq_ignore_ascii_case(&class.class_id),
+            "asked for class {} and got {}",
+            class.class_id,
+            plugin.info().uid
+        );
+    }
+
+    // A plain `load_plugin` still picks the factory's first audio class.
+    let mut host = Vst3Host::builder()
+        .sample_rate(48000.0)
+        .block_size(512)
+        .build()
+        .expect("build host");
+    let plugin = host.load_plugin(path).expect("load TestSynth");
+    assert!(
+        plugin.info().uid.eq_ignore_ascii_case(DUAL_CLASS_UID),
+        "an unqualified load must still land on the dual-object class, got {}",
+        plugin.info().uid
+    );
+}
+
+/// A single-component plugin has exactly one state stream. The envelope must say so with the
+/// documented sentinel instead of duplicating the component blob into the controller half —
+/// which would double the size, halve the effective size cap, and make `load_state` apply the
+/// same state twice.
+#[test]
+#[ignore = "Requires the bundled TestSynth (just test-plugin)"]
+fn test_testsynth_single_component_state_envelope_omits_the_controller_half() {
+    let _guard = plugin_guard();
+    let Some((_host, single)) = load_test_synth_single() else {
+        return;
+    };
+    let state = single.save_state().expect("save single-component state");
+    let (version, component, controller) = parse_state_envelope(&state);
+    println!(
+        "single-component envelope: version {version}, component {} bytes, controller {:?}",
+        component.len(),
+        controller.map(<[u8]>::len)
+    );
+    assert_eq!(version, 1, "unexpected state envelope version");
+    assert!(
+        controller.is_none(),
+        "a single-component plugin must produce no controller half, got {} bytes",
+        controller.map_or(0, <[u8]>::len)
+    );
+    assert_eq!(
+        u32::from_le_bytes(component[..4].try_into().expect("4 bytes")),
+        0x5453_5931,
+        "the component half must be TestSynth's own TSY1 blob"
+    );
+    drop(single);
+
+    // The dual-object class is the contrast that makes the assertion above mean something.
+    let Some((_host, dual)) = load_test_synth() else {
+        return;
+    };
+    let dual_state = dual.save_state().expect("save dual");
+    let (_, _, dual_controller) = parse_state_envelope(&dual_state);
+    assert!(
+        dual_controller.is_some(),
+        "the dual-object class does have a separate controller stream"
+    );
+}
+
+/// Save → fresh instance → load must restore the parameters, apply the state exactly once, and
+/// stay correct when the same blob is applied again.
+///
+/// The apply counter is the point: for a single-component plugin `IComponent::setState` and
+/// `IEditController::setComponentState` are two doors into the same object, so a host that calls
+/// both silently applies everything twice. Nothing about the restored values would show it.
+#[test]
+#[ignore = "Requires the bundled TestSynth (just test-plugin)"]
+fn test_testsynth_single_component_state_roundtrip_applies_state_exactly_once() {
+    let _guard = plugin_guard();
+    let Some((_host, mut plugin)) = load_test_synth_single() else {
+        return;
+    };
+    assert_eq!(
+        probe_code(&plugin, STATE_APPLY_PARAM_ID, STATE_APPLY_SCALE),
+        0,
+        "a freshly loaded plugin has had no state applied to it"
+    );
+
+    plugin.set_parameter(0, 0.37).expect("set cutoff");
+    plugin.set_parameter(4, 0.62).expect("set resonance");
+    plugin.start_processing().expect("start_processing");
+    let mut buffers = AudioBuffers::new(0, 2, 512, 48000.0);
+    plugin.process_audio(&mut buffers).expect("process_audio");
+    plugin.stop_processing().ok();
+    let state = plugin.save_state().expect("save_state");
+    drop(plugin);
+
+    let (_host2, mut restored) = load_test_synth_single().expect("second load");
+    restored.load_state(&state).expect("load_state");
+    assert_eq!(
+        probe_code(&restored, STATE_APPLY_PARAM_ID, STATE_APPLY_SCALE),
+        1,
+        "load_state must apply a single-component plugin's state once — a host that also \
+         pushes the component stream through setComponentState applies it twice"
+    );
+    for (id, expected) in [(0u32, 0.37), (4, 0.62)] {
+        let got = restored.get_parameter(id).expect("get_parameter");
+        assert!(
+            (got - expected).abs() < 1e-9,
+            "param {id} did not survive the round-trip: got {got}, expected {expected}"
+        );
+    }
+
+    // Applying the same blob a second time is one more apply and no corruption.
+    restored.load_state(&state).expect("second load_state");
+    assert_eq!(
+        probe_code(&restored, STATE_APPLY_PARAM_ID, STATE_APPLY_SCALE),
+        2,
+        "the second load_state must also apply exactly once"
+    );
+    for (id, expected) in [(0u32, 0.37), (4, 0.62)] {
+        let got = restored.get_parameter(id).expect("get_parameter");
+        assert!(
+            (got - expected).abs() < 1e-9,
+            "param {id} was corrupted by a repeated load_state: got {got}, expected {expected}"
+        );
+    }
+    assert_eq!(
+        restored.save_state().expect("re-save"),
+        state,
+        "a re-applied state must serialize back to the same bytes"
+    );
+}
+
+/// The single-component class shares the dual synth's DSP, so it has to actually make sound —
+/// otherwise the state coverage above would be testing an inert object.
+#[test]
+#[ignore = "Requires the bundled TestSynth (just test-plugin)"]
+fn test_testsynth_single_component_class_renders_a_note() {
+    let _guard = plugin_guard();
+    let Some((_host, mut plugin)) = load_test_synth_single() else {
+        return;
+    };
+    plugin.start_processing().expect("start_processing");
+    let id = plugin
+        .note_on(MidiChannel::Ch1, 60, 100)
+        .expect("note_on returns a NoteId");
+    let mut buffers = AudioBuffers::new(0, 2, 512, 48000.0);
+    plugin.process_audio(&mut buffers).expect("process_audio");
+    plugin.note_off(id).ok();
+    plugin.stop_processing().ok();
+
+    let peak = buffers.outputs[0]
+        .iter()
+        .fold(0.0f32, |m, s| m.max(s.abs()));
+    println!("single-component class peak after note-on: {peak:.4}");
+    assert!(peak > 0.001, "the single-component class rendered silence");
+}
+
+/// State restored as part of a session must reach the plugin tagged `StateType = Project`.
+/// Plugins branch on this (a project load may restore per-instance data a preset never carries),
+/// and an untagged stream reads to them as "no idea" — which the plugin cannot distinguish from
+/// a host that never sets it.
+#[test]
+#[ignore = "Requires the bundled TestSynth (just test-plugin)"]
+fn test_testsynth_load_state_is_tagged_as_a_project_load() {
+    let _guard = plugin_guard();
+    let Some((_host, mut plugin)) = load_test_synth() else {
+        return;
+    };
+    let state = plugin.save_state().expect("save_state");
+    plugin.load_state(&state).expect("load_state");
+
+    let seen = probe_code(&plugin, STATE_TYPE_PARAM_ID, STATE_PROBE_SCALE);
+    println!("load_state stream context: StateType code {seen}");
+    assert_eq!(
+        seen, STATE_TYPE_PROJECT,
+        "load_state must hand the plugin a stream tagged StateType=Project (code {STATE_TYPE_PROJECT})"
+    );
+}
+
+/// A `.vstpreset` load is not a project load, and the plugin has to be told where the preset
+/// came from — some plugins resolve sample or wavetable references relative to the preset file.
+#[test]
+#[ignore = "Requires the bundled TestSynth (just test-plugin)"]
+fn test_testsynth_load_vstpreset_is_tagged_as_a_preset_load() {
+    let _guard = plugin_guard();
+    let Some((_host, mut plugin)) = load_test_synth() else {
+        return;
+    };
+    let preset = std::env::temp_dir().join(format!(
+        "vst3-host-testsynth-context-{}.vstpreset",
+        std::process::id()
+    ));
+    plugin.save_vstpreset(&preset).expect("save vstpreset");
+    let load = plugin.load_vstpreset(&preset);
+    let _ = std::fs::remove_file(&preset);
+    load.expect("load vstpreset");
+
+    let state_type = probe_code(&plugin, STATE_TYPE_PARAM_ID, STATE_PROBE_SCALE);
+    let path_mask = probe_code(&plugin, STATE_PATH_PARAM_ID, STATE_PROBE_SCALE);
+    println!(
+        "load_vstpreset stream context: StateType code {state_type}, path mask 0b{path_mask:02b}"
+    );
+    assert_ne!(
+        state_type, STATE_TYPE_PROJECT,
+        "a .vstpreset load must not be tagged as a project load"
+    );
+    assert_ne!(
+        path_mask, 0,
+        "the host must tell the plugin which file the preset came from (FilePathString \
+         attribute, or IStreamAttributes::getFileName)"
+    );
+}
+
+/// The host's half of the resize protocol, end to end and without a window server.
+///
+/// `resize_editor` has to run the full negotiation — offer the size to `checkSizeConstraint`,
+/// take back whatever the view constrained it to, and deliver *that* through `onSize`. A host
+/// that skipped the constraint call, or that reported the clamped size while telling the view
+/// the unclamped one, would leave the editor drawing at a size the window is not.
+#[test]
+#[ignore = "Requires the bundled TestSynth (just test-plugin)"]
+fn test_testsynth_editor_resize_is_clamped_by_the_view() {
+    let _guard = plugin_guard();
+    let Some((_host, mut plugin)) = load_test_synth() else {
+        return;
+    };
+    assert!(plugin.has_editor(), "TestSynth publishes an editor view");
+    assert!(plugin.editor_can_resize(), "its view reports canResize");
+    assert_eq!(
+        plugin.get_editor_size().expect("editor size"),
+        (480, 320),
+        "the view's initial getSize"
+    );
+    assert!(!plugin.is_editor_open());
+    assert_eq!(plugin.attached_editor_size().expect("attached size"), None);
+    assert_eq!(plugin.attached_editor_can_resize(), None);
+
+    // TestSynth's view records the parent handle and never dereferences it, so a pointer to
+    // this local is a legal handle for it — and it keeps the test off the process main thread,
+    // which creating a real window would require.
+    let mut parent = 0u8;
+    // SAFETY: `parent` outlives the attached editor (closed at the end of this function), and
+    // the plugin under test is our own fixture, which stores the handle without ever using it
+    // as a window.
+    let handle = unsafe { WindowHandle::from_raw(&mut parent as *mut u8 as *mut std::ffi::c_void) };
+    plugin.open_editor(handle).expect("open editor");
+
+    assert!(plugin.is_editor_open());
+    assert_eq!(
+        plugin.attached_editor_size().expect("attached size"),
+        Some(EDITOR_SELF_RESIZE)
+    );
+    assert_eq!(plugin.attached_editor_can_resize(), Some(true));
+
+    assert_eq!(
+        probe_code(&plugin, EDITOR_ATTACHED_PARAM_ID, 1.0),
+        1,
+        "the view must have seen IPlugView::attached"
+    );
+    // The view asks the host for one resize as soon as it attaches; the host answers it inline
+    // with `onSize` and leaves the request for the window layer to pick up.
+    assert_eq!(
+        editor_on_size(&plugin),
+        EDITOR_SELF_RESIZE,
+        "the host did not answer the view's resizeView request with a matching onSize"
+    );
+    assert_eq!(
+        plugin.take_editor_resize_request(),
+        Some(EDITOR_SELF_RESIZE),
+        "the host must record the view's resize request for its window layer"
+    );
+
+    // Far past the view's maximum: the clamped size is what comes back *and* what the view is
+    // told through `onSize`.
+    assert_eq!(
+        plugin.resize_editor(4000, 4000).expect("oversized resize"),
+        EDITOR_MAX_SIZE
+    );
+    assert_eq!(editor_on_size(&plugin), EDITOR_MAX_SIZE);
+
+    // ...and below its minimum.
+    assert_eq!(
+        plugin.resize_editor(10, 10).expect("undersized resize"),
+        EDITOR_MIN_SIZE
+    );
+    assert_eq!(editor_on_size(&plugin), EDITOR_MIN_SIZE);
+
+    plugin.close_editor().expect("close editor");
+    assert!(!plugin.is_editor_open());
+    assert_eq!(plugin.attached_editor_size().expect("attached size"), None);
+    assert_eq!(plugin.attached_editor_can_resize(), None);
+    assert_eq!(
+        probe_code(&plugin, EDITOR_ATTACHED_PARAM_ID, 1.0),
+        0,
+        "closing the editor must call IPlugView::removed"
+    );
+}
+
+fn verify_sdk_compatibility_apis(plugin: &mut Plugin) {
+    use vst3_host::{
+        audio::BusDirection,
+        midi::MidiController,
+        plugin::{HostNotification, TransportPosition},
+        transport::Timeline,
+    };
+    let mappings = plugin
+        .midi_controller_assignments(BusDirection::Input)
+        .expect("mappings");
+    let controller = MidiController::Registered { bank: 1, index: 2 };
+    let mapped: Vec<_> = mappings
+        .iter()
+        .filter(|m| m.controller == controller)
+        .collect();
+    assert_eq!(mapped.len(), 2, "one controller maps to two parameters");
+    assert_eq!(
+        plugin
+            .midi_controller_assignments(BusDirection::Output)
+            .unwrap()
+            .len(),
+        1
+    );
+    plugin
+        .send_midi_controller_at(0, MidiChannel::Ch1, controller, 0.25, 0)
+        .unwrap();
+    for assignment in mapped {
+        assert_eq!(plugin.get_parameter(assignment.parameter_id).unwrap(), 0.25);
+    }
+
+    let keys = plugin
+        .keyswitches(0, MidiChannel::Ch1)
+        .expect("keyswitch metadata");
+    assert_eq!(keys.len(), 1);
+    assert_eq!(keys[0].title, "Legato");
+    assert_eq!(
+        (keys[0].key_min, keys[0].key_max, keys[0].remapped_key),
+        (24, 25, None)
+    );
+    assert_eq!(plugin.get_units().unwrap()[0].name, "Root");
+    assert_eq!(plugin.midi_cc_to_parameter(0, 0, 99), None);
+    // Ordinary MIDI must not learn.
+    let event = MidiEvent::ControlChange {
+        channel: MidiChannel::Ch1,
+        controller: 99,
+        value: 64,
+    };
+    plugin.send_midi_event(event).unwrap();
+    assert!(plugin.service_host_requests().unwrap().is_empty());
+    plugin.send_live_midi_event(event).unwrap();
+    let flags = plugin.service_host_requests().unwrap();
+    assert!(flags.param_titles_changed());
+    assert!(plugin.midi_cc_to_parameter(0, 0, 99).is_some());
+    assert_eq!(
+        plugin.get_units().unwrap()[0].name,
+        "Learned Root",
+        "unit cache must refresh"
+    );
+    let notifications = plugin.take_host_notifications();
+    assert!(notifications
+        .iter()
+        .any(|n| matches!(n, HostNotification::ProgressStarted { .. })));
+    assert!(notifications
+        .iter()
+        .any(|n| matches!(n, HostNotification::ProgressFinished { .. })));
+    assert!(notifications.iter().any(|n| matches!(
+        n,
+        HostNotification::BusActivationRequested {
+            bus_index: 0,
+            active: true,
+            ..
+        }
+    )));
+
+    plugin
+        .set_transport_position(TransportPosition {
+            samples: 480_000,
+            quarter_notes: 20.0,
+        })
+        .unwrap();
+    plugin.set_tempo(60.0).unwrap();
+    plugin.set_playing(true).unwrap();
+    plugin.start_processing().unwrap();
+    let mut buffers = AudioBuffers::new(0, 2, 480, 48_000.0);
+    plugin.process_audio(&mut buffers).unwrap();
+    let position = plugin.transport_position().unwrap();
+    assert_eq!(position.samples, 480_480);
+    assert!((position.quarter_notes - 20.01).abs() < 1e-9);
+    assert_eq!(plugin.latency_samples(), 32);
+    assert_eq!(plugin.tail_samples(), 4800);
+    plugin.set_playing(false).unwrap();
+    plugin.process_audio(&mut buffers).unwrap();
+    assert_eq!(plugin.transport_position().unwrap(), position);
+    plugin.stop_processing().unwrap();
+    plugin.reconfigure(44_100.0, 256).unwrap();
+    assert_eq!(plugin.transport_position().unwrap(), position);
+    plugin.reconfigure(48_000.0, 512).unwrap();
+    plugin.start_processing().unwrap();
+    assert_eq!(plugin.transport_position().unwrap(), position);
+    let mut timeline = Timeline::new(48_000.0, 120.0);
+    timeline.seek_frame(96_000);
+    plugin.set_playing(true).unwrap();
+    timeline.drive_block(plugin, &mut buffers).unwrap();
+    let position = plugin.transport_position().unwrap();
+    assert_eq!(position.samples, 96_480);
+    assert!((position.quarter_notes - 4.02).abs() < 1e-9);
+    plugin.stop_processing().unwrap();
+}
+
+#[test]
+#[ignore = "Requires bundled TestSynth (just test-plugin)"]
+fn test_testsynth_sdk_compatibility_apis() {
+    let _guard = plugin_guard();
+    let Some((_host, mut plugin)) = load_test_synth() else {
+        return;
+    };
+    verify_sdk_compatibility_apis(&mut plugin);
+}
+
+#[cfg(feature = "process-isolation")]
+#[test]
+#[ignore = "Requires bundled TestSynth and helper binary"]
+fn test_isolated_testsynth_sdk_compatibility_apis() {
+    let _guard = plugin_guard();
+    let Some((_host, mut plugin)) = load_test_synth_isolated() else {
+        return;
+    };
+    verify_sdk_compatibility_apis(&mut plugin);
+}

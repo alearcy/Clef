@@ -1,0 +1,35 @@
+[
+  {
+    "case": "Pianoverse VST3 AA Y7",
+    "path": "/private/tmp/clef-T02-Pianoverse-egui.wav",
+    "channels": 2,
+    "rate": 48000,
+    "sample_bytes": 3,
+    "frames": 2323200,
+    "peak_pcm24": 2484530,
+    "nonzero_samples": 4103979,
+    "sha256": "a67a39e229972206a0bc5e6cc00656afe6ba88504c200d54799fc9b47efc9d2a"
+  },
+  {
+    "case": "ZebraHZ VST3 initialize",
+    "path": "/private/tmp/clef-T02-ZebraHZ-vst3.wav",
+    "channels": 2,
+    "rate": 48000,
+    "sample_bytes": 3,
+    "frames": 2323200,
+    "peak_pcm24": 3465532,
+    "nonzero_samples": 4587469,
+    "sha256": "65cfa24d2a8aa1a5738244b2ff5a0e1720b1f9be98cdff6e0e60482de3001eb3"
+  },
+  {
+    "case": "ZebraHZ CLAP initialize",
+    "path": "/private/tmp/clef-T02-ZebraHZ-clap.wav",
+    "channels": 2,
+    "rate": 48000,
+    "sample_bytes": 3,
+    "frames": 2323200,
+    "peak_pcm24": 3336095,
+    "nonzero_samples": 4587417,
+    "sha256": "5f2c2aa58ec03fa8cd3f138d53737d2a948bf9473291e0b69bf20a9b74109f82"
+  }
+]

@@ -1,0 +1,13 @@
+[package]
+name = "clef-ui"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+publish = false
+
+[dependencies]
+clef-audio-io = { path = "../audio-io" }
+clef-model = { path = "../model" }
+clef-plugin-host = { path = "../plugin-host" }
+clef-session = { path = "../session" }
+eframe = { version = "=0.34.3", default-features = false, features = ["glow", "accesskit", "default_fonts"] }

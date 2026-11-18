@@ -1,0 +1,68 @@
+[
+  {
+    "project": "validation-output/T03-GUI-Pianoverse.clef",
+    "track": "Pianoverse Test",
+    "plugin": {
+      "path": "/Library/Audio/Plug-Ins/VST3/Pianoverse.vst3",
+      "id": "565354506956657069616E6F76657273",
+      "name": "Pianoverse",
+      "format": "VST3"
+    },
+    "audio": {
+      "device": "coreaudio:AppleUSBAudioEngine:Audient:Audient EVO16:110000:1,2",
+      "pair": [
+        0,
+        1
+      ],
+      "midi": "3770487230",
+      "rate": 44100,
+      "buffer": 256
+    },
+    "state_bytes": 901919,
+    "state_sha256": "a0f1d3c32f3bc205ac5293f33c1d5c342570b2b2c19f68df76e90f96d62f572b"
+  },
+  {
+    "project": "validation-output/T03-GUI-ZebraHZ-CLAP.clef",
+    "track": "Instrument 1",
+    "plugin": {
+      "path": "/Library/Audio/Plug-Ins/CLAP/u-he/ZebraHZ.clap",
+      "id": "com.u-he.ZebraHZ",
+      "name": "ZebraHZ",
+      "format": "CLAP"
+    },
+    "audio": {
+      "device": "coreaudio:AppleUSBAudioEngine:Audient:Audient EVO16:110000:1,2",
+      "pair": [
+        0,
+        1
+      ],
+      "midi": "3770487230",
+      "rate": 48000,
+      "buffer": 128
+    },
+    "state_bytes": 31344,
+    "state_sha256": "b1c3e8120eeb395aee583cece0fc4370b5a2e4caf105e916349cd262351d2d45"
+  },
+  {
+    "project": "validation-output/T03-GUI-ZebraHZ-VST3.clef",
+    "track": "Instrument 1",
+    "plugin": {
+      "path": "/Library/Audio/Plug-Ins/VST3/ZebraHZ.vst3",
+      "id": "D39D5B69D6AF42FA12345678534D485A",
+      "name": "ZebraHZ",
+      "format": "VST3"
+    },
+    "audio": {
+      "device": "coreaudio:AppleUSBAudioEngine:Audient:Audient EVO16:110000:1,2",
+      "pair": [
+        0,
+        1
+      ],
+      "midi": "3770487230",
+      "rate": 48000,
+      "buffer": 128
+    },
+    "state_bytes": 31192,
+    "state_sha256": "771a57456d4991ce7f68b7d4b0545fa25a5e939b7ac4a509b0bda2cd13d72028"
+  }
+]

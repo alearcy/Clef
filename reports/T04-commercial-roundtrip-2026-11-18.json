@@ -1,0 +1,10 @@
+{
+  "formats": [
+    "ZebraHZ VST3",
+    "ZebraHZ CLAP",
+    "Pianoverse VST3"
+  ],
+  "passed": true,
+  "scope": "Changed state roundtrip, lazy reopen, original editor lifecycle; no listening claim",
+  "tracks": 3
+}

@@ -1,0 +1,127 @@
+{
+  "lifecycle_diagnostics": [
+    "unregister ViewMan:AudioPrefs:'BaseLatencyBuffer16' from prefs",
+    "unregister ViewMan:AudioPrefs:'BaseLatencyBuffer16' from prefs",
+    "unregister ViewMan:AudioPrefs:'BaseLatencyBuffer16' from prefs",
+    "unregister ViewMan:AudioPrefs:'BaseLatencyBuffer16' from prefs",
+    "unregister ViewMan:AudioPrefs:'BaseLatencyBuffer16' from prefs",
+    "unregister ViewMan:AudioPrefs:'BaseLatencyBuffer16' from prefs",
+    "unregister ViewMan:AudioPrefs:'BaseLatencyBuffer16' from prefs",
+    "unregister ViewMan:AudioPrefs:'BaseLatencyBuffer16' from prefs",
+    "unregister ViewMan:AudioPrefs:'BaseLatencyBuffer16' from prefs",
+    "unregister ViewMan:AudioPrefs:'BaseLatencyBuffer16' from prefs"
+  ],
+  "sequence": "full scheduled range",
+  "plugin": "/Library/Audio/Plug-Ins/VST3/ZebraHZ.vst3",
+  "name": "ZebraHZ",
+  "state": null,
+  "latency_samples": 0,
+  "cycles": 10,
+  "processed_blocks": 14400,
+  "peak": 0.40760913,
+  "max_process_exchange_ms": 62.91970899997068,
+  "exchanges_over_128_frame_duration": 131,
+  "editor_exchanges": [
+    {
+      "cycle": 1,
+      "open": true,
+      "ms": 129.66991700000108
+    },
+    {
+      "cycle": 1,
+      "open": false,
+      "ms": 99.81945799995628
+    },
+    {
+      "cycle": 2,
+      "open": true,
+      "ms": 185.36108299986154
+    },
+    {
+      "cycle": 2,
+      "open": false,
+      "ms": 271.9877090000864
+    },
+    {
+      "cycle": 3,
+      "open": true,
+      "ms": 170.95545799998035
+    },
+    {
+      "cycle": 3,
+      "open": false,
+      "ms": 17.4906249999367
+    },
+    {
+      "cycle": 4,
+      "open": true,
+      "ms": 165.16666699999405
+    },
+    {
+      "cycle": 4,
+      "open": false,
+      "ms": 17.906540999774734
+    },
+    {
+      "cycle": 5,
+      "open": true,
+      "ms": 173.72516699992957
+    },
+    {
+      "cycle": 5,
+      "open": false,
+      "ms": 34.15208399997027
+    },
+    {
+      "cycle": 6,
+      "open": true,
+      "ms": 165.42929200022627
+    },
+    {
+      "cycle": 6,
+      "open": false,
+      "ms": 11.461166999879424
+    },
+    {
+      "cycle": 7,
+      "open": true,
+      "ms": 166.54508400006307
+    },
+    {
+      "cycle": 7,
+      "open": false,
+      "ms": 44.36279100013962
+    },
+    {
+      "cycle": 8,
+      "open": true,
+      "ms": 170.33562500000698
+    },
+    {
+      "cycle": 8,
+      "open": false,
+      "ms": 46.00970799992865
+    },
+    {
+      "cycle": 9,
+      "open": true,
+      "ms": 176.51599999999235
+    },
+    {
+      "cycle": 9,
+      "open": false,
+      "ms": 39.787124999975276
+    },
+    {
+      "cycle": 10,
+      "open": true,
+      "ms": 161.05570800004898
+    },
+    {
+      "cycle": 10,
+      "open": false,
+      "ms": 13.03762500015182
+    }
+  ],
+  "scope": "Concurrent worker RPC diagnostic; no audio device, listening or hardware evidence."
+}

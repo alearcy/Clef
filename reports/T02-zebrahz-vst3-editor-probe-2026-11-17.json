@@ -1,0 +1,12 @@
+{
+  "plugin": "/Library/Audio/Plug-Ins/VST3/ZebraHZ.vst3",
+  "error": "[Errno 2] No such file or directory: '/private/tmp/clef-zebrahz-initial.state'",
+  "worker_returncode": null,
+  "completed_cycles": 0,
+  "processing_failures": [],
+  "processed_blocks": 0,
+  "peak": 0.0,
+  "max_process_exchange_ms": 0,
+  "editor_exchanges": [],
+  "scope": "Failed worker-only diagnostic; no audio device or acceptance pass."
+}

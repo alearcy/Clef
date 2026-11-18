@@ -1,0 +1,11 @@
+{
+  "plugin": "/Users/arcy/dev/clef/validation-output/fixtures/ClefLatencyVST3.vst3",
+  "name": "Clef Latency Fixture",
+  "passed": true,
+  "old_latency": 0,
+  "new_latency": 257,
+  "impulse_offset": 37,
+  "transition_control_seconds": 0.0291099590012891,
+  "live_core_offline_max_error": 0,
+  "scope": "Worker processing and actual format notification; device gap is measured separately."
+}

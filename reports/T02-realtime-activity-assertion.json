@@ -1,0 +1,6 @@
+{
+  "observed_assertions": [
+    "pid 31437(Clef): [0x00002ffe0001a1fe] 00:00:17 PreventUserIdleSystemSleep named: \"Realtime isolated plugin processing\""
+  ],
+  "scope": "OS power assertions during the controlled realtime worker run; no performance pass inferred."
+}

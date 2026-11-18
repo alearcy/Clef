@@ -1,0 +1,2 @@
+lua:engine NoteFilterRes.get: unknown filter type
+Error: VST3 controller setComponentState failed: 3

@@ -1,0 +1,52 @@
+{
+  "binary_sha256": "eaf857da58df1fe2cbc03cf2381894a4b58d9bfc18991113632f6d179888d5e6",
+  "cases": [
+    {
+      "case": "pianoverse",
+      "path": "/Users/arcy/dev/clef/validation-output/exports/T02-pianoverse-final.wav",
+      "frames": 2323200,
+      "channels": 2,
+      "rate": 48000,
+      "sample_bytes": 3,
+      "peak_pcm24": 2438344,
+      "nonzero_samples": 4104527,
+      "last_second_peak_pcm24": 0,
+      "sha256": "dbc76db98af3e6ed05018dc6b9c1404c5eecbee09c54e5baae71d6d7b350b1f8",
+      "state_sha256": "4f96f927d7632b4d5280debadff309ae764c3a51f0dac3317fc773e39e13a6a6"
+    },
+    {
+      "case": "zebrahz-vst3",
+      "path": "/Users/arcy/dev/clef/validation-output/exports/T02-zebrahz-vst3-final.wav",
+      "frames": 2323200,
+      "channels": 2,
+      "rate": 48000,
+      "sample_bytes": 3,
+      "peak_pcm24": 1013118,
+      "nonzero_samples": 4584152,
+      "last_second_peak_pcm24": 73,
+      "sha256": "8f39a2e53734ce5613a4b7840bdefd4405224b1b0507ed38df45ace7926e9e86",
+      "state_sha256": "2346870f1fa03130f94956dbd79cc75e85c09906b18fb4dded4e5538ac0cfb1b"
+    },
+    {
+      "case": "zebrahz-clap",
+      "path": "/Users/arcy/dev/clef/validation-output/exports/T02-zebrahz-clap-final.wav",
+      "frames": 2323200,
+      "channels": 2,
+      "rate": 48000,
+      "sample_bytes": 3,
+      "peak_pcm24": 988473,
+      "nonzero_samples": 4584148,
+      "last_second_peak_pcm24": 63,
+      "sha256": "ff61a1ed06f842a511f5bb13981d3228f8cfad46810a247f978da74a3b3e3fb1",
+      "state_sha256": "94cec89811874e66ddb1940190a1ad1f904a3da8c1328beac26290c2cb014635"
+    }
+  ],
+  "all_three_passed": true,
+  "scope": "Final export format/readability/sample checks; listening and tail acceptance require user confirmation.",
+  "user_listening_confirmation": {
+    "all_three_verified": true,
+    "timbre_pitch_note_timing_duration_match_live": true,
+    "tails_finished_without_audible_boundary_cut": true,
+    "source": "User explicitly confirmed all three WAV comparisons and endings with no problems in this chat on 2026-11-17."
+  }
+}

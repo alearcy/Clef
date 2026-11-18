@@ -1,0 +1,115 @@
+{
+  "sequence": "full scheduled range",
+  "plugin": "/Library/Audio/Plug-Ins/VST3/ZebraHZ.vst3",
+  "name": "ZebraHZ",
+  "state": null,
+  "latency_samples": 16,
+  "cycles": 10,
+  "processed_blocks": 14400,
+  "peak": 0.41475648,
+  "max_process_exchange_ms": 514.6909159999495,
+  "exchanges_over_128_frame_duration": 148,
+  "editor_exchanges": [
+    {
+      "cycle": 1,
+      "open": true,
+      "ms": 122.41304199994829
+    },
+    {
+      "cycle": 1,
+      "open": false,
+      "ms": 21.425207999982376
+    },
+    {
+      "cycle": 2,
+      "open": true,
+      "ms": 93.41795800003183
+    },
+    {
+      "cycle": 2,
+      "open": false,
+      "ms": 19.820625000079417
+    },
+    {
+      "cycle": 3,
+      "open": true,
+      "ms": 162.93333300006907
+    },
+    {
+      "cycle": 3,
+      "open": false,
+      "ms": 849.1525420000698
+    },
+    {
+      "cycle": 4,
+      "open": true,
+      "ms": 197.41579200001524
+    },
+    {
+      "cycle": 4,
+      "open": false,
+      "ms": 6.294540999988385
+    },
+    {
+      "cycle": 5,
+      "open": true,
+      "ms": 164.31999999997515
+    },
+    {
+      "cycle": 5,
+      "open": false,
+      "ms": 5.804624999996122
+    },
+    {
+      "cycle": 6,
+      "open": true,
+      "ms": 162.2738340000751
+    },
+    {
+      "cycle": 6,
+      "open": false,
+      "ms": 871.1350840000023
+    },
+    {
+      "cycle": 7,
+      "open": true,
+      "ms": 202.57020799999736
+    },
+    {
+      "cycle": 7,
+      "open": false,
+      "ms": 17.112541999949826
+    },
+    {
+      "cycle": 8,
+      "open": true,
+      "ms": 169.7372919999225
+    },
+    {
+      "cycle": 8,
+      "open": false,
+      "ms": 23.329875000058564
+    },
+    {
+      "cycle": 9,
+      "open": true,
+      "ms": 159.284791999994
+    },
+    {
+      "cycle": 9,
+      "open": false,
+      "ms": 10.024374999943575
+    },
+    {
+      "cycle": 10,
+      "open": true,
+      "ms": 165.45695899992552
+    },
+    {
+      "cycle": 10,
+      "open": false,
+      "ms": 862.6090000000204
+    }
+  ],
+  "scope": "Concurrent worker RPC diagnostic; no audio device, listening or hardware evidence."
+}

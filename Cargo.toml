@@ -1,0 +1,28 @@
+[workspace]
+members = [".", "crates/model", "crates/audio-io", "crates/engine", "crates/session", "crates/ui", "crates/plugin-host", "vendor/rust-vst3-host/vst3-host", "vendor/rust-vst3-host/test-plugin", "fixtures/clap-latency"]
+default-members = [".", "crates/model", "crates/audio-io", "crates/engine", "crates/session", "crates/ui", "crates/plugin-host"]
+resolver = "3"
+
+[workspace.dependencies]
+vst3 = "=0.3.0"
+log = "0.4"
+thiserror = "2.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[package]
+name = "clef"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+publish = false
+
+[dependencies]
+clef-audio-io = { path = "crates/audio-io" }
+clef-engine = { path = "crates/engine" }
+clef-ui = { path = "crates/ui" }
+clef-plugin-host = { path = "crates/plugin-host" }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+hound = "=3.5.1"

@@ -1,0 +1,16 @@
+[package]
+name = "clef-plugin-host"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+publish = false
+
+[dependencies]
+clef-model = { path = "../model" }
+libc = "=0.2.191"
+serde = { workspace = true }
+serde_json = { workspace = true }
+clack-host = { git = "https://github.com/prokopyl/clack", rev = "27ca28391b57a61bad4bb5099288a7bf9247350d" }
+clack-extensions = { git = "https://github.com/prokopyl/clack", rev = "27ca28391b57a61bad4bb5099288a7bf9247350d", features = ["clack-host", "audio-ports", "note-ports", "gui", "state", "render", "latency", "timer", "params", "thread-check"] }
+eframe = { version = "=0.34.3", default-features = false, features = ["glow", "accesskit", "default_fonts"] }
+raw-window-handle = "=0.6.2"

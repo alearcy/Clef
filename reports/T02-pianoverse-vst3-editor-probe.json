@@ -1,0 +1,114 @@
+{
+  "plugin": "/Library/Audio/Plug-Ins/VST3/Pianoverse.vst3",
+  "name": "Pianoverse",
+  "state": "/private/tmp/clef-pianoverse-AA-Y7-original.state",
+  "latency_samples": 0,
+  "cycles": 10,
+  "processed_blocks": 1117,
+  "peak": 0.11813932,
+  "max_process_exchange_ms": 977.3775409994414,
+  "exchanges_over_128_frame_duration": 32,
+  "editor_exchanges": [
+    {
+      "cycle": 1,
+      "open": true,
+      "ms": 985.8478749993083
+    },
+    {
+      "cycle": 1,
+      "open": false,
+      "ms": 6.900167001731461
+    },
+    {
+      "cycle": 2,
+      "open": true,
+      "ms": 123.18237499857787
+    },
+    {
+      "cycle": 2,
+      "open": false,
+      "ms": 15.5889580018993
+    },
+    {
+      "cycle": 3,
+      "open": true,
+      "ms": 465.78983400104335
+    },
+    {
+      "cycle": 3,
+      "open": false,
+      "ms": 13.034542000241345
+    },
+    {
+      "cycle": 4,
+      "open": true,
+      "ms": 125.96562500038999
+    },
+    {
+      "cycle": 4,
+      "open": false,
+      "ms": 11.748165998142213
+    },
+    {
+      "cycle": 5,
+      "open": true,
+      "ms": 478.82045799997286
+    },
+    {
+      "cycle": 5,
+      "open": false,
+      "ms": 5.920374998822808
+    },
+    {
+      "cycle": 6,
+      "open": true,
+      "ms": 125.40449999869452
+    },
+    {
+      "cycle": 6,
+      "open": false,
+      "ms": 8.294417002616683
+    },
+    {
+      "cycle": 7,
+      "open": true,
+      "ms": 475.16670799814165
+    },
+    {
+      "cycle": 7,
+      "open": false,
+      "ms": 14.086457998928381
+    },
+    {
+      "cycle": 8,
+      "open": true,
+      "ms": 125.73449999763397
+    },
+    {
+      "cycle": 8,
+      "open": false,
+      "ms": 12.958999999682419
+    },
+    {
+      "cycle": 9,
+      "open": true,
+      "ms": 465.2445829997305
+    },
+    {
+      "cycle": 9,
+      "open": false,
+      "ms": 13.34974999917904
+    },
+    {
+      "cycle": 10,
+      "open": true,
+      "ms": 126.05829200037988
+    },
+    {
+      "cycle": 10,
+      "open": false,
+      "ms": 6.841499998699874
+    }
+  ],
+  "scope": "Concurrent worker RPC diagnostic; no audio device, listening or hardware evidence."
+}

@@ -1,0 +1,136 @@
+{
+  "device": {
+    "buffer": 256,
+    "device": "coreaudio:AppleUSBAudioEngine:Audient:Audient EVO16:110000:1,2",
+    "midi": "3001443676",
+    "pair": [
+      0,
+      1
+    ],
+    "rate": 44100
+  },
+  "healthy_tracks": 7,
+  "initial_eight_workers": [
+    {
+      "blocks": 194,
+      "id": 8,
+      "max_rpc_us": 275,
+      "misses": 0
+    },
+    {
+      "blocks": 190,
+      "id": 5,
+      "max_rpc_us": 225,
+      "misses": 0
+    },
+    {
+      "blocks": 186,
+      "id": 2,
+      "max_rpc_us": 212,
+      "misses": 0
+    },
+    {
+      "blocks": 180,
+      "id": 3,
+      "max_rpc_us": 232,
+      "misses": 0
+    },
+    {
+      "blocks": 174,
+      "id": 1,
+      "max_rpc_us": 219,
+      "misses": 0
+    },
+    {
+      "blocks": 170,
+      "id": 4,
+      "max_rpc_us": 228,
+      "misses": 0
+    },
+    {
+      "blocks": 168,
+      "id": 7,
+      "max_rpc_us": 217,
+      "misses": 0
+    },
+    {
+      "blocks": 166,
+      "id": 6,
+      "max_rpc_us": 219,
+      "misses": 0
+    }
+  ],
+  "summary": "44100 Hz · requested 256 frames · actual 256–256 frames · lead 1024 samples · plugin latency 0 samples · clipped samples 0",
+  "tracks": [
+    {
+      "blocks": 720,
+      "id": 8,
+      "max_rpc_us": 275,
+      "max_worker_us": 20,
+      "midi": 0,
+      "misses": 0,
+      "peak": 0.0,
+      "transition_frames": 0
+    },
+    {
+      "blocks": 716,
+      "id": 5,
+      "max_rpc_us": 225,
+      "max_worker_us": 10,
+      "midi": 0,
+      "misses": 0,
+      "peak": 0.0,
+      "transition_frames": 512
+    },
+    {
+      "blocks": 706,
+      "id": 3,
+      "max_rpc_us": 233,
+      "max_worker_us": 8,
+      "midi": 40,
+      "misses": 0,
+      "peak": 0.25,
+      "transition_frames": 1024
+    },
+    {
+      "blocks": 700,
+      "id": 1,
+      "max_rpc_us": 230,
+      "max_worker_us": 8,
+      "midi": 299,
+      "misses": 0,
+      "peak": 0.25,
+      "transition_frames": 1024
+    },
+    {
+      "blocks": 696,
+      "id": 4,
+      "max_rpc_us": 228,
+      "max_worker_us": 9,
+      "midi": 0,
+      "misses": 0,
+      "peak": 0.0,
+      "transition_frames": 1024
+    },
+    {
+      "blocks": 694,
+      "id": 7,
+      "max_rpc_us": 217,
+      "max_worker_us": 8,
+      "midi": 0,
+      "misses": 0,
+      "peak": 0.0,
+      "transition_frames": 1024
+    },
+    {
+      "blocks": 692,
+      "id": 6,
+      "max_rpc_us": 230,
+      "max_worker_us": 8,
+      "midi": 0,
+      "misses": 0,
+      "peak": 0.0,
+      "transition_frames": 1024
+    }
+  ]
+}

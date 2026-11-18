@@ -1,0 +1,35 @@
+{
+  "plugin": "/Library/Audio/Plug-Ins/VST3/ZebraHZ.vst3",
+  "error": "['[Errno 32] Broken pipe']",
+  "worker_returncode": 1,
+  "completed_cycles": 2,
+  "processing_failures": [
+    "[Errno 32] Broken pipe"
+  ],
+  "processed_blocks": 166,
+  "peak": 0.0,
+  "max_process_exchange_ms": 87.3681659977592,
+  "editor_exchanges": [
+    {
+      "cycle": 1,
+      "open": true,
+      "ms": 94.02387499721954
+    },
+    {
+      "cycle": 1,
+      "open": false,
+      "ms": 8.79016700127977
+    },
+    {
+      "cycle": 2,
+      "open": true,
+      "ms": 91.4862079989689
+    },
+    {
+      "cycle": 2,
+      "open": false,
+      "ms": 20.242167000105837
+    }
+  ],
+  "scope": "Failed worker-only diagnostic; no audio device or acceptance pass."
+}

@@ -1,0 +1,13 @@
+{
+  "sequence": "full scheduled range",
+  "plugin": "/Users/arcy/dev/clef/vendor/rust-vst3-host/test_plugins/TestSynth.vst3",
+  "error": "SDK PlugProvider initialization failed",
+  "worker_returncode": null,
+  "completed_cycles": 0,
+  "processing_failures": [],
+  "processed_blocks": 0,
+  "peak": 0.0,
+  "max_process_exchange_ms": 0,
+  "editor_exchanges": [],
+  "scope": "Failed worker-only diagnostic; no audio device or acceptance pass."
+}

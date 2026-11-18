@@ -1,0 +1,38 @@
+{
+  "device": {
+    "buffer": 128,
+    "device": "coreaudio:AppleUSBAudioEngine:Audient:Audient EVO16:110000:1,2",
+    "midi": "2997863686",
+    "pair": [
+      0,
+      1
+    ],
+    "rate": 48000
+  },
+  "passed": true,
+  "summary": "48000 Hz · requested 128 frames · actual 128–128 frames · lead 512 samples · plugin latency 257 samples · clipped samples 0",
+  "tracks": [
+    {
+      "blocks": 501,
+      "delivered": 2,
+      "id": 2,
+      "latency": 257,
+      "midi": 2,
+      "misses": 6,
+      "peak": 0.25,
+      "stale": 4,
+      "transition_frames": 896
+    },
+    {
+      "blocks": 495,
+      "delivered": 1,
+      "id": 1,
+      "latency": 257,
+      "midi": 1,
+      "misses": 1,
+      "peak": 0.25,
+      "stale": 0,
+      "transition_frames": 1152
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+/target/
+/vendor/rust-vst3-host/test_plugins/
+/validation-output/
+/graphify-out/
+.DS_Store
+__pycache__/

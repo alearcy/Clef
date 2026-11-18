@@ -1,0 +1,113 @@
+{
+  "plugin": "/Library/Audio/Plug-Ins/CLAP/u-he/ZebraHZ.clap",
+  "error": "worker generated only silence",
+  "worker_returncode": 0,
+  "completed_cycles": 10,
+  "processing_failures": [],
+  "processed_blocks": 1067,
+  "peak": 0.0,
+  "max_process_exchange_ms": 1.1240830026508775,
+  "editor_exchanges": [
+    {
+      "cycle": 1,
+      "open": true,
+      "ms": 145.18374999897787
+    },
+    {
+      "cycle": 1,
+      "open": false,
+      "ms": 72.6154170006339
+    },
+    {
+      "cycle": 2,
+      "open": true,
+      "ms": 202.2561659978237
+    },
+    {
+      "cycle": 2,
+      "open": false,
+      "ms": 13.172499999200227
+    },
+    {
+      "cycle": 3,
+      "open": true,
+      "ms": 191.38733299769228
+    },
+    {
+      "cycle": 3,
+      "open": false,
+      "ms": 11.25954200324486
+    },
+    {
+      "cycle": 4,
+      "open": true,
+      "ms": 191.75929199991515
+    },
+    {
+      "cycle": 4,
+      "open": false,
+      "ms": 13.498000000254251
+    },
+    {
+      "cycle": 5,
+      "open": true,
+      "ms": 187.7186250021623
+    },
+    {
+      "cycle": 5,
+      "open": false,
+      "ms": 16.50379200145835
+    },
+    {
+      "cycle": 6,
+      "open": true,
+      "ms": 190.99783300043782
+    },
+    {
+      "cycle": 6,
+      "open": false,
+      "ms": 12.420792001648806
+    },
+    {
+      "cycle": 7,
+      "open": true,
+      "ms": 190.42912499935483
+    },
+    {
+      "cycle": 7,
+      "open": false,
+      "ms": 10.507584000151837
+    },
+    {
+      "cycle": 8,
+      "open": true,
+      "ms": 193.20441700256197
+    },
+    {
+      "cycle": 8,
+      "open": false,
+      "ms": 14.10504199884599
+    },
+    {
+      "cycle": 9,
+      "open": true,
+      "ms": 190.8395840000594
+    },
+    {
+      "cycle": 9,
+      "open": false,
+      "ms": 13.610250000056112
+    },
+    {
+      "cycle": 10,
+      "open": true,
+      "ms": 186.01237499751733
+    },
+    {
+      "cycle": 10,
+      "open": false,
+      "ms": 11.834709002869204
+    }
+  ],
+  "scope": "Failed worker-only diagnostic; no audio device or acceptance pass."
+}

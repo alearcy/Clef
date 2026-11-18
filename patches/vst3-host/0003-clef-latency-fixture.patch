@@ -1,0 +1,386 @@
+--- a/test-plugin/Cargo.toml
++++ b/test-plugin/Cargo.toml
+@@ -12,3 +12,6 @@
+ 
+ [dependencies]
+ vst3 = { workspace = true }
++
++[features]
++clef-latency-fixture = []
+--- a/test-plugin/src/lib.rs
++++ b/test-plugin/src/lib.rs
+@@ -61,6 +61,8 @@
+ 
+ use vst3::{uid, Class, ComRef, ComWrapper, Steinberg::Vst::*, Steinberg::*};
+ 
++mod clef_latency;
++
+ const PLUGIN_NAME: &str = "VST3 Host Test Synth";
+ /// Display name of the single-component audio class (factory class index 3).
+ const SINGLE_PLUGIN_NAME: &str = "VST3 Host Test Synth (Single)";
+@@ -2278,6 +2280,7 @@
+     state: Mutex<SynthState>,
+     /// Combined `IComponent::setState` + `IEditController::setComponentState` count.
+     state_applies: AtomicU32,
++    clef_latency: Option<clef_latency::Fixture>,
+ }
+ 
+ impl Class for TestSynthSingle {
+@@ -2295,6 +2298,7 @@
+                 params: PARAM_DEFAULTS,
+             }),
+             state_applies: AtomicU32::new(0),
++            clef_latency: cfg!(feature = "clef-latency-fixture").then(clef_latency::Fixture::new),
+         }
+     }
+ 
+@@ -2303,6 +2307,9 @@
+     /// # Safety
+     /// `stream` must be null or a live `IBStream`.
+     unsafe fn apply_component_state(&self, stream: *mut IBStream) -> tresult {
++        if let Some(fixture) = &self.clef_latency {
++            return fixture.restore(stream);
++        }
+         record_state_stream_context(stream);
+         let Some(values) = read_state_params(stream) else {
+             return kResultFalse;
+@@ -2357,13 +2364,19 @@
+     unsafe fn activateBus(&self, _m: MediaType, _d: BusDirection, _i: i32, _s: TBool) -> tresult {
+         kResultOk
+     }
+-    unsafe fn setActive(&self, _state: TBool) -> tresult {
++    unsafe fn setActive(&self, state: TBool) -> tresult {
++        if let Some(fixture) = &self.clef_latency {
++            return fixture.activate(state != 0);
++        }
+         kResultOk
+     }
+     unsafe fn setState(&self, stream: *mut IBStream) -> tresult {
+         self.apply_component_state(stream)
+     }
+     unsafe fn getState(&self, stream: *mut IBStream) -> tresult {
++        if let Some(fixture) = &self.clef_latency {
++            return fixture.save(stream);
++        }
+         let Ok(state) = self.state.lock() else {
+             return kResultFalse;
+         };
+@@ -2409,19 +2422,30 @@
+         }
+     }
+     unsafe fn getLatencySamples(&self) -> u32 {
+-        0
++        self.clef_latency
++            .as_ref()
++            .map_or(0, clef_latency::Fixture::latency)
+     }
+     unsafe fn setupProcessing(&self, setup: *mut ProcessSetup) -> tresult {
++        if let Some(fixture) = &self.clef_latency {
++            return fixture.setup((*setup).processMode == 0);
++        }
+         if let Ok(mut state) = self.state.lock() {
+             state.sample_rate = (*setup).sampleRate;
+             state.voices.clear();
+         }
+         kResultOk
+     }
+-    unsafe fn setProcessing(&self, _state: TBool) -> tresult {
++    unsafe fn setProcessing(&self, state: TBool) -> tresult {
++        if let Some(fixture) = &self.clef_latency {
++            return fixture.processing(state != 0);
++        }
+         kResultOk
+     }
+     unsafe fn process(&self, data: *mut ProcessData) -> tresult {
++        if let Some(fixture) = &self.clef_latency {
++            return fixture.process(data);
++        }
+         process_synth_block(&self.state, &*data)
+     }
+     unsafe fn getTailSamples(&self) -> u32 {
+@@ -2444,9 +2468,16 @@
+         kNotImplemented
+     }
+     unsafe fn getParameterCount(&self) -> i32 {
+-        SINGLE_PARAM_COUNT
++        if self.clef_latency.is_some() {
++            1
++        } else {
++            SINGLE_PARAM_COUNT
++        }
+     }
+     unsafe fn getParameterInfo(&self, index: i32, info: *mut ParameterInfo) -> tresult {
++        if self.clef_latency.is_some() {
++            return clef_latency::Fixture::parameter_info(index, info);
++        }
+         match index {
+             0..SINGLE_SYNTH_PARAM_COUNT => write_synth_parameter_info(index as u32, info),
+             i if i == SINGLE_SYNTH_PARAM_COUNT => {
+@@ -2474,6 +2505,9 @@
+         v
+     }
+     unsafe fn getParamNormalized(&self, id: u32) -> f64 {
++        if let Some(fixture) = &self.clef_latency {
++            return fixture.value(id);
++        }
+         if id == STATE_APPLY_PARAM_ID {
+             return (f64::from(self.state_applies.load(Ordering::Acquire)) / STATE_APPLY_SCALE)
+                 .clamp(0.0, 1.0);
+@@ -2487,6 +2521,9 @@
+             .unwrap_or(0.0)
+     }
+     unsafe fn setParamNormalized(&self, id: u32, v: f64) -> tresult {
++        if let Some(fixture) = &self.clef_latency {
++            return fixture.set(id, v);
++        }
+         if id >= SINGLE_SYNTH_PARAM_COUNT as u32 {
+             return kResultFalse;
+         }
+@@ -2496,7 +2533,10 @@
+         state.set_param(id, v);
+         kResultOk
+     }
+-    unsafe fn setComponentHandler(&self, _h: *mut IComponentHandler) -> tresult {
++    unsafe fn setComponentHandler(&self, h: *mut IComponentHandler) -> tresult {
++        if let Some(fixture) = &self.clef_latency {
++            fixture.handler(h);
++        }
+         kResultOk
+     }
+     unsafe fn createView(&self, _name: *const c_char) -> *mut IPlugView {
+@@ -2553,10 +2593,24 @@
+         kResultOk
+     }
+     unsafe fn countClasses(&self) -> i32 {
+-        4
++        if cfg!(feature = "clef-latency-fixture") {
++            1
++        } else {
++            4
++        }
+     }
+     unsafe fn getClassInfo(&self, index: i32, info: *mut PClassInfo) -> tresult {
+         let info = &mut *info;
++        if cfg!(feature = "clef-latency-fixture") {
++            if index != 0 {
++                return kInvalidArgument;
++            }
++            info.cid = TestSynthSingle::CID;
++            info.cardinality = PClassInfo_::ClassCardinality_::kManyInstances as i32;
++            copy_cstring("Audio Module Class", &mut info.category);
++            copy_cstring("Clef Latency Fixture", &mut info.name);
++            return kResultOk;
++        }
+         match index {
+             0 => {
+                 info.cid = TestSynthProcessor::CID;
+--- /dev/null
++++ b/test-plugin/src/clef_latency.rs
+@@ -0,0 +1,207 @@
++//! Clef-only build variant: real 0/257-sample latency and restart notifications.
++use super::*;
++use std::thread::{self, ThreadId};
++
++const PARAM: u32 = 9000;
++struct Delay {
++    samples: [f32; 257],
++    cursor: usize,
++    elapsed: u64,
++}
++pub(super) struct Fixture {
++    main: ThreadId,
++    requested: AtomicU32,
++    applied: AtomicU32,
++    active: AtomicBool,
++    realtime: AtomicBool,
++    notified: AtomicBool,
++    processing: AtomicBool,
++    handler: Mutex<Option<vst3::ComPtr<IComponentHandler>>>,
++    delay: Mutex<Delay>,
++}
++
++impl Fixture {
++    pub fn new() -> Self {
++        Self {
++            main: thread::current().id(),
++            requested: AtomicU32::new(0),
++            applied: AtomicU32::new(0),
++            active: AtomicBool::new(false),
++            realtime: AtomicBool::new(true),
++            notified: AtomicBool::new(false),
++            processing: AtomicBool::new(false),
++            handler: Mutex::new(None),
++            delay: Mutex::new(Delay {
++                samples: [0.0; 257],
++                cursor: 0,
++                elapsed: 0,
++            }),
++        }
++    }
++    pub fn latency(&self) -> u32 {
++        if thread::current().id() != self.main || self.active.load(Ordering::Acquire) {
++            u32::MAX
++        } else {
++            self.applied.load(Ordering::Acquire)
++        }
++    }
++    pub fn setup(&self, realtime: bool) -> tresult {
++        if thread::current().id() != self.main || self.active.load(Ordering::Acquire) {
++            return kInvalidArgument;
++        }
++        self.realtime.store(realtime, Ordering::Release);
++        self.applied
++            .store(self.requested.load(Ordering::Acquire), Ordering::Release);
++        *self.delay.lock().unwrap() = Delay {
++            samples: [0.0; 257],
++            cursor: 0,
++            elapsed: 0,
++        };
++        kResultOk
++    }
++    pub fn activate(&self, active: bool) -> tresult {
++        if thread::current().id() != self.main || self.processing.load(Ordering::Acquire) {
++            return kInvalidArgument;
++        }
++        self.active.store(active, Ordering::Release);
++        kResultOk
++    }
++    pub fn processing(&self, processing: bool) -> tresult {
++        if thread::current().id() == self.main || !self.active.load(Ordering::Acquire) {
++            return kInvalidArgument;
++        }
++        self.processing.store(processing, Ordering::Release);
++        kResultOk
++    }
++    pub unsafe fn handler(&self, handler: *mut IComponentHandler) {
++        *self.handler.lock().unwrap() = ComRef::from_raw(handler).map(|h| h.to_com_ptr());
++    }
++    pub fn value(&self, id: u32) -> f64 {
++        if id == PARAM {
++            f64::from(self.requested.load(Ordering::Acquire)) / 257.0
++        } else {
++            0.0
++        }
++    }
++    pub unsafe fn set(&self, id: u32, value: f64) -> tresult {
++        if id != PARAM
++            || !value.is_finite()
++            || !(0.0..=1.0).contains(&value)
++            || thread::current().id() != self.main
++        {
++            return kInvalidArgument;
++        }
++        self.requested
++            .store(if value < 0.5 { 0 } else { 257 }, Ordering::Release);
++        if let Some(handler) = self.handler.lock().unwrap().as_ref() {
++            return handler.restartComponent(RestartFlags_::kLatencyChanged as i32);
++        }
++        kResultOk
++    }
++    pub unsafe fn parameter_info(index: i32, info: *mut ParameterInfo) -> tresult {
++        if index != 0 || info.is_null() {
++            return kInvalidArgument;
++        }
++        *info = std::mem::zeroed();
++        (*info).id = PARAM;
++        (*info).stepCount = 1;
++        (*info).flags = ParameterInfo_::ParameterFlags_::kCanAutomate as i32;
++        copy_wstring("Latency 0 or 257", &mut (*info).title);
++        kResultOk
++    }
++    pub unsafe fn save(&self, stream: *mut IBStream) -> tresult {
++        if stream_write_all(
++            stream,
++            &self.requested.load(Ordering::Acquire).to_le_bytes(),
++        ) {
++            kResultOk
++        } else {
++            kResultFalse
++        }
++    }
++    pub unsafe fn restore(&self, stream: *mut IBStream) -> tresult {
++        let Some(bytes) = stream_read_exact(stream, 4) else {
++            return kResultFalse;
++        };
++        let value = u32::from_le_bytes(bytes.try_into().unwrap());
++        if ![0, 257].contains(&value) || self.active.load(Ordering::Acquire) {
++            return kInvalidArgument;
++        }
++        self.requested.store(value, Ordering::Release);
++        kResultOk
++    }
++    pub unsafe fn process(&self, data: *mut ProcessData) -> tresult {
++        if data.is_null()
++            || thread::current().id() == self.main
++            || !self.processing.load(Ordering::Acquire)
++        {
++            return kInvalidArgument;
++        }
++        let data = &*data;
++        if !(0..=128).contains(&data.numSamples) || data.numOutputs != 1 || data.outputs.is_null() {
++            return kInvalidArgument;
++        }
++        let output = &*data.outputs;
++        if output.numChannels != 2 || output.__field0.channelBuffers32.is_null() {
++            return kInvalidArgument;
++        }
++        let left = *output.__field0.channelBuffers32;
++        let right = *output.__field0.channelBuffers32.add(1);
++        if left.is_null() || right.is_null() {
++            return kInvalidArgument;
++        }
++        let mut input = [0.0_f32; 128];
++        if let Some(events) = ComRef::from_raw(data.inputEvents) {
++            let count = events.getEventCount();
++            if !(0..=2048).contains(&count) {
++                return kInvalidArgument;
++            }
++            for i in 0..count {
++                let mut event: Event = std::mem::zeroed();
++                if events.getEvent(i, &mut event) != kResultOk {
++                    return kInvalidArgument;
++                }
++                if event.r#type as u32 == Event_::EventTypes_::kNoteOnEvent as u32
++                    && event.__field0.noteOn.velocity > 0.0
++                {
++                    if event.sampleOffset < 0 || event.sampleOffset >= data.numSamples {
++                        return kInvalidArgument;
++                    }
++                    input[event.sampleOffset as usize] = 0.25;
++                }
++            }
++        }
++        let latency = self.applied.load(Ordering::Acquire) as usize;
++        let mut delay = self.delay.lock().unwrap();
++        for (i, &sample) in input[..data.numSamples as usize].iter().enumerate() {
++            let value = if latency == 0 {
++                sample
++            } else {
++                let cursor = delay.cursor;
++                let value = delay.samples[cursor];
++                delay.samples[cursor] = sample;
++                delay.cursor = (cursor + 1) % latency;
++                value
++            };
++            *left.add(i) = value;
++            *right.add(i) = value;
++        }
++        delay.elapsed += data.numSamples as u64;
++        if delay.elapsed >= 48_000
++            && self.realtime.load(Ordering::Acquire)
++            && !self.notified.swap(true, Ordering::AcqRel)
++        {
++            let Some(changes) = ComRef::from_raw(data.outputParameterChanges) else {
++                return kInvalidArgument;
++            };
++            let mut index = 0;
++            let Some(queue) = ComRef::from_raw(changes.addParameterData(&PARAM, &mut index)) else {
++                return kInvalidArgument;
++            };
++            if queue.addPoint(0, 1.0, &mut index) != kResultOk {
++                return kResultFalse;
++            }
++        }
++        kResultOk
++    }
++}

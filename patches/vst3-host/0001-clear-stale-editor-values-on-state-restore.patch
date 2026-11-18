@@ -1,0 +1,93 @@
+diff --git a/vst3-host/src/internal/plugin_impl.rs b/vst3-host/src/internal/plugin_impl.rs
+index fad0c9d..43c4e5f 100644
+--- a/vst3-host/src/internal/plugin_impl.rs
++++ b/vst3-host/src/internal/plugin_impl.rs
+@@ -4442,6 +4442,15 @@ impl PluginInternal for PluginImpl {
+                 self.is_active = false;
+             }
+ 
++            // Edits queued before this restore must not overwrite the restored processor state.
++            if let Some(handler) = self.component_handler.as_ref() {
++                handler
++                    .parameter_changes
++                    .lock()
++                    .unwrap_or_else(|p| p.into_inner())
++                    .clear();
++            }
++
+             let apply_result = (|| -> Result<()> {
+                 let comp_stream = create_state_restore_stream(snapshot.component.clone(), context);
+                 let comp_ptr = comp_stream.to_com_ptr::<IBStream>().ok_or_else(|| {
+@@ -5874,3 +5883,72 @@ mod editor_edit_drain_tests {
+         assert_eq!(*stash.lock().unwrap(), vec![(3, 1.0)]);
+     }
+ }
++
++#[cfg(test)]
++mod state_editor_queue_tests {
++    use super::*;
++    use crate::{
++        audio::AudioBuffers,
++        midi::{MidiChannel, MidiEvent},
++    };
++
++    #[test]
++    #[ignore = "requires the built TestSynth VST3 bundle"]
++    fn restored_state_supersedes_queued_editor_values() {
++        let path =
++            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../test_plugins/TestSynth.vst3");
++        assert!(
++            path.exists(),
++            "build and bundle TestSynth before running this test"
++        );
++        let mut plugin = PluginImpl::load(&path).expect("load deterministic fixture");
++        plugin.reconfigure(48_000.0, 128).expect("configure");
++        let snapshot = plugin.save_state().expect("save audible state");
++        plugin.set_parameter(17, 0.0).expect("old editor value");
++        let handler = plugin
++            .component_handler
++            .as_ref()
++            .expect("component handler")
++            .to_com_ptr::<IComponentHandler>()
++            .expect("handler interface");
++        assert_eq!(unsafe { handler.performEdit(17, 0.0) }, kResultOk);
++        plugin
++            .load_state_with_context(&snapshot, &StateContext::Project)
++            .expect("restore audible state");
++        plugin.start_processing().expect("start");
++        plugin
++            .send_midi_event(MidiEvent::NoteOn {
++                channel: MidiChannel::Ch1,
++                note: 60,
++                velocity: 100,
++            })
++            .expect("note on");
++        let mut buffers = AudioBuffers::new(0, 2, 128, 48_000.0);
++        let mut peak = 0.0_f32;
++        for _ in 0..8 {
++            plugin
++                .process(&mut buffers)
++                .expect("process restored state");
++            for &sample in buffers.outputs.iter().flatten() {
++                peak = peak.max(sample.abs());
++            }
++        }
++        assert!(
++            peak > 0.01,
++            "stale editor value overwrote the restored level: peak={peak}"
++        );
++        assert_eq!(unsafe { handler.performEdit(17, 0.0) }, kResultOk);
++        plugin
++            .process(&mut buffers)
++            .expect("process a new editor edit");
++        assert!(
++            buffers
++                .outputs
++                .iter()
++                .flatten()
++                .all(|&sample| sample == 0.0),
++            "editor edits made after restoration must still reach the processor"
++        );
++        plugin.stop_processing().expect("stop");
++    }
++}

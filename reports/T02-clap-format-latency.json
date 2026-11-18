@@ -1,0 +1,11 @@
+{
+  "plugin": "/Users/arcy/dev/clef/validation-output/fixtures/ClefLatencyCLAP.clap",
+  "name": "Clef CLAP Latency Fixture",
+  "passed": true,
+  "old_latency": 0,
+  "new_latency": 257,
+  "impulse_offset": 37,
+  "transition_control_seconds": 0.027391999999963446,
+  "live_core_offline_max_error": 0,
+  "scope": "Worker processing and actual format notification; device gap is measured separately."
+}

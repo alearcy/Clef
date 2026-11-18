@@ -1,0 +1,49 @@
+{
+  "plugin": "/Library/Audio/Plug-Ins/VST3/Pianoverse.vst3",
+  "state": "validation-output/states/pianoverse-AA-Y7-width63.state",
+  "midi_port_index": 3,
+  "requested_seconds": 300,
+  "scope": "Live software counters; user listening and physical gestures recorded separately.",
+  "baseline": {
+    "callbacks": 1882,
+    "deadline_missed_blocks": 0,
+    "discarded_stale_blocks": 0,
+    "late_midi_events": 0,
+    "max_callback_frames": 128,
+    "midi_overflows": 0,
+    "midi_received": 0,
+    "min_callback_frames": 128,
+    "output_errors": 0,
+    "played_frames": 240896,
+    "requested_buffer_frames": 128,
+    "sample_rate": 48000,
+    "transport_buffering_samples": 512,
+    "worker_failed": false
+  },
+  "final": {
+    "callbacks": 115065,
+    "deadline_missed_blocks": 29,
+    "discarded_stale_blocks": 29,
+    "late_midi_events": 0,
+    "max_callback_frames": 128,
+    "midi_overflows": 0,
+    "midi_received": 0,
+    "min_callback_frames": 128,
+    "output_errors": 0,
+    "played_frames": 14728320,
+    "requested_buffer_frames": 128,
+    "sample_rate": 48000,
+    "transport_buffering_samples": 512,
+    "worker_failed": false
+  },
+  "measured_frames": 14487424,
+  "deltas": {
+    "deadline_missed_blocks": 29,
+    "output_errors": 0,
+    "discarded_stale_blocks": 29,
+    "midi_received": 0,
+    "midi_overflows": 0,
+    "late_midi_events": 0
+  },
+  "error": "callback deadline misses"
+}
