@@ -5,32 +5,33 @@
 **Date:** 2026-11-17
 **Task:** [T22](../../TASKS.md)
 **Roadmap:** [Post-T03 backlog](../planning/post-T03-backlog.md)
-**Depends on:** T06, T10, T11; T01 behavior decision.
+**Depends on:** T06, T10, T11, T28; T01 behavior decision.
 
 ## Goal
 
-Implement the Clef-owned MIDI/audio processing tools named in the T01 interview, such as an
-arpeggiator and M/S encoder/decoder, with behavior, placement, and UI agreed before
-development. Do not infer their design from the legacy DAW.
+Implement the Clef-owned MIDI/audio processing tools named in the T01 interview that are not
+already provided by the T28 rack graph, such as an arpeggiator, with behavior, rack placement,
+and UI agreed before development. M/S encode/decode and the utility nodes are delivered by
+T28; do not duplicate them.
 
 ## Proposed Scope
 
 - Agreed tool set and exact behavior, including timing and parameter ranges.
-- Placement model: MIDI processing before an instrument, insert processing, or another
-  explicitly designed position.
+- Placement: nodes in the T28 FX rack graph (decided 2026-11-18), with the pins and
+  instrument-rack versus insert-rack rules agreed here. No second hosting path.
 - UI, state, and project persistence.
 - Undo/redo and command integration.
 - Deterministic tests for MIDI timing and audio processing.
 
 ## Out of Scope
 
-A general internal plugin suite; plugin export; a rack/node infrastructure merely to host
-these tools; unagreed chord or articulation features.
+A general internal plugin suite; plugin export; the T28 rack infrastructure; unagreed chord
+or articulation features.
 
 ## Open Questions
 
 - Which tools are required first and what each must do.
-- Where each tool sits in the signal path and how it is shown.
+- Whether each tool is available in instrument racks, insert racks, or both, and its pins.
 - Parameter model and automation.
 - Whether tools are per-track, per-clip, or global.
 - MIDI timing behavior and latency.

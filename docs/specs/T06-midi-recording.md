@@ -27,7 +27,7 @@ through the track's plugin worker. Persist clips, notes, and transport state.
 ## Out of Scope
 
 Piano-roll editing (T10); arrangement editing beyond the minimal clip view (T09); audio
-recording (T14); comping, punch, and take lanes; automation.
+recording (T14); comping and take lanes (T26); punch unless agreed here; automation.
 
 ## Open Questions
 

@@ -26,7 +26,7 @@ requires a durable decision about where audio media lives.
 
 ## Out of Scope
 
-Comping and take lanes (separate decision); warp/time-stretch; ARA; audio editing beyond
+Comping and take lanes (T26/T27); warp/time-stretch; ARA (T29); audio editing beyond
 waveform display; automatic sample-rate conversion; cloud media.
 
 ## Open Questions
@@ -36,7 +36,8 @@ waveform display; automatic sample-rate conversion; cloud media.
 - Recording format, bit depth, and channel count.
 - Punch recording and count-in scope.
 - Input monitoring through the plugin chain and how latency is reported.
-- Takes and comping: explicitly out of the initial scope.
+- Takes and comping are T26/T27; this task must leave recording, file identity, and clip
+  structure ready for them.
 - Missing media relink UI and project-open behavior.
 - Disk streaming and buffering for long recordings.
 - Waveform cache policy. Evaluate per-channel min/max peaks at multiple resolutions, built in

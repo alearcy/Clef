@@ -27,15 +27,16 @@ insert chains, and delay-compensated across the chain.
 
 ## Out of Scope
 
-The legacy node/cable graph; sidechain routing; parameter automation; AU effects (T21);
-internal effects; ARA.
+The rack node/cable graph (T28); sidechain routing; parameter automation; AU effects (T21);
+internal effects; ARA (T29).
 
 ## Open Questions
 
 - Maximum inserts per chain and total effect instances.
 - Chain reordering rules and whether order changes are undoable immediately.
 - Catalog filtering: how effect versus instrument entries are identified reliably.
-- Simple serial chain versus node graph; do not inherit the legacy graph by default.
+- Chain shape: this task delivers the serial insert chain. The rack node graph is T28;
+  the interview confirms the boundary and whether any rack scaffolding belongs here.
 - Plugin parameter automation timing and whether it is a later task.
 - Sidechain routing and timing; likely later with T15.
 - Latency changes while playback is active; restart behavior and audible handling.

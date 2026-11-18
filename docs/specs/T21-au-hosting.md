@@ -24,7 +24,8 @@ defined failure behavior.
 
 ## Out of Scope
 
-AUv3 extensions on iOS; AU plugin authoring; cross-platform AU equivalents; ARA.
+AUv3 extensions on iOS; AU plugin authoring; cross-platform AU equivalents; ARA (T29;
+VST3 ARA first, AU ARA out of scope).
 
 ## Open Questions
 

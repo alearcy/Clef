@@ -1,8 +1,9 @@
 # Post-T03 Backlog Proposal
 
-**Status:** Backlog order approved 2026-11-17. Tasks T04–T23 are registered as `Planned`
-in [TASKS.md](../../TASKS.md). Each remains a planning draft until its own interview and
-specification approval.
+**Status:** Backlog order approved 2026-11-17. The T04–T23 entries were registered in
+[TASKS.md](../../TASKS.md); completed rows are removed from that index once their
+specification records the work. Each remaining task stays a planning draft until its own
+interview and specification approval.
 **Date:** 2026-11-17
 **Basis:** [T01](../specs/T01-engine-foundation.md), [T02](../specs/T02-engine-validation.md), the [T03 specification](../specs/T03-single-instrument-project.md), `AGENTS.md`, and the [UI library](../UI/README.md). Product direction comes from the T01 interview: composition with virtual instruments first, then audio recording and mixing, with robust VST3/CLAP hosting.
 
@@ -50,8 +51,10 @@ estimates are deliberately omitted until each task is specified.
 | T19 | P2 | Performance, scale, and realtime safety | T04, T11, T12, T14 |
 | T20 | P2 | Automated app regression harness | T04 onward |
 | T21 | P3 | AU hosting | T12 |
-| T22 | P3 | Native MIDI/audio tools | T06, T10, T11 |
+| T22 | P3 | Native MIDI/audio tools | T06, T10, T11, T28 |
 | T23 | P3 | Packaging and cross-platform groundwork | stable feature set |
+
+T26–T29 were added on 2026-11-18; see [Additions — 2026-11-18](#additions--2026-11-18).
 
 ## Milestone 1 — Composition core (P0)
 
@@ -228,7 +231,7 @@ persistence, failure isolation, and latency compensation across the chain.
 **Why now:** external effects hosting is a T01 priority, and mixing without inserts is
 incomplete. It also stresses the hosting architecture beyond instruments.
 
-**Interview questions:** maximum inserts per chain; serial order and reordering; catalogue
+**Interview questions:** maximum inserts per chain; serial order and reordering; catalog
 filtering for effects versus instruments; whether the FX rack is a simple chain or the
 legacy node graph (do not assume the graph); plugin parameter automation later; sidechain
 later; latency changes while playing.
@@ -370,6 +373,9 @@ that makes them necessary.
 After T06, run T07 and T08 before T09/T10, then start T11/T12 in parallel with the editors
 if capacity allows.
 
+T26 follows T10, T27 follows T14, T28 follows T15, and T29 follows T21; see
+[Additions — 2026-11-18](#additions--2026-11-18) for the dependencies.
+
 ## Decisions required before the next specifications
 
 These are product decisions, not implementation details. Each must be settled in the
@@ -383,11 +389,12 @@ freezes it.
 3. **Time model:** single tempo versus a tempo/time-signature map; timeline resolution;
    whether the transport can run with audio disabled.
 4. **Recording semantics:** replace/overdub/loop, count-in, metronome, quantize-on-record,
-   take policy, and MIDI channel handling.
+   take policy, and MIDI channel handling. The take and comp decisions are now T26/T27.
 5. **Undo scope:** project/editing only, or plugin parameter edits too; memory budget and
    history persistence.
 6. **Effect rack shape:** simple serial chains or the legacy node graph; maximum inserts;
-   sidechain timing.
+   sidechain timing. **Decided 2026-11-18:** T28 implements the node/cable graph; macros,
+   modulation, and the browser are a later phase.
 7. **Plugin compatibility target:** which formats, vendors, and plugins must be validated
    for each milestone; what counts as acceptable failure.
 8. **Performance targets:** track/plugin counts, buffer sizes, CPU, and load times, with a
@@ -419,10 +426,42 @@ freezes it.
 The following appear in the legacy UI library or in general DAW expectations but were not
 agreed for Clef. They are not part of this backlog until the user requests them and a
 specification defines their behavior: automation lanes and parameter automation, chord/
-scale lanes and chord tools, articulation maps, ARA, video/film sync, notation, MIDI 2.0/
-MPE, control surfaces, sidechain, freeze/bounce-in-place, comping, drum replacement,
-internal instrument/effect plugins, cloud collaboration, and a full mixer graph beyond the
+scale lanes and chord tools, articulation maps, video/film sync, notation, MIDI 2.0/
+MPE, control surfaces, sidechain, freeze/bounce-in-place, drum replacement, internal
+instrument/effect plugins, cloud collaboration, and a full mixer graph beyond the
 proposed T15.
+
+**Update 2026-11-18:** ARA 2, MIDI and audio comping, and the rack node graph are no longer
+excluded. The user requested them, and they are registered as T26–T29 with the Composer DAW
+decisions cited in their specifications. The rest of this list still stands.
+
+## Additions — 2026-11-18
+
+The user asked to add ARA 2, MIDI and audio comping, and the FX rack node graph. The product
+decisions already exist in the external Composer DAW project (C++/JUCE/Tracktion). Each Clef
+specification cites the reference and inherits its behavior, not its code. These are planning
+drafts: the Clef implementation interview and the written UI proposal still gate each task.
+
+| ID | Priority | Task | Depends on | Row placement |
+| --- | --- | --- | --- | --- |
+| T26 | P2 | MIDI comping and take lanes | T06, T08, T09, T10 | after T10 |
+| T27 | P2 | Audio comping and take lanes | T14, T26, T08, T09 | after T14 |
+| T28 | P2 | FX rack and virtual cable graph | T12, T15, T08, T04 | after T15 |
+| T29 | P3 | ARA 2 hosting and audio part editing | T14, T13, T16, T08; probe first | after T21 |
+
+Why this order:
+
+- Comping follows the recorder and editor it extends. MIDI comes first, after the piano roll
+  (T10); audio follows the media decision in T14 and the shared take-lane model in T26.
+- The FX rack follows T12's inserts and T15's routing and PDC, because a rack is a container
+  inside the track chain, not a second mixer.
+- ARA is last: it extends audio clips and needs T13's render path, T16's catalog and
+  quarantine, and a new ARA host in Clef's VST3 worker. The Composer DAW could reuse
+  Tracktion's host; Clef must pass its own probe before implementation.
+- Rows follow the dependency chain. Priority is in the table above, not the row position.
+
+These decisions close the effect-rack-shape question: T28 implements the node graph, with
+macros, modulation, and the rack browser as a later phase after a separate approval.
 
 ## Next actions
 
