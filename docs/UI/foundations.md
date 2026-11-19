@@ -43,6 +43,7 @@ introduce one, and do not compute one at a call site.
 | `PEACOCK` | content | #336A64 | Filled active control (primary button, lit segment, lit chip and every lit transport button: READ, 1 BAR, TAP, MONITOR FX), highlighted menu row, default content; text on it 5.0:1 |
 | `OXBLOOD` | selection | #882820 | Selected points and segments fill, mute lamp, FX role accent (piano-roll notes: white outline since 2026-11-13) |
 | `DANGER` | danger | #C7847C | Readable error/destructive text, record lamp, Write mode, punch |
+| `LOOP_ACTIVE` | loop active | #E5C34F | Active Loop glyph and loop band |
 | `SOLO` | — (token only) | #D8B23C | Solo lamp only, with a dark label |
 | `DIVIDER` | divider | #2B3B3D | Menu and call-out edges, separators, a disabled control's edge. Never a region rule |
 | `GRID` | grid | #243236 | Beat and subdivision lines |
@@ -82,7 +83,8 @@ shows its nearest coloured folder's.
 - Mute and solo are the only lamps of headers and strips: mute oxblood, solo yellow with a dark label.
 - The transport owns the two global lamps: play accent green, record danger red, painted as the
   glyph's own colour while running or recording. A lit lamp stays lit while its button is disabled.
-- Every other active glyph is accent (tools, loop, punch, metronome, fit buttons). Never turn a lamp
+- The active Loop glyph and the loop band share `LOOP_ACTIVE`.
+- Every other active glyph is accent (tools, punch, metronome, fit buttons). Never turn a lamp
   into a filled tile, border or underline.
 - Selected piano-roll notes keep their track colour with a white (`CAP_LIGHT`) outline
   (decision, 2026-11-13); the arrangement's inline notes are filled white when selected; points and
@@ -123,6 +125,8 @@ example `controlHeight` → `CONTROL_HEIGHT`):
 | --- | --- |
 | body / small / heading (font) | 13 / 11 / 16 |
 | toolTarget | 28 |
+| toolGlyph | 16 |
+| toolStroke | 1.5 |
 | controlHeight | 24 |
 | nesting | 16 |
 | stripe | 3 |

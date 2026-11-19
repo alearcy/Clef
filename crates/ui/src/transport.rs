@@ -3,7 +3,7 @@ use crate::{
     arrangement::{Lane, LaneInput},
     primitives::{
         timeline::{self as timeline_ui, LOOP_HEIGHT, LoopGesture, RULER_HEIGHT, Viewport},
-        transport as controls,
+        transport::{self as controls, Glyph},
     },
 };
 use clef_model::{
@@ -17,6 +17,7 @@ use eframe::egui::{self, Key, Modifiers};
 pub struct TransportUi {
     loop_gesture: Option<LoopGesture>,
     pub(super) pending_loop_range: Option<[u64; 2]>,
+    pub(super) record_submitted: bool,
     tempo: Option<Tempo>,
     settings: bool,
     locate: u64,
@@ -131,21 +132,21 @@ impl App {
         let mut chosen = None;
         let compact = ui.available_width() < 860.0;
         controls::bar(ui, |ui| {
-            for (command, label, on) in [
-                (Command::ReturnToStart, "Start", false),
+            for (command, glyph, on) in [
+                (Command::ReturnToStart, Glyph::Start, false),
                 (
                     Command::Play,
-                    "Play",
+                    Glyph::Play,
                     transport.phase != TransportPhase::Stopped,
                 ),
-                (Command::Stop, "Stop", false),
+                (Command::Stop, Glyph::Stop, false),
                 (
                     Command::Record,
-                    "Record",
-                    self.view.recording_region.is_some(),
+                    Glyph::Record,
+                    self.view.recording || self.transport_ui.record_submitted,
                 ),
             ] {
-                if self.transport_button(ui, command, label, on) {
+                if self.transport_tool(ui, command, glyph, on) {
                     chosen = Some(command);
                 }
             }
@@ -173,17 +174,15 @@ impl App {
                     menu.response.on_hover_text("MIDI record mode");
                 },
             );
-            if self.transport_button(ui, Command::ToggleLoop, "Loop", timeline.looping) {
+            if self.transport_tool(ui, Command::ToggleLoop, Glyph::Loop, timeline.looping) {
                 chosen = Some(Command::ToggleLoop);
             }
             if !compact {
-                for (command, label, on) in [
-                    (Command::ToggleClick, "Metronome", timeline.click),
-                    (Command::ToggleCountIn, "1 Bar", timeline.count_in),
-                ] {
-                    if self.transport_button(ui, command, label, on) {
-                        chosen = Some(command);
-                    }
+                if self.transport_tool(ui, Command::ToggleClick, Glyph::Metronome, timeline.click) {
+                    chosen = Some(Command::ToggleClick);
+                }
+                if self.transport_button(ui, Command::ToggleCountIn, "1 Bar", timeline.count_in) {
+                    chosen = Some(Command::ToggleCountIn);
                 }
                 if self.transport_button(
                     ui,
@@ -203,22 +202,39 @@ impl App {
     }
 
     fn transport_button(&self, ui: &mut egui::Ui, command: Command, label: &str, on: bool) -> bool {
+        let name = self.transport_tooltip(ui, command);
+        controls::button(ui, label, &name, self.command_available(command, false), on)
+            && self.enabled(command)
+    }
+
+    fn transport_tool(&self, ui: &mut egui::Ui, command: Command, glyph: Glyph, on: bool) -> bool {
+        let name = self.transport_tooltip(ui, command);
+        let mut response = controls::tool_button(
+            ui,
+            glyph,
+            &name,
+            self.command_available(command, false),
+            on,
+            self.keyboard_mode,
+        );
+        if command == Command::Record
+            && let Some(reason) = self.view.record_unavailable
+        {
+            response = response.on_disabled_hover_text(reason);
+        }
+        response.clicked() && self.enabled(command)
+    }
+
+    fn transport_tooltip(&self, ui: &egui::Ui, command: Command) -> String {
         let binding = self
             .bindings
             .iter()
             .find(|binding| binding.command == command)
             .unwrap();
-        let name = binding.shortcut.map_or_else(
+        binding.shortcut.map_or_else(
             || binding.title.to_string(),
             |key| format!("{} ({})", binding.title, ui.ctx().format_shortcut(&key)),
-        );
-        let enabled = self.command_available(command, false);
-        let clicked = if command == Command::Record {
-            controls::record(ui, label, &name, enabled, on, self.view.record_unavailable)
-        } else {
-            controls::button(ui, label, &name, enabled, on)
-        };
-        clicked && self.enabled(command)
+        )
     }
 
     pub fn timeline_surface(
@@ -692,6 +708,17 @@ mod tests {
                         });
                     },
                 );
+                let record_color = if phase == TransportPhase::Stopped {
+                    crate::colors::TEXT
+                } else {
+                    crate::colors::DANGER
+                };
+                assert!(output.shapes.iter().any(|shape| matches!(
+                    &shape.shape,
+                    egui::Shape::Circle(circle)
+                        if circle.radius == crate::theme::TOOL_GLYPH * 0.4
+                            && circle.fill == record_color
+                )));
                 let tree = output.platform_output.accesskit_update.unwrap();
                 let find = |label: &str| {
                     tree.nodes
@@ -750,7 +777,7 @@ mod tests {
                 );
                 assert!(stop.x1 <= record.x0 && record.x1 <= mode.x0);
                 assert_eq!(stop.y0, record.y0);
-                assert_eq!(record.y0, mode.y0);
+                assert_eq!(record.y0 + record.y1, mode.y0 + mode.y1);
             }
         }
     }
@@ -765,8 +792,8 @@ mod tests {
             context
                 .run_ui(egui::RawInput::default(), |ui| {
                     app.button(ui, Command::AddTrack);
-                    app.transport_button(ui, Command::ToggleClick, "Metronome", false);
-                    app.transport_button(ui, Command::Stop, "Stop", false);
+                    app.transport_tool(ui, Command::ToggleClick, Glyph::Metronome, false);
+                    app.transport_tool(ui, Command::Stop, Glyph::Stop, false);
                 })
                 .shapes
         };

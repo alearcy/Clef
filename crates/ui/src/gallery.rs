@@ -25,6 +25,7 @@ const CASES: &[&str] = &[
     "recovery-later",
 ];
 const HISTORY_CASES: &[&str] = &["history-empty", "history-ready", "history-locked"];
+const TRANSPORT_CASES: &[&str] = &["stopped", "looping", "count-in", "recording"];
 const ARRANGEMENT_CASES: &[&str] = &[
     "arrangement-selected",
     "arrangement-overlap",
@@ -338,6 +339,25 @@ struct Gallery {
 impl Gallery {
     fn install(&mut self, ctx: &egui::Context) {
         let case = self.cases[self.case];
+        if self.prefix == "t34" {
+            arrangement_fixture(&mut self.app, "");
+            let view = &mut self.app.view;
+            view.active = true;
+            view.armed = Some(1);
+            view.record_unavailable = None;
+            view.recording = matches!(case, "count-in" | "recording");
+            view.transport.phase = match case {
+                "count-in" => clef_session::TransportPhase::CountingIn,
+                "recording" => clef_session::TransportPhase::Playing,
+                _ => clef_session::TransportPhase::Stopped,
+            };
+            view.recording_region = (case == "recording").then_some([0, 1_920]);
+            view.project.timeline.looping = case != "stopped";
+            view.project.timeline.loop_range = [0, 1_920];
+            view.project.timeline.click = case != "stopped";
+            self.frames = 0;
+            return;
+        }
         if self.prefix == "t10" {
             piano_roll_fixture(&mut self.app, case);
             self.frames = 0;
@@ -437,7 +457,7 @@ impl eframe::App for Gallery {
                     &mut app.piano_roll_open,
                 );
             });
-        } else if matches!(self.prefix, "t08" | "t09" | "t10") {
+        } else if matches!(self.prefix, "t08" | "t09" | "t10" | "t34") {
             egui::Frame::new()
                 .inner_margin(12.0)
                 .show(ui, |ui| self.app.main_surface(ui, &ctx));
@@ -475,6 +495,10 @@ pub fn render_arrangement(output: PathBuf, width: u32) -> Result<()> {
 
 pub fn render_piano_roll(output: PathBuf, width: u32) -> Result<()> {
     render(output, width, "t10", ROLL_CASES)
+}
+
+pub fn render_transport(output: PathBuf, width: u32) -> Result<()> {
+    render(output, width, "t34", TRANSPORT_CASES)
 }
 
 fn render(

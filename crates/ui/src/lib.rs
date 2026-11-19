@@ -449,6 +449,7 @@ impl App {
             Action::Transport(TransportAction::SetLoopRange(range)) => Some(*range),
             _ => None,
         };
+        let record_submitted = matches!(&action, Action::Transport(TransportAction::Record));
         match self.backend.send.send(action) {
             Ok(()) => {
                 self.actions_in_flight += 1;
@@ -456,6 +457,7 @@ impl App {
                 if let Some(range) = loop_range {
                     self.transport_ui.pending_loop_range = Some(range);
                 }
+                self.transport_ui.record_submitted |= record_submitted;
                 self.status.clear();
             }
             Err(_) => {
@@ -814,6 +816,7 @@ impl App {
                     self.busy_since = None;
                 }
                 self.transport_ui.pending_loop_range = None;
+                self.transport_ui.record_submitted = false;
                 if self.awaiting_close {
                     self.awaiting_close = false;
                     if success {
@@ -1832,6 +1835,23 @@ mod tests {
         assert!(!app.exiting);
         assert!(app.pending_after_save.is_none());
         assert!(app.view.dirty);
+    }
+
+    #[test]
+    fn rejected_record_acknowledgement_clears_the_transport_lamp() {
+        let context = egui::Context::default();
+        let mut app = App::new(context.clone(), PathBuf::new());
+        // The session has no audio engine, so it rejects the submitted command.
+        app.send(Action::Transport(TransportAction::Record));
+        assert!(app.transport_ui.record_submitted);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while app.busy_since.is_some() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+            app.poll(&context);
+        }
+        assert!(app.busy_since.is_none());
+        assert!(!app.transport_ui.record_submitted);
+        assert!(!app.view.recording);
     }
     #[test]
     fn discard_close_exits_and_commands_respect_session_state() {

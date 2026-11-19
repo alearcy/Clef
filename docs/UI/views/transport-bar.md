@@ -23,11 +23,27 @@ has drawn. Session and audio transport acknowledgments do not dim otherwise avai
 [T25](../../specs/T25-ui-flicker.md).
 Stop is available during playback, count-in, or a pending Play request while audio is enabled.
 
+## Current Clef layout
+
+```text
+row
+  Return to Start · Play · Stop · Record
+  REC mode menu · Loop
+  wide only: Metronome · 1 Bar · BPM and meter
+  musical position · Transport Settings
+```
+
+Return to Start, Play, Stop, Record, Loop and Metronome are individual
+[tool buttons](../components/tool-button.md). Their accessible names and shortcut tooltips come
+from the command registry. Below 860 points of available width, Metronome and 1 Bar are available
+in Transport Settings. See [T34](../../specs/T34-transport-glyphs.md) for state and gallery evidence.
+
 ## T06 MIDI recording
 
 Record and the project-wide REC menu sit after Stop. The menu offers Merge, Replace, and New take
 and identifies the current choice. Record is available while stopped with audio enabled and a ready
-armed instrument. The recording lamp uses danger and stays lit during a take. Stop remains available
+armed instrument. The Record glyph uses `DANGER` from the initial press through preparation,
+count-in, and capture. Stop remains available
 during preparation, count-in, and capture. The mode and locate controls lock for the take. At compact
 widths, Metronome, Count-In, and Tempo and Meter Map appear in Transport Settings so the transport
 stays on one row. Record and the mode options use the command registry and assignable shortcuts.
@@ -44,8 +60,8 @@ the bars and time [segment displays](../components/segment-display.md), CPU/Disk
 settings glyph.
 
 ## Lamps
-Play accent green while running; Record `danger` while recording; everything else `accent` when
-active. A lit lamp stays lit while disabled.
+Play and Metronome use `ACCENT` while active. Loop uses `LOOP_ACTIVE` alongside the
+[loop band](timeline-rulers.md). Lit glyphs keep their active colours while disabled.
 
 ## Rules
 - One row; it never grows a second row. The time counter yields first at narrow widths.

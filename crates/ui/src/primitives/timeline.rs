@@ -1,4 +1,4 @@
-use crate::colors;
+use crate::{colors, theme};
 use clef_model::{
     midi::{Clip, ClipId, Snap},
     timeline::{MAX_TICK, QUARTER, Timeline},
@@ -239,16 +239,17 @@ impl Viewport {
         );
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, colors::CANVAS);
+        let (fill, grips) = if timeline.looping {
+            (theme::LOOP_ACTIVE, theme::LOOP_ACTIVE)
+        } else {
+            (colors::ACCENT.gamma_multiply(0.25), colors::ACCENT)
+        };
         if area.intersects(rect) {
-            painter.rect_filled(
-                area.intersect(rect),
-                0.0,
-                colors::ACCENT.gamma_multiply(if timeline.looping { 0.6 } else { 0.25 }),
-            );
+            painter.rect_filled(area.intersect(rect), 0.0, fill);
         }
         for x in [area.left(), area.right()] {
             if x >= rect.left() && x <= rect.right() {
-                painter.vline(x, rect.y_range(), Stroke::new(2.0_f32, colors::ACCENT));
+                painter.vline(x, rect.y_range(), Stroke::new(2.0_f32, grips));
             }
         }
         paint_focus(ui, &response);
@@ -817,7 +818,7 @@ mod tests {
     #[test]
     fn paints_new_locators_on_release_and_while_waiting_for_session() {
         let context = egui::Context::default();
-        let timeline = Timeline {
+        let mut timeline = Timeline {
             loop_range: [0, QUARTER],
             ..Timeline::default()
         };
@@ -826,7 +827,7 @@ mod tests {
         let end = Pos2::new(192.0, LOOP_HEIGHT / 2.0);
         let mut gesture = None;
         let mut completed = None;
-        let mut frame = |events, enabled, pending| {
+        let mut frame = |timeline: &Timeline, events, enabled, pending| {
             let output = context.run_ui(
                 RawInput {
                     screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(400.0, 60.0))),
@@ -835,14 +836,30 @@ mod tests {
                 },
                 |ui| {
                     completed =
-                        viewport.loop_band(ui, 400.0, &timeline, enabled, &mut gesture, pending);
+                        viewport.loop_band(ui, 400.0, timeline, enabled, &mut gesture, pending);
                 },
+            );
+            let color = if timeline.looping {
+                theme::LOOP_ACTIVE
+            } else {
+                colors::ACCENT
+            };
+            let fill = if timeline.looping {
+                color
+            } else {
+                color.gamma_multiply(0.25)
+            };
+            assert!(
+                output
+                    .shapes
+                    .iter()
+                    .any(|shape| matches!(&shape.shape, Shape::Rect(rect) if rect.fill == fill))
             );
             let locators: Vec<_> = output
                 .shapes
                 .into_iter()
                 .filter_map(|shape| match shape.shape {
-                    Shape::LineSegment { points, stroke } if stroke.color == colors::ACCENT => {
+                    Shape::LineSegment { points, stroke } if stroke.color == color => {
                         Some(points[0].x)
                     }
                     _ => None,
@@ -857,18 +874,25 @@ mod tests {
             modifiers: Modifiers::NONE,
         };
 
-        let (_, original) = frame(vec![], true, None);
+        let (_, original) = frame(&timeline, vec![], true, None);
+        timeline.looping = true;
+        assert_eq!(frame(&timeline, vec![], true, None).1, original);
         frame(
+            &timeline,
             vec![Event::PointerMoved(start), button(start, true)],
             true,
             None,
         );
-        let (_, preview) = frame(vec![Event::PointerMoved(end)], true, None);
-        let (range, released) = frame(vec![button(end, false)], true, None);
+        let (_, preview) = frame(&timeline, vec![Event::PointerMoved(end)], true, None);
+        let (range, released) = frame(&timeline, vec![button(end, false)], true, None);
         assert_eq!(range, Some([2 * QUARTER, 4 * QUARTER]));
         assert_eq!(preview, vec![start.x, end.x]);
         assert_eq!(released, preview);
-        assert_eq!(frame(vec![], false, range).1, preview);
-        assert_eq!(frame(vec![], true, None).1, original);
+        assert_eq!(frame(&timeline, vec![], false, range).1, preview);
+        assert_eq!(frame(&timeline, vec![], true, None).1, original);
+        timeline.loop_range = range.unwrap();
+        assert_eq!(frame(&timeline, vec![], true, None).1, preview);
+        timeline.looping = false;
+        assert_eq!(frame(&timeline, vec![], true, None).1, preview);
     }
 }

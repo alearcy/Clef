@@ -20,6 +20,10 @@ Option for tick precision, and Escape to cancel. The lanes and ruler share scrol
 After a valid release, the loop band holds the submitted range until the session confirms or
 rejects it. See [T25](../../specs/T25-ui-flicker.md).
 
+The loop band and grips use the same `LOOP_ACTIVE` yellow as the transport's Loop glyph while
+looping is enabled, including during drag and acknowledgement. When looping is off, the band
+uses a dim `ACCENT` fill and `ACCENT` grips. See [T34](../../specs/T34-transport-glyphs.md).
+
 Shared by the arrangement and the piano roll.
 
 - **Timeline rows** (D44), fixed order: Bars, Timecode, Time, Samples. The first row keeps the
@@ -31,7 +35,8 @@ Shared by the arrangement and the piano roll.
   `accent` left edge and "name · numeral" in 10 px `text`; read-only, a click locates to its start.
   Caption "Chords" in the column.
 - **Locator band** (D90): three 10-pixel rows, Loop, Punch, Project, with 9-px `secondary` names.
-  Loop `accent`, Punch `danger`: 60 % while their toggle is on, 25 % off, 2-pixel edges. Project is a
+  Loop uses the state colours above. Punch uses `danger` at 60 % on and 25 % off. The edges are
+  2 pixels. Project is a
   faint `secondary` span with 2-pixel `text` grips (`secondary` when following content). Drag empty
   space to draw, the body to move, within 5 pixels of an edge to resize; snap, Alt free, Escape
   cancels. The band never scrubs.

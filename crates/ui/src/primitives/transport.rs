@@ -1,6 +1,6 @@
-use crate::colors;
+use crate::{colors, theme};
 use clef_model::timeline::{MAX_BAR, MAX_TICK, Position, Tempo};
-use eframe::egui::{self, Context, Ui};
+use eframe::egui::{self, Color32, Context, Painter, Pos2, Response, Shape, Stroke, Ui, vec2};
 
 pub fn button(ui: &mut Ui, label: &str, name: &str, enabled: bool, on: bool) -> bool {
     let button = egui::Button::new(label).selected(on);
@@ -11,26 +11,130 @@ pub fn button(ui: &mut Ui, label: &str, name: &str, enabled: bool, on: bool) -> 
     response.on_hover_text(name).clicked()
 }
 
-pub fn record(
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Glyph {
+    Start,
+    Play,
+    Stop,
+    Record,
+    Loop,
+    Metronome,
+}
+
+pub fn tool_button(
     ui: &mut Ui,
-    label: &str,
+    glyph: Glyph,
     name: &str,
     enabled: bool,
     active: bool,
-    reason: Option<&str>,
-) -> bool {
-    let text = egui::RichText::new(label).color(if active { colors::DANGER } else { colors::TEXT });
-    let response = ui.add_enabled(enabled, egui::Button::new(text));
+    keyboard_focus: bool,
+) -> Response {
+    let response = ui
+        .add_enabled_ui(enabled, |ui| {
+            ui.allocate_response(
+                vec2(theme::TOOL_TARGET, theme::TOOL_TARGET),
+                egui::Sense::click(),
+            )
+        })
+        .inner;
+    let enabled = response.enabled();
     response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, enabled, active, name)
+        if matches!(
+            glyph,
+            Glyph::Play | Glyph::Record | Glyph::Loop | Glyph::Metronome
+        ) {
+            egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, enabled, active, name)
+        } else {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, name)
+        }
     });
-    if let Some(reason) = reason {
-        response
-            .on_disabled_hover_text(reason)
-            .on_hover_text(name)
-            .clicked()
+    let down = response.is_pointer_button_down_on();
+    let color = if active || glyph == Glyph::Record && (down || response.clicked()) {
+        match glyph {
+            Glyph::Record => colors::DANGER,
+            Glyph::Loop => theme::LOOP_ACTIVE,
+            _ => colors::ACCENT,
+        }
+    } else if !enabled {
+        colors::DISABLED
+    } else if down {
+        colors::SECONDARY
+    } else if response.hovered() {
+        theme::CAP_LIGHT
     } else {
-        response.on_hover_text(name).clicked()
+        colors::TEXT
+    };
+    let painter = ui.painter_at(response.rect);
+    let center = response.rect.center();
+    glyph.paint(&painter, center, color);
+    if keyboard_focus && response.has_focus() {
+        painter.circle_stroke(
+            center,
+            (theme::TOOL_TARGET + theme::TOOL_GLYPH) / 4.0,
+            Stroke::new(theme::TOOL_STROKE, colors::ACCENT),
+        );
+    }
+    response.on_hover_text(name)
+}
+
+impl Glyph {
+    fn paint(self, painter: &Painter, center: Pos2, color: Color32) {
+        let point = |x, y| center + vec2(x, y) * (theme::TOOL_GLYPH / 2.0);
+        let stroke = Stroke::new(theme::TOOL_STROKE, color);
+        let line = |points: &[(f32, f32)]| {
+            painter.add(Shape::line(
+                points.iter().map(|&(x, y)| point(x, y)).collect(),
+                stroke,
+            ));
+        };
+        let polygon = |points: &[(f32, f32)], fill, edge| {
+            painter.add(Shape::convex_polygon(
+                points.iter().map(|&(x, y)| point(x, y)).collect(),
+                fill,
+                edge,
+            ));
+        };
+        match self {
+            Self::Start => {
+                line(&[(-0.8, -0.7), (-0.8, 0.7)]);
+                polygon(
+                    &[(-0.55, 0.0), (0.65, -0.75), (0.65, 0.75)],
+                    color,
+                    Stroke::NONE,
+                );
+            }
+            Self::Play => {
+                polygon(
+                    &[(-0.55, -0.8), (0.8, 0.0), (-0.55, 0.8)],
+                    color,
+                    Stroke::NONE,
+                );
+            }
+            Self::Stop => {
+                painter.rect_filled(
+                    egui::Rect::from_two_pos(point(-0.65, -0.65), point(0.65, 0.65)),
+                    0.0,
+                    color,
+                );
+            }
+            Self::Record => {
+                painter.circle_filled(center, theme::TOOL_GLYPH * 0.4, color);
+            }
+            Self::Loop => {
+                line(&[(-0.84, -0.02), (-0.84, -0.5), (0.82, -0.5)]);
+                line(&[(0.43, -0.89), (0.82, -0.5), (0.43, -0.11)]);
+                line(&[(0.84, 0.02), (0.84, 0.5), (-0.82, 0.5)]);
+                line(&[(-0.43, 0.89), (-0.82, 0.5), (-0.43, 0.11)]);
+            }
+            Self::Metronome => {
+                polygon(
+                    &[(-0.72, 0.78), (-0.25, -0.72), (0.25, -0.72), (0.72, 0.78)],
+                    Color32::TRANSPARENT,
+                    stroke,
+                );
+                line(&[(-0.04, 0.43), (0.74, -0.49)]);
+            }
+        }
     }
 }
 
@@ -188,4 +292,59 @@ pub fn tick_field(ui: &mut Ui, label: &str, tick: &mut u64) {
         )
         .labelled_by(label.id);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui::{Event, Modifiers, PointerButton, RawInput};
+
+    #[test]
+    fn record_glyph_stays_red_from_press_through_release_and_recording() {
+        let ctx = Context::default();
+        let mut center = Pos2::ZERO;
+        let mut frame = |events, enabled, active| {
+            let output = ctx.run_ui(
+                RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    center = tool_button(ui, Glyph::Record, "Record MIDI", enabled, active, false)
+                        .rect
+                        .center();
+                },
+            );
+            output
+                .shapes
+                .into_iter()
+                .filter_map(|shape| match shape.shape {
+                    Shape::Circle(circle) if circle.center == center => Some(circle.fill),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(frame(vec![], true, false), vec![colors::TEXT]);
+        let target = Pos2::new(theme::TOOL_TARGET / 2.0, theme::TOOL_TARGET / 2.0);
+        let button = |pressed| Event::PointerButton {
+            pos: target,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        assert_eq!(
+            frame(vec![Event::PointerMoved(target), button(true)], true, false),
+            vec![colors::DANGER],
+        );
+        assert_eq!(
+            frame(vec![button(false)], true, false),
+            vec![colors::DANGER]
+        );
+        assert_eq!(frame(vec![], false, true), vec![colors::DANGER]);
+        assert_eq!(
+            frame(vec![Event::PointerGone], true, false),
+            vec![colors::TEXT]
+        );
+        assert_eq!(frame(vec![], false, false), vec![colors::DISABLED]);
+    }
 }

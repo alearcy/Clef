@@ -18,6 +18,11 @@ snapshot: snapshots/kit-gallery.png
 ## Purpose
 One vector glyph set for every glyph-only control. Glyphs carry no fill tile, border or label.
 
+Clef's transport implements six vector glyphs in `crates/ui/src/primitives/transport.rs`.
+`Glyph::{Start, Play, Stop, Record, Loop, Metronome}` is rendered by
+the [tool button](tool-button.md) using the shared tool metrics. See the
+[transport gallery](../../specs/T34-transport-glyphs.md) for the rendered set.
+
 ## Anatomy
 `enum class Icon`: select, draw, erase, paint, folder, chevronRight, chevronDown, plus, close, play,
 stop, record, rewind, loop, settings, metronome, punch, minus, fitWidth, fitHeight, marker,
