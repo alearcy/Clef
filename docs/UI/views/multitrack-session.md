@@ -81,7 +81,56 @@ clearing the block loads nothing and does not enable audio. Retained-state Save
 requires explicit confirmation naming the affected tracks. Consent is tied to
 specific failure versions, so it cannot authorize a subsequent failure silently.
 
+## T06 arm and arrangement
+
+Each instrument row has a Record Arm target. Its accessible name includes the track name and its
+current action. The target fills when armed and squares while a take records. The armed track receives
+live MIDI independently of selection. After disarm, live input resumes on the selected track. At most
+one instrument is armed. The target is guarded throughout count-in and capture.
+
+The recording preview and committed MIDI clips share the timeline transform with the ruler and
+playhead. Committed clips draw read-only note marks from their active sections below the label.
+The danger recording preview draws note attacks as they arrive, extends held notes with the
+playhead, and fixes their length on release. In loop recording, the latest completed
+pass containing notes stays dimmed underneath the current pass and shares its time and pitch
+coordinates in Merge, Replace, and New take. A committed clip shows its type and take count where space allows. Its accessible
+description includes the track, musical range, and take count.
+Take lanes and comp editing are specified in [T26](../../specs/T26-midi-comping.md). See
+[T06](../../specs/T06-midi-recording.md) for states and playback rules.
+
+## T09 arrangement editing
+
+The provisional Rust timeline adds clip selection, a marquee, a Snap control,
+and clip context menus. Click or Command-click to select clips. Drag the body
+to move the selection in time or between tracks. The upper right-edge target
+extends the clip by whole cycles, using its visible length on the first loop.
+The lower target changes the clip length using the arrangement snap setting; on a
+repeated clip it rounds up to whole cycles, so no material sits past the repetition.
+Repetition boundaries are drawn inside the clip. The moved clip is drawn in front of lower
+clips in the same track, and pointer hit-testing uses the same stacking order.
+
+Hover and selection expose the two edge targets. Keyboard focus uses a separate
+outline. A drag shows the proposed bounds and musical position. The grid line
+shows the resolved snap target and the readout identifies free movement.
+An invalid edit reports its reason in the session status. Pending moves and
+resizes keep their preview until the session responds. Snap, scroll position,
+and zoom are saved with the project.
+
+Right-click or use Shift-F10 in the focused arrangement lane to open its menu.
+The menu reads the live bindings for Split at Playhead, Duplicate, and Delete.
+An empty lane opens Create Clip. Tab reaches visible clips and Enter selects the
+focused clip. Arrangement shortcuts are scoped to arrangement focus. The
+Commands window lists the bindings for moving in time or between tracks,
+resizing, editing the repeat extent, and selecting all clips. The split
+confirmation offers Split Notes and Cancel. Escape cancels the pending split
+or an active drag.
+
+See [T09](../../specs/T09-arrangement-editing.md) for scope and verification.
+
 ## Commands and Accessibility
+
+The project command row exposes Undo, Redo and the revision slider through the
+[Edit History](edit-history.md) menu and window.
 
 Project/track/recovery controls use the shared command definitions, enablement,
 dispatch, command search and session shortcut reassignment. Parameterized track
@@ -150,3 +199,7 @@ The user explicitly kept T04 functional/provisional and T18 separate. The reques
 physical-keyboard/listening trial remains pending. Functional verification does not
 turn any planned primitive into `gallery` or close the unchecked design-system gates above. The final
 keyboard path scrolls the selected row into view, including row eight and narrow layouts.
+
+The selected-track details and transport draw from the same workspace state. Session waits
+retain the appearance of otherwise available buttons. Longer work still displays the
+working indicator. See [T25](../../specs/T25-ui-flicker.md).

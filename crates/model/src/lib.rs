@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 
+pub mod midi;
 pub mod project;
+pub mod timeline;
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;

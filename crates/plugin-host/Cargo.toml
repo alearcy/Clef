@@ -14,3 +14,6 @@ clack-host = { git = "https://github.com/prokopyl/clack", rev = "27ca28391b57a61
 clack-extensions = { git = "https://github.com/prokopyl/clack", rev = "27ca28391b57a61bad4bb5099288a7bf9247350d", features = ["clack-host", "audio-ports", "note-ports", "gui", "state", "render", "latency", "timer", "params", "thread-check"] }
 eframe = { version = "=0.34.3", default-features = false, features = ["glow", "accesskit", "default_fonts"] }
 raw-window-handle = "=0.6.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+winit = { version = "=0.30.13", default-features = false }

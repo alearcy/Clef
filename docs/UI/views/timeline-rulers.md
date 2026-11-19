@@ -3,7 +3,7 @@ name: Timeline rulers
 kind: view
 reference: paintRollRuler, rollGridLevels
 status: mixed
-impl: planned
+impl: app
 reference-source: [Source/TimelineRows.h, Source/LocatorBand.h, Source/Arrangement.cpp, Source/PianoRoll.cpp]
 snapshot: snapshots/timeline-rulers.png
 ---
@@ -13,6 +13,12 @@ snapshot: snapshots/timeline-rulers.png
 > Rust + egui. See [README](../README.md) and the [UI contract](../contract.md).
 
 # Timeline rulers
+
+T05 implements the bars/beats ruler and loop band above the instrument lanes. The ruler locates
+the playhead and supports keyboard beat steps. The loop band supports draw, move, resize, beat snap,
+Option for tick precision, and Escape to cancel. The lanes and ruler share scroll and zoom.
+After a valid release, the loop band holds the submitted range until the session confirms or
+rejects it. See [T25](../../specs/T25-ui-flicker.md).
 
 Shared by the arrangement and the piano roll.
 

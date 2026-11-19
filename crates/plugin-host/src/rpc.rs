@@ -165,6 +165,9 @@ pub struct Instrument {
     child: Child,
     control: ControlConnection,
     audio: Option<AudioConnection>,
+    // A native close can arrive after the next editor has already opened.
+    editor_events: UnixStream,
+    editor_generation: u8,
     pub name: String,
     pub latency: u32,
 }
@@ -281,8 +284,14 @@ impl Instrument {
                 }
             }
         };
-        let streams = (|| -> Result<_> { Ok((accept()?, accept()?)) })();
-        let (mut stream, audio) = match streams {
+        let streams = (|| -> Result<_> {
+            let stream = accept()?;
+            let audio = accept()?;
+            let editor_events = accept()?;
+            editor_events.set_nonblocking(true)?;
+            Ok((stream, audio, editor_events))
+        })();
+        let (mut stream, audio, editor_events) = match streams {
             Ok(streams) => streams,
             Err(error) => {
                 let _ = child.kill();
@@ -310,6 +319,8 @@ impl Instrument {
                 latency: 0,
                 failed: false,
             }),
+            editor_events,
+            editor_generation: 0,
             name: String::new(),
             latency: 0,
         };
@@ -343,6 +354,10 @@ impl Instrument {
             )
         {
             return Err("stop live playback before this operation".into());
+        }
+        let opening_editor = matches!(request, Request::Editor { open: true });
+        if opening_editor {
+            self.editor_closed();
         }
         let result = (|| {
             if matches!(
@@ -386,6 +401,9 @@ impl Instrument {
             return Err("worker latency exceeds prototype capacity".into());
         }
         self.latency = reply.latency;
+        if opening_editor {
+            self.editor_generation = self.editor_generation.wrapping_add(1);
+        }
         Ok(reply)
     }
 
@@ -449,6 +467,12 @@ impl Instrument {
     pub fn editor(&mut self, open: bool) -> Result<()> {
         self.call(Request::Editor { open })?;
         Ok(())
+    }
+    pub fn editor_closed(&mut self) -> bool {
+        let mut events = [0; 64];
+        self.editor_events
+            .read(&mut events)
+            .is_ok_and(|read| events[..read].contains(&self.editor_generation))
     }
     pub fn save(&mut self) -> Result<Vec<u8>> {
         let state = self.call(Request::Save)?.state;

@@ -149,6 +149,24 @@ pub fn output_stream(
     rate: u32,
     buffer: u32,
     mut fill: impl FnMut(&mut [f32]) + Send + 'static,
+    error: impl FnMut() + Send + 'static,
+) -> Result<Stream> {
+    timed_output_stream(
+        device,
+        channels,
+        rate,
+        buffer,
+        move |data, _| fill(data),
+        error,
+    )
+}
+
+pub fn timed_output_stream(
+    device: &cpal::Device,
+    channels: u16,
+    rate: u32,
+    buffer: u32,
+    mut fill: impl FnMut(&mut [f32], u64) + Send + 'static,
     mut error: impl FnMut() + Send + 'static,
 ) -> Result<Stream> {
     Ok(device.build_output_stream(
@@ -157,7 +175,13 @@ pub fn output_stream(
             sample_rate: rate,
             buffer_size: cpal::BufferSize::Fixed(buffer),
         },
-        move |data, _| fill(data),
+        move |data, info| {
+            let time = info.timestamp();
+            let lag = time.playback.duration_since(time.callback);
+            let frames = (lag.as_nanos() * u128::from(rate) / 1_000_000_000)
+                .min(u128::from(u64::MAX)) as u64;
+            fill(data, frames);
+        },
         move |_| error(),
         None,
     )?)

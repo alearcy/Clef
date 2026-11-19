@@ -5,6 +5,7 @@ use std::ffi::c_void;
 
 unsafe extern "C" {
     fn clef_plugin_parent_create(parent: *mut c_void) -> *mut c_void;
+    fn clef_plugin_parent_prepare(surface: *mut c_void);
     fn clef_plugin_parent_detach(surface: *mut c_void);
     fn clef_plugin_parent_destroy(surface: *mut c_void);
 }
@@ -14,6 +15,8 @@ pub struct NativeWindow {
     context: Context,
     view: *mut c_void,
     surface: *mut c_void,
+    show_requested_at: Option<u64>,
+    visible: bool,
 }
 
 impl NativeWindow {
@@ -25,6 +28,8 @@ impl NativeWindow {
             context,
             view: handle.ns_view.as_ptr(),
             surface: std::ptr::null_mut(),
+            show_requested_at: None,
+            visible: false,
         })
     }
 
@@ -60,10 +65,32 @@ impl NativeWindow {
         }
     }
 
-    pub fn show(&self) {
-        self.context
-            .send_viewport_cmd(ViewportCommand::Visible(true));
-        self.context.send_viewport_cmd(ViewportCommand::Focus);
+    pub fn show(&mut self) {
+        if self.visible {
+            self.context.send_viewport_cmd(ViewportCommand::Focus);
+        } else if self.show_requested_at.is_none() {
+            self.show_requested_at = Some(self.context.cumulative_frame_nr());
+            self.context.request_repaint();
+        }
+    }
+
+    pub fn present(&mut self) {
+        if self
+            .show_requested_at
+            .is_some_and(|frame| frame != self.context.cumulative_frame_nr())
+        {
+            self.show_requested_at = None;
+            // The previous frame applied viewport sizing while the editor was hidden.
+            unsafe { clef_plugin_parent_prepare(self.surface) };
+            self.context
+                .send_viewport_cmd(ViewportCommand::Visible(true));
+            self.context.send_viewport_cmd(ViewportCommand::Focus);
+            self.visible = true;
+        }
+    }
+
+    pub fn is_visible(&self) -> bool {
+        self.visible
     }
 
     pub fn resizable(&self, resizable: bool) {
@@ -71,13 +98,18 @@ impl NativeWindow {
             .send_viewport_cmd(ViewportCommand::Resizable(resizable));
     }
 
-    pub fn hide(&self) {
+    pub fn hide(&mut self) {
+        self.show_requested_at = None;
+        self.visible = false;
         self.context
             .send_viewport_cmd(ViewportCommand::Visible(false));
     }
 
-    pub fn resize(&self, width: u32, height: u32) -> Result<()> {
+    pub fn resize(&mut self, width: u32, height: u32) -> Result<()> {
         validate_size(width, height)?;
+        if self.show_requested_at.is_some() {
+            self.show_requested_at = Some(self.context.cumulative_frame_nr());
+        }
         self.context
             .send_viewport_cmd(ViewportCommand::InnerSize(eframe::egui::vec2(
                 width as f32,

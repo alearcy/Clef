@@ -2,9 +2,9 @@
 name: Startup
 kind: view
 status: app
-impl: planned
+impl: gallery
 reference-source: [Source/StartupChooser.h, Source/MainComponent.cpp (StartupLoadingView)]
-components: [list-row, text-button]
+components: [caption-and-heading, list-row, text-button, project-dialog]
 reference: composer::style::paintStartupBackdrop, paintStartupPanel
 snapshot: snapshots/startup-chooser.png
 ---
@@ -14,6 +14,58 @@ snapshot: snapshots/startup-chooser.png
 > Rust + egui. See [README](../README.md) and the [UI contract](../contract.md).
 
 # Startup (D97, D98)
+
+## Clef Startup and Recovery — T07
+
+The chooser opens before the workspace. The centered panel uses the Composer Dark surface and
+divider, a 4-point radius and 22 × 20 points of padding. Its maximum width is 760 points.
+
+```text
+startup (1024 × 640, minimum 760 × 480)
+  centered panel
+    column
+      heading: Clef
+      caption: Recent Projects
+      row: scrolling recent rows + selected project details (wrap)
+      row wrap: Recovery…, Remove, Locate…, Open, Open…, New Project
+      status and error feedback when needed
+
+recovery
+  project dialog
+    heading and optional recovery list
+    selected project, checkpoint time and original path
+    recovery instructions or error
+    row wrap: Later, Discard…, Recover
+```
+
+At 760 points, selected details move below the list. The panel scrolls if needed at the
+minimum height. Paths wrap in the details area. Each row line truncates independently.
+The row tooltip and accessible name retain the full path and status. Up/Down select a recent
+project and Return opens the selected readable project. Tab moves between actions.
+
+A missing project remains selectable and exposes Locate. An incompatible project explains
+the failure and disables Open. A read-only project can open and routes Save to Save As.
+
+The recovery dialog opens when recoverable data exists, with a list when multiple sessions
+are available. Fallback displays the usable checkpoint time and the latest checkpoint's
+error. If all checkpoints fail, Recover is disabled. Discard requires confirmation.
+Later returns to the chooser and keeps the Recovery action visible. Escape postpones
+recovery or cancels discard confirmation.
+
+| Primitive | Role and commands |
+| --- | --- |
+| [Caption and heading](../components/caption-and-heading.md) | Titles, paths, dates, preparation, empty and error states. |
+| [List row](../components/list-row.md) | Select recent projects or recovery sessions. Activate a readable recent item with Return or a double-click. |
+| [Text button](../components/text-button.md) | Bind Open, Locate, Remove, New Project and recovery actions to shared commands. |
+| [Project dialog](../components/project-dialog.md) | Recovery chooser and destructive discard confirmation. |
+
+The [egui gallery](../snapshots/egui/) covers loading, empty, recent, missing, incompatible,
+read-only, available recovery, fallback, unavailable recovery, discard confirmation and Later
+at 1024 and 760 points. See [recent projects](../snapshots/egui/t07-startup-recent-1024.png),
+[narrow recovery](../snapshots/egui/t07-recovery-ready-760.png) and the
+[T07 acceptance evidence](../../specs/T07-autosave-recovery.md).
+
+## Legacy Startup Reference
 
 - **Backdrop and panel** (approved 2026-11-11, board "Startup · framed panel and background texture" of
   [Settings and Startup Loading](https://claude.ai/artifact/Hq7LePESbpfweCnZLE7aFC)): both screens paint

@@ -1,14 +1,19 @@
 use crate::{DEFAULT_BLOCK_SIZE as BLOCK, DEFAULT_SAMPLE_RATE as RATE, MAX_STATE, Plugin, Result};
+use crate::{
+    midi::{Arrangement, Snap},
+    timeline::{MAX_TICK, Timeline},
+};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
+    sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 const MAGIC: &[u8; 8] = b"CLEFPRJ2";
-const MAX_METADATA: usize = 1024 * 1024;
+const MAX_METADATA: usize = 16 * 1024 * 1024;
 pub const MAX_TRACKS: usize = 128;
 const MAX_TOTAL_STATE: usize = 512 * 1024 * 1024;
 
@@ -69,6 +74,39 @@ pub struct Project {
     pub tracks: Vec<Track>,
     pub next_id: u64,
     pub audio: AudioSettings,
+    #[serde(default)]
+    pub timeline: Timeline,
+    #[serde(default)]
+    pub midi: Arc<Arrangement>,
+    #[serde(default)]
+    pub arrangement_view: ArrangementView,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArrangementView {
+    pub snap: Snap,
+    pub offset: u64,
+    pub zoom_milli: u32,
+}
+
+impl Default for ArrangementView {
+    fn default() -> Self {
+        Self {
+            snap: Snap::Beat,
+            offset: 0,
+            zoom_milli: 48_000,
+        }
+    }
+}
+
+impl ArrangementView {
+    pub fn validate(self) -> Result<()> {
+        if self.offset > MAX_TICK || !(8_000..=240_000).contains(&self.zoom_milli) {
+            return Err("Arrangement viewport is outside its supported range.".into());
+        }
+        Ok(())
+    }
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -77,7 +115,17 @@ struct Metadata {
     tracks: Vec<Track>,
     next_id: u64,
     audio: AudioSettings,
+    #[serde(default)]
+    timeline: Timeline,
+    #[serde(default, skip_serializing_if = "Arrangement::is_default")]
+    midi: Arc<Arrangement>,
+    #[serde(default, skip_serializing_if = "default_arrangement_view")]
+    arrangement_view: ArrangementView,
     state_lengths: Vec<usize>,
+}
+
+fn default_arrangement_view(view: &ArrangementView) -> bool {
+    *view == ArrangementView::default()
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -99,12 +147,19 @@ impl Default for Project {
             tracks: Vec::new(),
             next_id: 1,
             audio: AudioSettings::default(),
+            timeline: Timeline::default(),
+            midi: Arc::default(),
+            arrangement_view: ArrangementView::default(),
         }
     }
 }
 
 impl Project {
     pub fn validate(&self) -> Result<()> {
+        self.timeline.validate()?;
+        self.arrangement_view.validate()?;
+        self.midi
+            .validate(self.tracks.iter().map(|track| track.id))?;
         let valid_text = |text: &str| text.len() <= 4096 && !text.contains('\0');
         if self.version != 2 {
             return Err("unsupported Clef project version".into());
@@ -178,6 +233,9 @@ impl Project {
                 .collect(),
             next_id: self.next_id,
             audio: self.audio.clone(),
+            timeline: self.timeline.clone(),
+            midi: self.midi.clone(),
+            arrangement_view: self.arrangement_view,
             state_lengths: lengths.clone(),
         })?;
         if metadata.len() > MAX_METADATA {
@@ -242,6 +300,9 @@ impl Project {
                     next_id: tracks.len() as u64 + 1,
                     tracks,
                     audio: legacy.audio,
+                    timeline: Timeline::default(),
+                    midi: Arc::default(),
+                    arrangement_view: ArrangementView::default(),
                 },
                 lengths,
             )
@@ -253,6 +314,9 @@ impl Project {
                     tracks: metadata.tracks,
                     next_id: metadata.next_id,
                     audio: metadata.audio,
+                    timeline: metadata.timeline,
+                    midi: metadata.midi,
+                    arrangement_view: metadata.arrangement_view,
                 },
                 metadata.state_lengths,
             )
@@ -283,31 +347,40 @@ impl Project {
     }
     pub fn save(&self, path: &Path, replace: bool) -> Result<()> {
         self.validate()?;
-        let parent = path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
-        let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-        let temporary = parent.join(format!(".clef-save-{}-{nonce}", std::process::id()));
-        use std::os::unix::fs::OpenOptionsExt;
-        let result = (|| -> Result<()> {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(&temporary)?;
-            self.write(&mut file)?;
-            file.sync_all()?;
-            if replace {
-                std::fs::rename(&temporary, path)?;
-            } else {
-                std::fs::hard_link(&temporary, path)?;
-            }
-            Ok(())
-        })();
-        let _ = std::fs::remove_file(temporary);
-        result
+        atomic_write(path, replace, |file| self.write(file))
     }
+}
+
+/// Publish a synced file from a temporary sibling, optionally replacing the destination.
+pub fn atomic_write(
+    path: &Path,
+    replace: bool,
+    write: impl FnOnce(&mut File) -> Result<()>,
+) -> Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    let temporary = parent.join(format!(".clef-save-{}-{nonce}", std::process::id()));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&temporary)?;
+    let result = (|| {
+        write(&mut file)?;
+        file.sync_all()?;
+        if replace {
+            std::fs::rename(&temporary, path)?;
+        } else {
+            std::fs::hard_link(&temporary, path)?;
+        }
+        Ok(())
+    })();
+    let _ = std::fs::remove_file(temporary);
+    result
 }
 
 #[cfg(test)]
@@ -339,6 +412,85 @@ mod tests {
         bytes.push(1);
         assert!(Project::decode(&mut bytes.as_slice()).is_err());
     }
+    #[test]
+    fn timeline_options_round_trip_and_older_v2_projects_get_defaults() {
+        use crate::timeline::{StopMode, Tempo};
+        let mut project = sample();
+        project.timeline.changes.push(Tempo {
+            bar: 9,
+            bpm: 107,
+            beats: 7,
+            unit: 8,
+        });
+        project.timeline.loop_range = [1200, 10_500];
+        project.timeline.looping = true;
+        project.timeline.click = true;
+        project.timeline.count_in = true;
+        project.timeline.stop_mode = StopMode::ReturnToPlayStart;
+        let mut bytes = Vec::new();
+        project.write(&mut bytes).unwrap();
+        assert_eq!(Project::decode(&mut bytes.as_slice()).unwrap(), project);
+        let length = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+        let mut metadata: serde_json::Value =
+            serde_json::from_slice(&bytes[16..16 + length]).unwrap();
+        metadata.as_object_mut().unwrap().remove("timeline");
+        let original = container(
+            MAGIC,
+            &serde_json::to_vec(&metadata).unwrap(),
+            &bytes[16 + length..],
+        );
+        let legacy = Project::decode(&mut original.as_slice()).unwrap();
+        assert_eq!(legacy.timeline, Timeline::default());
+        assert_eq!(legacy.tracks, project.tracks);
+        project.timeline.changes[1].bar = 1;
+        assert!(project.validate().is_err());
+        project.timeline.changes.pop();
+        project.timeline.loop_range = [15, 14];
+        assert!(project.validate().is_err());
+    }
+    #[test]
+    fn midi_modes_takes_and_sections_round_trip_and_remain_optional_in_old_v2() {
+        use crate::midi::{Event, Message, Mode};
+        let mut project = sample();
+        let track = project.tracks[0].id;
+        let midi = Arc::make_mut(&mut project.midi);
+        midi.mode = Mode::NewTake;
+        midi.record(
+            track,
+            Mode::NewTake,
+            [0, 240],
+            (0..2)
+                .map(|value| {
+                    vec![Event {
+                        tick: 100,
+                        order: 0,
+                        message: Message::Control([0xb1, 1, value]),
+                    }]
+                })
+                .collect(),
+            false,
+        )
+        .unwrap();
+        let mut bytes = Vec::new();
+        project.write(&mut bytes).unwrap();
+        assert_eq!(Project::decode(&mut bytes.as_slice()).unwrap(), project);
+        let length = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+        let mut metadata: serde_json::Value =
+            serde_json::from_slice(&bytes[16..16 + length]).unwrap();
+        metadata.as_object_mut().unwrap().remove("midi").unwrap();
+        let old = container(
+            MAGIC,
+            &serde_json::to_vec(&metadata).unwrap(),
+            &bytes[16 + length..],
+        );
+        assert!(
+            Project::decode(&mut old.as_slice())
+                .unwrap()
+                .midi
+                .is_default()
+        );
+    }
+
     #[test]
     fn oversized_truncated_and_future_projects_are_rejected() {
         let mut bytes = Vec::new();

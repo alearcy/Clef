@@ -47,8 +47,9 @@ performances as takes, and assemble a comp by selecting ranges, without ever los
   clip covering the loop range.
 - A newly recorded take becomes active over its recorded range; the rest of the comp is
   unchanged.
-- If T06 does not deliver all three modes, T26 adds the missing modes. The effective-mode
-  model, storage, and undo rules are defined here.
+- [T06](T06-midi-recording.md) owns all three project-wide modes and persists the first take
+  and active-section model. T26 adds track overrides and exposes the take and comp editing
+  commands.
 
 ### Takes and comp
 
@@ -133,8 +134,8 @@ No command gets a default keystroke unless the interview agrees one.
 
 ### Interaction with neighbouring tasks
 
-- T06 provides capture and the initial clip model; T26 extends both without changing T06's
-  playback guarantees.
+- T06 provides capture, the project-wide mode, and the initial clip, take, and active-section
+  model. T26 extends these without changing T06's playback guarantees.
 - T09's split, join, duplicate, and move must preserve takes and comp sections.
 - T10 shows the comp and redirects note edits to source takes, including the dimmed
   Edit Take mode.
@@ -148,8 +149,6 @@ automation lanes, and chord/scale lanes; ARA (T29); a new recording engine.
 
 ## Open questions
 
-- Whether all three record modes belong to T06 or T26, and how a mode change is refused during
-  a take.
 - Punch: whether it exists when T26 starts, and the recorded-range definition when it is absent.
 - Exact schema layout for takes, sections, and note identity; one bump shared with T27.
 - How the comp is represented for playback and for the piano roll (rendered note list versus

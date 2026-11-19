@@ -384,10 +384,17 @@ impl MainPlugin {
 pub fn run(socket: &Path, path: &Path, selected: String, sample_rate: u32) -> Result<()> {
     let mut stream = UnixStream::connect(socket)?;
     let mut audio_stream = UnixStream::connect(socket)?;
+    let editor_events = UnixStream::connect(socket)?;
+    editor_events.set_nonblocking(true)?;
     let path = path.to_owned();
     let outcome = std::rc::Rc::new(std::cell::RefCell::new(None));
     let app_outcome = outcome.clone();
     let options = eframe::NativeOptions {
+        #[cfg(target_os = "macos")]
+        event_loop_builder: Some(Box::new(|builder| {
+            use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
+            builder.with_activation_policy(ActivationPolicy::Accessory);
+        })),
         viewport: eframe::egui::ViewportBuilder::default()
             .with_visible(false)
             .with_resizable(false)
@@ -399,7 +406,10 @@ pub fn run(socket: &Path, path: &Path, selected: String, sample_rate: u32) -> Re
         "Clef Plugin Editor",
         options,
         Box::new(move |cc| {
-            let window = NativeWindow::new(cc.egui_ctx.clone(), cc)?;
+            let mut window = NativeWindow::new(cc.egui_ctx.clone(), cc)?;
+            // eframe can reveal the root window after its first paint. Viewport
+            // commands run afterward, so keep the empty window out of sight.
+            window.hide();
             let main = match MainPlugin::load(&path, window, &selected, sample_rate) {
                 Ok(main) => main,
                 Err(error) => {
@@ -520,6 +530,8 @@ pub fn run(socket: &Path, path: &Path, selected: String, sample_rate: u32) -> Re
                 processor: Some(processor),
                 shutdown,
                 audio_shutdown,
+                editor_events,
+                editor_generation: 0,
                 outcome: app_outcome,
                 exiting: false,
                 last_size: None,
@@ -541,6 +553,8 @@ struct WorkerApp {
     processor: Option<std::thread::JoinHandle<()>>,
     shutdown: UnixStream,
     audio_shutdown: UnixStream,
+    editor_events: UnixStream,
+    editor_generation: u8,
     outcome: std::rc::Rc<std::cell::RefCell<Option<String>>>,
     exiting: bool,
     last_size: Option<eframe::egui::Vec2>,
@@ -550,13 +564,16 @@ impl eframe::App for WorkerApp {
     fn logic(&mut self, ctx: &eframe::egui::Context, _: &mut eframe::Frame) {
         if ctx.input(|input| input.viewport().close_requested()) && !self.exiting {
             ctx.send_viewport_cmd(eframe::egui::ViewportCommand::CancelClose);
+            let was_open = self.main.editor_open;
             if let Err(error) = self.main.editor(false) {
                 *self.outcome.borrow_mut() = Some(error.to_string());
                 self.done.store(true, Ordering::Release);
+            } else if was_open {
+                self.notify_editor_closed();
             }
         }
         let size = ctx.input(|input| input.viewport().inner_rect.map(|rect| rect.size()));
-        if self.main.editor_open
+        if self.main.window.is_visible()
             && size != self.last_size
             && let Some(size) = size
             && let Err(error) = self.main.resize_from_host(size)
@@ -566,17 +583,26 @@ impl eframe::App for WorkerApp {
         }
         self.last_size = size;
         while let Ok((request, reply)) = self.rx.try_recv() {
+            let opening = matches!(&request, Request::Editor { open: true });
             let response = self.main.control(request).unwrap_or_else(Reply::failed);
+            if opening && response.error.is_none() {
+                self.editor_generation = self.editor_generation.wrapping_add(1);
+            }
             let _ = reply.send(response);
         }
+        let was_open = self.main.editor_open;
         if let Err(error) = self.main.service() {
             *self.outcome.borrow_mut() = Some(error.to_string());
             self.done.store(true, Ordering::Release);
+        }
+        if was_open && !self.main.editor_open {
+            self.notify_editor_closed();
         }
         if self.done.load(Ordering::Acquire) {
             self.exiting = true;
             ctx.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
         } else {
+            self.main.window.present();
             ctx.request_repaint_after(Duration::from_millis(2));
         }
     }
@@ -598,5 +624,12 @@ impl eframe::App for WorkerApp {
                 *self.outcome.borrow_mut() = Some(error.to_string());
             }
         }
+    }
+}
+
+impl WorkerApp {
+    fn notify_editor_closed(&mut self) {
+        use std::io::Write;
+        let _ = self.editor_events.write(&[self.editor_generation]);
     }
 }

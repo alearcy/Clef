@@ -38,6 +38,9 @@ rest. A menu that toggles several items in one visit (mixer Sections) stays open
 a click outside or its button: its rows are kit `ToggleMenuItem`s, painted as every menu row
 (UI10.6).
 
+T08 uses a provisional in-window egui Edit menu on macOS. Its entries and
+states are documented in [Edit History](../views/edit-history.md).
+
 ## Do / Don't
 - Don't add a second action list or a menu entry with private behaviour.
 - Don't nest frequent actions more than one submenu deep.

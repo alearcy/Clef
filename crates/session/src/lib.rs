@@ -1,11 +1,17 @@
 pub use clef_audio_io::Devices;
+pub use clef_engine::recording::{NoteMark, NotePreview};
+pub use clef_engine::transport::{Phase as TransportPhase, View as TransportView};
 use clef_engine::{
     live::Configuration,
     multitrack::{Broker, Engine},
+    recording::{self, Captured, ControllerBaseline, Projection},
+    transport::{Command as TransportCommand, Prepared, SampleMap},
 };
 use clef_model::{
     Plugin, Result,
-    project::{self, AudioSettings, Project, Track},
+    midi::{Arrangement, ClipEdit, ClipEditResult, ClipId, Mode},
+    project::{self, ArrangementView, AudioSettings, Project, Track},
+    timeline::{MAX_TICK, StopMode, Tempo},
 };
 #[cfg(test)]
 use clef_plugin_host::{files, protocol};
@@ -23,11 +29,24 @@ use std::{
     },
     time::{Duration, Instant},
 };
+mod edit_history;
+mod recovery;
+pub use edit_history::HistoryView;
+use edit_history::{ClipChange, Edit, History, InstrumentState, TrackSlot};
+use recovery::{Journal, RecentChange, Store};
+pub use recovery::{RecentProject, RecentStatus, RecoveryEntry};
+
+const AUTOSAVE_INTERVAL: Duration = Duration::from_secs(60);
 
 pub enum Action {
     Shutdown,
     New,
     Open(PathBuf),
+    DiscardBeforeClose,
+    Recover(String),
+    DiscardRecovery(String),
+    RemoveRecent(PathBuf),
+    RelinkRecent(PathBuf, PathBuf),
     Save {
         path: PathBuf,
         replace: bool,
@@ -39,6 +58,21 @@ pub enum Action {
     RemoveTrack(u64),
     MoveTrack(u64, isize),
     Rename(u64, String),
+    EditClips {
+        expected: Arc<Arrangement>,
+        edit: ClipEdit,
+    },
+    Audition {
+        clip: clef_model::midi::ClipId,
+        channel: u8,
+        key: u8,
+        velocity: u8,
+    },
+    ArrangementView(ArrangementView),
+    SeekHistory {
+        version: u64,
+        target: usize,
+    },
     Select(u64, Plugin),
     Settings(AudioSettings),
     Editor(u64, bool),
@@ -46,8 +80,26 @@ pub enum Action {
     Disable,
     Restart(u64),
     Reactivate(Plugin),
+    Transport(TransportAction),
 }
-#[derive(Clone, Default)]
+
+#[derive(Clone, Copy)]
+pub enum TransportAction {
+    Play,
+    Record,
+    Arm(u64),
+    SetRecordMode(Mode),
+    Stop,
+    Locate(u64),
+    SetTempo(Tempo),
+    RemoveTempo(u32),
+    SetLoopRange([u64; 2]),
+    ToggleLoop,
+    ToggleClick,
+    ToggleCountIn,
+    SetStopMode(StopMode),
+}
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct TrackView {
     pub id: u64,
     pub status: String,
@@ -56,7 +108,7 @@ pub struct TrackView {
     pub lost: bool,
     pub loss_version: u64,
 }
-#[derive(Clone, Default)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct Snapshot {
     pub project: Project,
     pub selected: Option<u64>,
@@ -65,13 +117,29 @@ pub struct Snapshot {
     pub quarantine_error: String,
     pub notice: u64,
     pub path: Option<PathBuf>,
+    pub project_open: bool,
+    pub read_only: bool,
+    pub recovered_from: Option<PathBuf>,
+    pub history_ready: bool,
+    pub history_message: String,
+    pub recents: Vec<RecentProject>,
+    pub recoveries: Vec<RecoveryEntry>,
     pub dirty: bool,
+    pub edit_history: HistoryView,
     pub loaded: bool,
     pub active: bool,
     pub editor: bool,
     pub failed: bool,
     pub message: String,
     pub actual: String,
+    pub transport: TransportView,
+    pub armed: Option<u64>,
+    pub recording: bool,
+    pub record_unavailable: Option<&'static str>,
+    pub recording_region: Option<[u64; 2]>,
+    pub recording_notes: Option<Arc<NotePreview>>,
+    pub clip_edit_selection: Option<Vec<ClipId>>,
+    pub project_epoch: u64,
 }
 impl Snapshot {
     pub fn track(&self) -> Option<&Track> {
@@ -97,6 +165,9 @@ impl Snapshot {
                 version: self.project.version,
                 next_id: self.project.next_id,
                 audio: self.project.audio.clone(),
+                timeline: self.project.timeline.clone(),
+                midi: self.project.midi.clone(),
+                arrangement_view: self.project.arrangement_view,
                 tracks: self
                     .project
                     .tracks
@@ -115,13 +186,29 @@ impl Snapshot {
             quarantine_error: self.quarantine_error.clone(),
             notice: self.notice,
             path: self.path.clone(),
+            project_open: self.project_open,
+            read_only: self.read_only,
+            recovered_from: self.recovered_from.clone(),
+            history_ready: self.history_ready,
+            history_message: self.history_message.clone(),
+            recents: self.recents.clone(),
+            recoveries: self.recoveries.clone(),
             dirty: self.dirty,
+            edit_history: self.edit_history.clone(),
             loaded: self.loaded,
             active: self.active,
             editor: self.editor,
             failed: self.failed,
             message: self.message.clone(),
             actual: self.actual.clone(),
+            transport: self.transport,
+            armed: self.armed,
+            recording: self.recording,
+            record_unavailable: self.record_unavailable,
+            recording_region: self.recording_region,
+            recording_notes: self.recording_notes.clone(),
+            clip_edit_selection: self.clip_edit_selection.clone(),
+            project_epoch: self.project_epoch,
         }
     }
 }
@@ -147,6 +234,7 @@ struct Runtime {
     instrument: Option<Instrument>,
     broker: Option<Broker>,
     editor: bool,
+    editor_before: Option<Vec<u8>>,
     pending_editor: bool,
     touched: bool,
     lost: bool,
@@ -169,6 +257,18 @@ struct LoadJob {
     receive: mpsc::Receiver<std::result::Result<Loaded, String>>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
+struct Capture {
+    target: u64,
+    mode: Mode,
+    baseline: ControllerBaseline,
+    map: SampleMap,
+    input: Vec<Captured>,
+    window: Option<Projection>,
+    preview_key: Option<(u64, usize)>,
+    interruption: Option<String>,
+    stopping: bool,
+}
+
 pub struct Session {
     executable: PathBuf,
     silence: Arc<AtomicBool>,
@@ -181,6 +281,15 @@ pub struct Session {
     registry_error: String,
     file_stamp: Option<FileStamp>,
     last_devices: Instant,
+    recording: Option<Capture>,
+    deferred_play: Option<bool>,
+    history: Option<Store>,
+    journal: Option<Journal>,
+    checkpoint: Option<std::thread::JoinHandle<std::result::Result<(), String>>>,
+    last_checkpoint: Instant,
+    checkpoint_take: bool,
+    edits: History,
+    other_changes: bool,
 }
 impl Session {
     pub fn new(executable: PathBuf) -> Self {
@@ -198,6 +307,10 @@ impl Session {
             Ok(v) => (v, String::new()),
             Err(e) => (Vec::new(), e.to_string()),
         };
+        let history = registry
+            .parent()
+            .filter(|p| p.is_absolute())
+            .map(|p| Store(p.to_owned()));
         Self {
             executable,
             silence: Arc::new(AtomicBool::new(true)),
@@ -213,7 +326,296 @@ impl Session {
             registry_error: error,
             file_stamp: None,
             last_devices: Instant::now(),
+            recording: None,
+            deferred_play: None,
+            history,
+            journal: None,
+            checkpoint: None,
+            last_checkpoint: Instant::now(),
+            checkpoint_take: false,
+            edits: History::default(),
+            other_changes: false,
         }
+    }
+
+    fn load_history(&mut self) {
+        if let Some(store) = &self.history {
+            match store.recents() {
+                Ok(recents) => self.view.recents = recents,
+                Err(error) => {
+                    self.view.history_message = format!("Recent projects unavailable: {error}")
+                }
+            }
+            match store.recoveries() {
+                Ok(recoveries) => self.view.recoveries = recoveries,
+                Err(error) => self.view.history_message = format!("Recovery unavailable: {error}"),
+            }
+        } else {
+            self.view.history_message =
+                "Clef's Application Support directory is unavailable.".into();
+        }
+        self.view.history_ready = true;
+    }
+
+    fn update_recents(&mut self, change: RecentChange<'_>) -> Result<()> {
+        let store = self
+            .history
+            .as_ref()
+            .ok_or("Project history is unavailable.")?;
+        self.view.recents = store.update_recents(change, &self.view.recents)?;
+        Ok(())
+    }
+
+    fn note_recent(&mut self, path: &std::path::Path) {
+        if let Err(error) = self.update_recents(RecentChange::Use(path)) {
+            self.view.history_message = format!("Could not update recent projects: {error}");
+        }
+    }
+
+    fn finish_checkpoint(&mut self) {
+        if let Some(job) = self.checkpoint.take() {
+            match job.join() {
+                Ok(Ok(())) => {
+                    if self.view.history_message.starts_with("Autosave ") {
+                        self.view.history_message.clear();
+                    }
+                }
+                Ok(Err(error)) => self.view.history_message = format!("Autosave failed: {error}"),
+                Err(_) => {
+                    self.view.history_message = "Autosave worker stopped unexpectedly.".into()
+                }
+            }
+        }
+    }
+
+    fn retire_journal(&mut self) -> Result<()> {
+        self.finish_checkpoint();
+        if let Some(journal) = &self.journal {
+            journal.retire()?;
+        }
+        self.journal = None;
+        self.last_checkpoint = Instant::now();
+        self.checkpoint_take = false;
+        Ok(())
+    }
+
+    fn poll_autosave(&mut self, now: Instant) {
+        if self
+            .checkpoint
+            .as_ref()
+            .is_some_and(|job| job.is_finished())
+        {
+            self.finish_checkpoint();
+        }
+        if self.checkpoint.is_some()
+            || !self.view.project_open
+            || !self.view.dirty
+            || (!self.checkpoint_take
+                && now.duration_since(self.last_checkpoint) < AUTOSAVE_INTERVAL)
+        {
+            return;
+        }
+        self.last_checkpoint = now;
+        self.checkpoint_take = false;
+        if let Err(error) = self.start_checkpoint() {
+            self.view.history_message = format!("Autosave failed: {error}");
+        }
+    }
+
+    fn start_checkpoint(&mut self) -> Result<()> {
+        if self.journal.is_none() {
+            let store = self
+                .history
+                .as_ref()
+                .ok_or("Project history is unavailable.")?;
+            let original = self
+                .view
+                .path
+                .as_ref()
+                .map(std::path::absolute)
+                .transpose()?;
+            self.journal = Some(store.create(original.as_deref())?);
+        }
+        let directory = self.journal.as_ref().unwrap().path.clone();
+        let project = self.view.project.clone();
+        self.checkpoint = Some(
+            std::thread::Builder::new()
+                .name("clef-autosave".into())
+                .spawn(move || {
+                    recovery::checkpoint(&directory, &project).map_err(|error| error.to_string())
+                })?,
+        );
+        Ok(())
+    }
+
+    fn install_project(
+        &mut self,
+        project: Project,
+        path: Option<PathBuf>,
+        stamp: Option<FileStamp>,
+    ) {
+        self.unload();
+        self.file_stamp = stamp;
+        self.view.selected = project.tracks.first().map(|t| t.id);
+        self.view.armed = None;
+        self.view.project = project;
+        self.view.transport = TransportView::default();
+        self.view.read_only = path.as_deref().is_some_and(recovery::read_only);
+        self.view.path = path;
+        self.view.recovered_from = None;
+        self.view.dirty = false;
+        self.edits.reset();
+        self.other_changes = false;
+        self.view.project_open = true;
+        self.view.project_epoch = self.view.project_epoch.wrapping_add(1);
+    }
+
+    fn mark_other_change(&mut self) {
+        self.other_changes = true;
+        self.view.dirty = true;
+    }
+
+    fn record_edit(&mut self, edit: Edit) -> bool {
+        let retained = self.edits.record(edit);
+        self.view.dirty = true;
+        if !retained {
+            self.view.message =
+                "Edit applied. History cleared because the edit exceeded 64 MiB.".into();
+        }
+        retained
+    }
+
+    fn history_available(&self) -> bool {
+        self.view.project_open
+            && !self.view.recording
+            && !self.view.transport.pending
+            && self.view.transport.phase == TransportPhase::Stopped
+            && self.runtimes.values().all(|runtime| !runtime.loading)
+    }
+
+    fn capture_track_state(&mut self, id: u64) -> Result<Vec<u8>> {
+        let Some(runtime) = self.runtimes.get_mut(&id) else {
+            return Ok(self.track(id)?.state.clone());
+        };
+        if runtime.lost {
+            return Err("The instrument's latest state was lost. Save with retained state before changing this track.".into());
+        }
+        let Some(instrument) = runtime.instrument.as_mut() else {
+            return Ok(self.track(id)?.state.clone());
+        };
+        if let Some((engine, broker)) = self.engine.as_mut().zip(runtime.broker.take()) {
+            engine.detach(broker, instrument)?;
+            let state = instrument.save();
+            runtime.broker = Some(engine.attach(id, instrument)?);
+            state
+        } else {
+            instrument.save()
+        }
+    }
+
+    fn release_track_worker(&mut self, id: u64) {
+        if let Some(mut runtime) = self.runtimes.remove(&id)
+            && let (Some(engine), Some(broker), Some(instrument)) = (
+                &mut self.engine,
+                runtime.broker.take(),
+                runtime.instrument.as_mut(),
+            )
+        {
+            let _ = engine.detach(broker, instrument);
+        }
+        for job in &self.jobs {
+            if job.id == id {
+                job.cancel.store(true, Ordering::Release);
+            }
+        }
+    }
+
+    fn seek_history(&mut self, version: u64, target: usize) -> Result<()> {
+        self.refresh_transport();
+        if !self.history_available() {
+            return Err(
+                "Stop transport and wait for instrument loads before using edit history.".into(),
+            );
+        }
+        self.edits.target(version, target)?;
+        let mut cursor = self.edits.cursor();
+        if cursor == target {
+            return Ok(());
+        }
+        // Validate the complete jump before publishing the timeline and replacing workers.
+        let mut candidate = self.view.project.clone();
+        let mut release = Vec::new();
+        while let Some((edit, forward)) = self.edits.step(cursor, target) {
+            if let Some(id) = edit.worker_to_release(forward) {
+                let mut captured = None;
+                if !release.contains(&id) && self.track(id).is_ok() {
+                    if self.runtimes.get(&id).is_some_and(|runtime| runtime.editor) {
+                        return Err("Close the affected instrument editor before changing its state in history.".into());
+                    }
+                    captured = Some(self.capture_track_state(id)?);
+                    release.push(id);
+                }
+                let previous = candidate
+                    .tracks
+                    .iter()
+                    .find(|track| track.id == id)
+                    .ok_or("History track is unavailable.")?;
+                let (edit, _) = self.edits.step(cursor, target).expect("history step");
+                if !edit.matches_state(captured.as_deref().unwrap_or(&previous.state), forward) {
+                    return Err("The instrument state changed since this history entry. Its current state was preserved.".into());
+                }
+                release.push(id);
+            }
+            let (edit, forward) = self.edits.step(cursor, target).expect("history step");
+            edit.apply(&mut candidate, forward)?;
+            cursor = if forward { cursor + 1 } else { cursor - 1 };
+        }
+        candidate.validate()?;
+        if let Some(engine) = self.engine.as_mut() {
+            if candidate.timeline != self.view.project.timeline {
+                engine
+                    .transport
+                    .settings(Prepared::new(&candidate.timeline, engine.rate)?)?;
+            }
+            if candidate.midi != self.view.project.midi
+                || candidate.timeline.changes != self.view.project.timeline.changes
+            {
+                engine.set_arrangement(&candidate.midi, &candidate.timeline)?;
+            }
+        }
+        for id in release {
+            self.release_track_worker(id);
+        }
+        self.view.project = candidate;
+        if self.view.selected.is_none_or(|id| self.track(id).is_err()) {
+            self.view.selected = self.view.project.tracks.first().map(|track| track.id);
+        }
+        if self.view.armed.is_some_and(|id| self.track(id).is_err()) {
+            self.view.armed = None;
+        }
+        self.update_live_target();
+        if let Some(id) = self.live_target()
+            && self.engine.is_some()
+            && let Ok(track) = self.track(id)
+            && track
+                .plugin
+                .as_ref()
+                .is_some_and(|plugin| !self.blocked(plugin) && plugin.path.exists())
+        {
+            let _ = self.request_load(id, None);
+        }
+        self.edits.seek(target);
+        self.view.dirty = self.edits.dirty()
+            || self.other_changes
+            || self.runtimes.values().any(|runtime| runtime.editor);
+        if self.view.dirty {
+            self.checkpoint_take = true;
+        } else if let Err(error) = self.retire_journal() {
+            self.view.history_message =
+                format!("Saved revision restored, but recovery could not be removed: {error}");
+        }
+        self.view.message = "Edit history position changed.".into();
+        Ok(())
     }
     fn blocked(&self, plugin: &Plugin) -> bool {
         self.view
@@ -222,11 +624,20 @@ impl Session {
             .any(|e| quarantine::same(&e.plugin, plugin))
     }
     fn stop(&mut self) -> Result<()> {
+        let capture_result = self.finish_recording(None);
+        self.deferred_play = None;
+        self.view.recording = false;
         self.silence.store(true, Ordering::Release);
         self.view.active = false;
         let mut error = None;
         let mut faults = Vec::new();
         if let Some(mut engine) = self.engine.take() {
+            let tick = engine.transport.view().tick;
+            self.view.transport = TransportView {
+                tick,
+                audible_tick: tick,
+                ..Default::default()
+            };
             self.view.actual = engine.summary();
             for (id, runtime) in &mut self.runtimes {
                 if let (Some(broker), Some(instrument)) =
@@ -251,7 +662,11 @@ impl Session {
         for (plugin, reason) in faults {
             self.quarantine(plugin, reason);
         }
-        if let Some(e) = error { Err(e) } else { Ok(()) }
+        if let Some(e) = error {
+            Err(e)
+        } else {
+            capture_result.map(|_| ())
+        }
     }
     fn unload(&mut self) {
         self.generation += 1;
@@ -262,17 +677,102 @@ impl Session {
         self.runtimes.clear();
     }
     fn close_editors(&mut self) -> Result<()> {
-        for runtime in self.runtimes.values_mut() {
+        let mut open = Vec::new();
+        for (&id, runtime) in &mut self.runtimes {
             runtime.pending_editor = false;
             if runtime.editor {
-                runtime
-                    .instrument
-                    .as_mut()
-                    .ok_or("editor worker unavailable")?
-                    .editor(false)?;
-                runtime.editor = false;
+                open.push(id);
             }
         }
+        for id in open {
+            self.set_track_editor(id, false)?;
+        }
+        Ok(())
+    }
+
+    fn set_track_editor(&mut self, id: u64, open: bool) -> Result<()> {
+        let runtime = self
+            .runtimes
+            .get_mut(&id)
+            .ok_or("editor worker unavailable")?;
+        if runtime.editor == open {
+            return Ok(());
+        }
+        let instrument = runtime
+            .instrument
+            .as_mut()
+            .ok_or("editor worker unavailable")?;
+        if open {
+            let baseline = if runtime.broker.is_none() {
+                instrument.save().ok()
+            } else {
+                None
+            };
+            instrument.editor(true)?;
+            runtime.editor_before = baseline;
+            runtime.editor = true;
+            runtime.touched = true;
+            self.view.dirty = true;
+            if runtime.editor_before.is_none() {
+                self.mark_other_change();
+            }
+            return Ok(());
+        }
+        instrument.editor(false)?;
+        self.finish_track_editor(id)
+    }
+
+    fn finish_track_editor(&mut self, id: u64) -> Result<()> {
+        let runtime = self
+            .runtimes
+            .get_mut(&id)
+            .ok_or("editor worker unavailable")?;
+        runtime.editor = false;
+        if let Some(before) = runtime.editor_before.take() {
+            if runtime.broker.is_some() {
+                self.mark_other_change();
+                return Ok(());
+            }
+            let after = match runtime
+                .instrument
+                .as_mut()
+                .ok_or("editor worker unavailable")?
+                .save()
+            {
+                Ok(after) => after,
+                Err(error) => {
+                    self.mark_other_change();
+                    return Err(error);
+                }
+            };
+            runtime.touched = false;
+            let track = self
+                .view
+                .project
+                .tracks
+                .iter_mut()
+                .find(|track| track.id == id)
+                .ok_or("editor track unavailable")?;
+            track.state.clone_from(&after);
+            let plugin = track.plugin.clone();
+            if before != after {
+                self.record_edit(Edit::Instrument {
+                    id,
+                    before: InstrumentState {
+                        plugin: plugin.clone(),
+                        state: before,
+                    },
+                    after: InstrumentState {
+                        plugin,
+                        state: after,
+                    },
+                    editor: true,
+                });
+            }
+        }
+        self.view.dirty = self.other_changes
+            || self.edits.dirty()
+            || self.runtimes.values().any(|runtime| runtime.editor);
         Ok(())
     }
     fn track(&self, id: u64) -> Result<&Track> {
@@ -326,7 +826,7 @@ impl Session {
         let rate = self.view.project.audio.rate;
         let prepare_live = self.engine.is_some();
         if replacement.is_some()
-            && self.view.selected == Some(id)
+            && self.live_target() == Some(id)
             && let Some(engine) = &self.engine
         {
             engine.clock.select(0);
@@ -451,8 +951,10 @@ impl Session {
                     let _ = engine.detach(broker, instrument);
                 }
                 runtime.lost |= runtime.touched;
+                self.other_changes |= runtime.lost;
                 runtime.instrument.take();
                 runtime.editor = false;
+                runtime.editor_before = None;
                 runtime.pending_editor = false;
                 runtime.error = reason.clone();
                 runtime.loading = false;
@@ -482,32 +984,94 @@ impl Session {
         );
     }
     pub fn apply(&mut self, action: Action) -> Result<()> {
+        self.view.clip_edit_selection = None;
+        if self.view.recording {
+            match &action {
+                Action::Shutdown
+                | Action::New
+                | Action::Open(_)
+                | Action::DiscardBeforeClose
+                | Action::Recover(_)
+                | Action::Save { .. }
+                | Action::Settings(_) => {
+                    return Err("Stop recording before changing or saving the project.".into());
+                }
+                Action::RemoveTrack(id) | Action::Select(id, _) | Action::Restart(id)
+                    if Some(*id) == self.view.armed =>
+                {
+                    return Err("Stop recording before changing the armed instrument.".into());
+                }
+                _ => {}
+            }
+        }
         match action {
             Action::Shutdown => {}
             Action::New => {
-                self.unload();
-                self.view.project = Project::default();
-                self.view.selected = None;
-                self.view.path = None;
-                self.view.dirty = false;
-                self.file_stamp = None;
+                self.retire_journal()?;
+                self.install_project(Project::default(), None, None);
                 self.view.message = "New project. Add an instrument track to begin.".into();
             }
             Action::Open(path) => {
-                let stamp = FileStamp::read(&path)?;
-                let project = Project::read(&path)?;
-                if FileStamp::read(&path)? != stamp {
-                    return Err("project changed while opening; retry Open".into());
-                }
-                self.unload();
-                self.file_stamp = Some(stamp);
-                self.view.selected = project.tracks.first().map(|t| t.id);
-                self.view.project = project;
-                self.view.path = Some(path);
-                self.view.dirty = false;
+                let candidate = (|| -> Result<_> {
+                    if !std::fs::metadata(&path)?.is_file() {
+                        return Err("Not a regular project file.".into());
+                    }
+                    let stamp = FileStamp::read(&path)?;
+                    let project = Project::read(&path)?;
+                    if FileStamp::read(&path)? != stamp {
+                        return Err("project changed while opening; retry Open".into());
+                    }
+                    Ok((stamp, project))
+                })();
+                let (stamp, project) = candidate.inspect_err(|_| {
+                    if let Some(recent) = self
+                        .view
+                        .recents
+                        .iter_mut()
+                        .find(|recent| recent.path == path)
+                    {
+                        recent.status = recovery::probe(&path);
+                    }
+                })?;
+                self.retire_journal()?;
+                self.note_recent(&path);
+                self.install_project(project, Some(path), Some(stamp));
                 self.view.notice += 1;
                 self.view.message =
                     "Project opened. Audio stopped; instruments load on first explicit use.".into();
+            }
+            Action::DiscardBeforeClose => {
+                self.retire_journal()?;
+            }
+            Action::Recover(id) => {
+                let store = self
+                    .history
+                    .as_ref()
+                    .ok_or("Project history is unavailable.")?;
+                let journal = store.acquire(&id)?;
+                let project = journal.recover()?;
+                let original = journal.original();
+                self.retire_journal()?;
+                self.install_project(project, None, None);
+                self.view.recovered_from = original;
+                self.mark_other_change();
+                self.view.notice += 1;
+                self.view.recoveries.retain(|entry| entry.id != id);
+                self.view.message = "Recovered project. Use Save As to keep this copy.".into();
+                self.journal = Some(journal);
+            }
+            Action::DiscardRecovery(id) => {
+                let store = self
+                    .history
+                    .as_ref()
+                    .ok_or("Project history is unavailable.")?;
+                store.acquire(&id)?.retire()?;
+                self.view.recoveries.retain(|entry| entry.id != id);
+                self.view.message = "Recovery discarded.".into();
+            }
+            Action::RemoveRecent(path) => self.update_recents(RecentChange::Remove(&path))?,
+            Action::RelinkRecent(old, new) => {
+                self.update_recents(RecentChange::Relink(&old, &new))?
             }
             Action::Save {
                 path,
@@ -549,8 +1113,13 @@ impl Session {
                 candidate.save(&path, replace)?;
                 self.view.project = candidate;
                 self.file_stamp = Some(FileStamp::read(&path)?);
+                self.note_recent(&path);
                 self.view.path = Some(path);
+                self.view.read_only = false;
+                self.view.recovered_from = None;
                 self.view.dirty = false;
+                self.other_changes = false;
+                self.edits.save();
                 for runtime in self.runtimes.values_mut() {
                     runtime.touched = false;
                     runtime.lost = false;
@@ -558,6 +1127,10 @@ impl Session {
                 self.view.message =
                     "Project saved. Audio stopped and editors closed for a coherent snapshot."
                         .into();
+                if let Err(error) = self.retire_journal() {
+                    self.view.history_message =
+                        format!("Project saved, but old recovery could not be removed: {error}");
+                }
             }
             Action::AddTrack(rename) => {
                 if let Some((id, name)) = rename {
@@ -569,15 +1142,24 @@ impl Session {
                 let id = self.view.project.next_id;
                 let next = id.checked_add(1).ok_or("track ID exhausted")?;
                 self.select(None)?;
-                self.view.project.tracks.push(Track {
+                let track = Track {
                     id,
                     name: format!("Instrument {}", self.view.project.tracks.len() + 1),
                     plugin: None,
                     state: Vec::new(),
-                });
+                };
+                let index = self.view.project.tracks.len();
+                self.view.project.tracks.push(track.clone());
                 self.view.project.next_id = next;
                 self.view.selected = Some(id);
-                self.view.dirty = true;
+                self.record_edit(Edit::Track {
+                    slot: Box::new(TrackSlot {
+                        track,
+                        index,
+                        clips: Vec::new(),
+                    }),
+                    added: true,
+                });
                 if let Some(engine) = &self.engine {
                     engine.clock.select(id);
                 }
@@ -600,25 +1182,37 @@ impl Session {
                     .iter()
                     .position(|t| t.id == id)
                     .ok_or("track no longer exists")?;
+                if self.runtimes.get(&id).is_some_and(|runtime| runtime.editor) {
+                    self.set_track_editor(id, false)?;
+                }
+                let state = self.capture_track_state(id)?;
+                let mut candidate = self.view.project.clone();
+                let mut track = candidate.tracks.remove(index);
+                track.state = state;
+                let clips = Arc::make_mut(&mut candidate.midi)
+                    .tracks
+                    .remove(&id)
+                    .unwrap_or_default();
+                if let Some(engine) = &self.engine {
+                    engine.set_arrangement(&candidate.midi, &candidate.timeline)?;
+                }
                 if self.view.selected == Some(id) {
                     self.select(None)?;
                 }
-                if let Some(mut runtime) = self.runtimes.remove(&id)
-                    && let (Some(engine), Some(broker), Some(instrument)) = (
-                        &mut self.engine,
-                        runtime.broker.take(),
-                        runtime.instrument.as_mut(),
-                    )
-                {
-                    let _ = engine.detach(broker, instrument);
+                self.release_track_worker(id);
+                self.view.project = candidate;
+                if self.view.armed == Some(id) {
+                    self.view.armed = None;
+                    self.update_live_target();
                 }
-                for job in &self.jobs {
-                    if job.id == id {
-                        job.cancel.store(true, Ordering::Release);
-                    }
-                }
-                self.view.project.tracks.remove(index);
-                self.view.dirty = true;
+                self.record_edit(Edit::Track {
+                    slot: Box::new(TrackSlot {
+                        track,
+                        index,
+                        clips,
+                    }),
+                    added: false,
+                });
                 if self.view.selected.is_none() && !self.view.project.tracks.is_empty() {
                     let next =
                         self.view.project.tracks[index.min(self.view.project.tracks.len() - 1)].id;
@@ -640,11 +1234,43 @@ impl Session {
                     .checked_add_signed(delta)
                     .filter(|n| *n < self.view.project.tracks.len())
                     .ok_or("cannot move beyond track list")?;
-                let track = self.view.project.tracks.remove(index);
-                self.view.project.tracks.insert(target, track);
-                self.view.dirty = true;
+                if target != index {
+                    let track = self.view.project.tracks.remove(index);
+                    self.view.project.tracks.insert(target, track);
+                    self.record_edit(Edit::Move {
+                        id,
+                        before: index,
+                        after: target,
+                    });
+                }
             }
             Action::Rename(id, name) => self.rename(id, name)?,
+            Action::EditClips { expected, edit } => self.edit_clips(&expected, &edit)?,
+            Action::Audition {
+                clip,
+                channel,
+                key,
+                velocity,
+            } => {
+                self.refresh_transport();
+                if self.history_available()
+                    && let Some((track, _)) = self.view.project.midi.find_clip(clip)
+                    && let Some(engine) = &self.engine
+                {
+                    engine.audition(track, channel, key, velocity);
+                }
+            }
+            Action::ArrangementView(view) => {
+                view.validate()?;
+                if !self.view.project_open {
+                    return Err("Open a project before changing its arrangement view.".into());
+                }
+                if self.view.project.arrangement_view != view {
+                    self.view.project.arrangement_view = view;
+                    self.mark_other_change();
+                }
+            }
+            Action::SeekHistory { version, target } => self.seek_history(version, target)?,
             Action::Select(id, plugin) => {
                 self.track(id)?;
                 self.request_load(id, Some(plugin))?;
@@ -667,7 +1293,7 @@ impl Session {
                     .map(|(id, _)| *id)
                     .collect();
                 self.view.project = captured;
-                self.view.dirty = true;
+                self.mark_other_change();
                 if changed_rate {
                     self.runtimes.clear();
                     for id in loaded {
@@ -690,27 +1316,18 @@ impl Session {
                     self.runtimes.entry(id).or_default().pending_editor = open;
                     self.view.message = "Loading instrument editor…".into();
                 } else {
-                    let runtime = self.runtimes.get_mut(&id).ok_or("worker unavailable")?;
-                    runtime
-                        .instrument
-                        .as_mut()
-                        .ok_or("worker unavailable")?
-                        .editor(open)?;
-                    runtime.editor = open;
-                    if open {
-                        runtime.touched = true;
-                        self.view.dirty = true;
-                    }
+                    self.set_track_editor(id, open)?;
                 }
             }
             Action::Enable => {
                 if self.engine.is_some() {
                     return Err("audio already active".into());
                 }
-                let id = self.view.selected.ok_or("select an instrument track")?;
+                let selected = self.live_target();
                 Devices::enumerate()?.validate(&self.view.project.audio)?;
                 let settings = &self.view.project.audio;
                 let device = clef_audio_io::output_by_id(&settings.device)?;
+                let timing = Prepared::new(&self.view.project.timeline, settings.rate)?;
                 self.silence.store(false, Ordering::Release);
                 let engine = Engine::start(
                     Configuration {
@@ -722,8 +1339,11 @@ impl Session {
                         buffer: settings.buffer,
                     },
                     self.silence.clone(),
+                    timing,
+                    self.view.transport.tick,
                 )?;
                 self.engine = Some(engine);
+                self.update_arrangement()?;
                 self.view.active = true;
                 let ids: Vec<_> = self.runtimes.keys().copied().collect();
                 let mut failures = Vec::new();
@@ -732,20 +1352,23 @@ impl Session {
                         failures.push(e.to_string());
                     }
                 }
-                self.engine
-                    .as_ref()
-                    .ok_or("engine unavailable")?
-                    .clock
-                    .select(id);
-                if !self
-                    .runtimes
-                    .get(&id)
-                    .is_some_and(|r| r.instrument.is_some() || r.loading)
-                {
-                    self.request_load(id, None)?;
+                if let Some(id) = selected {
+                    self.engine
+                        .as_ref()
+                        .ok_or("engine unavailable")?
+                        .clock
+                        .select(id);
+                    if self.track(id)?.plugin.is_some()
+                        && !self
+                            .runtimes
+                            .get(&id)
+                            .is_some_and(|r| r.instrument.is_some() || r.loading)
+                    {
+                        self.request_load(id, None)?;
+                    }
                 }
                 self.view.message = if failures.is_empty() {
-                    "Audio active. Live MIDI routes only to the selected ready track.".into()
+                    "Audio active.".into()
                 } else {
                     format!(
                         "Audio active; some paths unavailable: {}",
@@ -754,8 +1377,11 @@ impl Session {
                 };
             }
             Action::Disable => {
+                let capture = self.view.recording;
                 self.stop()?;
-                self.view.message = "Audio stopped.".into();
+                if !capture {
+                    self.view.message = "Audio stopped.".into();
+                }
             }
             Action::Restart(id) => {
                 self.track(id)?;
@@ -775,9 +1401,436 @@ impl Session {
                 self.merge_persisted_quarantine(entries, Some(&plugin));
                 self.view.message = "Plugin reactivated. Select a track or Retry to load it; audio state is unchanged.".into();
             }
+            Action::Transport(action) => self.transport(action)?,
         }
         self.refresh();
         Ok(())
+    }
+
+    fn live_target(&self) -> Option<u64> {
+        self.view.armed.or(self.view.selected)
+    }
+
+    fn edit_clips(&mut self, expected: &Arc<Arrangement>, edit: &ClipEdit) -> Result<()> {
+        self.refresh_transport();
+        if !self.history_available() {
+            return Err(
+                "Stop transport and wait for instrument loads before editing clips.".into(),
+            );
+        }
+        let previous = &self.view.project.midi;
+        if !Arc::ptr_eq(previous, expected) {
+            return Err("The arrangement changed before the edit was applied.".into());
+        }
+        let track_ids = || self.view.project.tracks.iter().map(|track| track.id);
+        let mut candidate = (**previous).clone();
+        let selection = match candidate.edit(edit, track_ids())? {
+            ClipEditResult::Applied(selection) => selection,
+            ClipEditResult::Unchanged => return Ok(()),
+            ClipEditResult::NeedsSplitConfirmation => {
+                return Err("Confirm splitting the crossed MIDI notes.".into());
+            }
+        };
+        let tracks = track_ids()
+            .filter_map(|id| {
+                let before = previous.clips(id);
+                let after = candidate.clips(id);
+                (before != after).then(|| ClipChange {
+                    id,
+                    before: before.to_vec(),
+                    after: after.to_vec(),
+                })
+            })
+            .collect();
+        if let Some(engine) = &self.engine {
+            engine.set_arrangement(&candidate, &self.view.project.timeline)?;
+        }
+        self.view.project.midi = Arc::new(candidate);
+        self.view.clip_edit_selection = Some(selection);
+        self.view.message = edit.label().into();
+        self.record_edit(Edit::Clips {
+            label: edit.label(),
+            tracks,
+        });
+        Ok(())
+    }
+
+    fn update_live_target(&self) {
+        if let Some(engine) = &self.engine {
+            engine.clock.select(self.live_target().unwrap_or(0));
+        }
+    }
+
+    fn update_arrangement(&self) -> Result<()> {
+        if let Some(engine) = &self.engine {
+            engine.set_arrangement(&self.view.project.midi, &self.view.project.timeline)?;
+        }
+        Ok(())
+    }
+
+    fn ready(&self, id: u64) -> bool {
+        self.runtimes.get(&id).is_some_and(|runtime| {
+            !runtime.loading
+                && runtime
+                    .broker
+                    .as_ref()
+                    .is_some_and(|broker| !broker.stats.failed.load(Ordering::Acquire))
+        })
+    }
+
+    fn record_unavailable(&self) -> Option<&'static str> {
+        if self.engine.is_none() {
+            Some("Enable Audio to record.")
+        } else if self.view.armed.is_none() {
+            Some("Arm an instrument track to record.")
+        } else if !self.view.armed.is_some_and(|id| self.ready(id)) {
+            Some("The armed instrument is unavailable or still loading.")
+        } else {
+            None
+        }
+    }
+
+    fn request_play(&mut self, record: bool) -> Result<()> {
+        if self.engine.is_none() {
+            return Err("Enable Audio before playback.".into());
+        }
+        if record && let Some(reason) = self.record_unavailable() {
+            return Err(reason.into());
+        }
+        if self.view.transport.phase != TransportPhase::Stopped || self.deferred_play.is_some() {
+            return Err("Stop transport before starting a new pass.".into());
+        }
+        if self.view.transport.tick >= MAX_TICK && !self.view.project.timeline.looping {
+            return Err("Locate before the end of the timeline to start playback.".into());
+        }
+        let ids: Vec<_> = self.view.project.midi.tracks.keys().copied().collect();
+        let mut warnings = Vec::new();
+        for id in ids {
+            if !self.ready(id)
+                && !self
+                    .runtimes
+                    .get(&id)
+                    .is_some_and(|runtime| runtime.loading)
+                && let Err(error) = self.request_load(id, None)
+            {
+                warnings.push(format!("{}: {error}", self.track(id)?.name));
+            }
+        }
+        if !warnings.is_empty() {
+            self.view.message =
+                format!("Some MIDI tracks are unavailable: {}", warnings.join("; "));
+        }
+        if self.loading_playback_tracks() {
+            self.deferred_play = Some(record);
+            self.view.recording = record;
+            Ok(())
+        } else {
+            self.start_play(record)
+        }
+    }
+
+    fn loading_playback_tracks(&self) -> bool {
+        self.view
+            .project
+            .midi
+            .tracks
+            .keys()
+            .any(|id| self.runtimes.get(id).is_some_and(|runtime| runtime.loading))
+    }
+
+    fn start_play(&mut self, record: bool) -> Result<()> {
+        if !record {
+            return self
+                .engine
+                .as_mut()
+                .ok_or("audio unavailable")?
+                .transport
+                .send(TransportCommand::Play);
+        }
+        if let Some(reason) = self.record_unavailable() {
+            return Err(reason.into());
+        }
+        let target = self.view.armed.ok_or("no armed instrument")?;
+        let mode = self.view.project.midi.mode;
+        let engine = self.engine.as_mut().ok_or("audio unavailable")?;
+        let map = SampleMap::new(&self.view.project.timeline, engine.rate)?;
+        engine.mute_recording(target, mode != Mode::Merge);
+        let baseline = match engine.begin_capture(target) {
+            Ok(baseline) => baseline,
+            Err(error) => {
+                engine.mute_recording(target, false);
+                return Err(error);
+            }
+        };
+        self.view.recording = true;
+        self.recording = Some(Capture {
+            target,
+            mode,
+            baseline,
+            map,
+            input: Vec::with_capacity(recording::MAX_CAPTURE_MESSAGES),
+            window: None,
+            preview_key: None,
+            interruption: None,
+            stopping: false,
+        });
+        Ok(())
+    }
+
+    fn finish_recording(&mut self, failure: Option<String>) -> Result<bool> {
+        let Some(mut capture) = self.recording.take() else {
+            return Ok(false);
+        };
+        self.view.recording = false;
+        self.view.recording_region = None;
+        self.view.recording_notes = None;
+        let engine = self
+            .engine
+            .as_mut()
+            .ok_or("audio unavailable while finalizing MIDI")?;
+        engine.end_capture();
+        let overflow = engine.drain_capture(&mut capture.input);
+        engine.release_live(capture.target);
+        engine.mute_recording(capture.target, false);
+        let end = engine.recording_end();
+        let window = capture.window.or_else(|| engine.recording_window());
+        let mut reason = failure
+            .or(capture.interruption)
+            .or_else(|| overflow.then(|| "MIDI capture queue or recording limit exceeded".into()));
+        let mut recovered = false;
+        let mut retained_in_history = true;
+        if let Some(window) = window {
+            capture.input.sort_by_key(|event| event.at);
+            let end = if overflow {
+                capture
+                    .input
+                    .last()
+                    .map_or(end, |event| end.min(event.at.saturating_add(1)))
+            } else {
+                end
+            };
+            let take =
+                recording::assemble(&capture.map, window, end, capture.baseline, &capture.input)?;
+            if take.truncated && reason.is_none() {
+                reason = Some("MIDI recording exceeded the take or event limit".into());
+            }
+            let mut candidate = (*self.view.project.midi).clone();
+            recovered = candidate.record(
+                capture.target,
+                capture.mode,
+                take.range,
+                take.passes,
+                reason.is_some(),
+            )?;
+            if recovered {
+                engine.set_arrangement(&candidate, &self.view.project.timeline)?;
+                let edit = Edit::Midi {
+                    id: capture.target,
+                    before: self.view.project.midi.clips(capture.target).to_vec(),
+                    after: candidate.clips(capture.target).to_vec(),
+                };
+                self.view.project.midi = Arc::new(candidate);
+                retained_in_history = self.record_edit(edit);
+                self.checkpoint_take = true;
+            }
+        }
+        self.view.message = match (reason, recovered) {
+            (Some(reason), true) => {
+                format!("Recording interrupted: {reason}. Captured MIDI retained as new takes.")
+            }
+            (Some(reason), false) => format!("Recording interrupted: {reason}. No MIDI recovered."),
+            (None, true) => "MIDI recording saved in the arrangement.".into(),
+            (None, false) => "No MIDI recorded.".into(),
+        };
+        if !retained_in_history {
+            self.view
+                .message
+                .push_str(" Edit exceeded 64 MiB; history cleared.");
+        }
+        Ok(true)
+    }
+
+    fn poll_recording(&mut self) -> Result<()> {
+        let Some(target) = self.recording.as_ref().map(|capture| capture.target) else {
+            return Ok(());
+        };
+        let failed = !self.ready(target);
+        let capture = self.recording.as_mut().unwrap();
+        let engine = self
+            .engine
+            .as_mut()
+            .ok_or("audio unavailable while recording")?;
+        let before = capture.input.len();
+        let overflow = engine.drain_capture(&mut capture.input);
+        if capture.input[before.saturating_sub(1)..]
+            .windows(2)
+            .any(|pair| pair[0].at > pair[1].at)
+        {
+            capture.input.sort_by_key(|event| event.at);
+            capture.preview_key = None;
+        }
+        let timeline = &self.view.project.timeline;
+        if capture.window.is_none() {
+            capture.window = engine.recording_window();
+        }
+        let state = engine.transport.view();
+        if !capture.stopping && (overflow || failed) {
+            let reason = if failed {
+                "armed instrument failed"
+            } else {
+                "MIDI capture queue or recording limit exceeded"
+            };
+            capture.interruption = Some(reason.into());
+            engine.transport.send(TransportCommand::Stop)?;
+            capture.stopping = true;
+        }
+        self.view.recording_region = capture.window.and_then(|window| {
+            if state.phase != TransportPhase::Playing {
+                return None;
+            }
+            let now = engine.recording_end();
+            let (pass, frame) = window.position(now)?;
+            let due = capture.input.partition_point(|event| event.at <= now);
+            if capture.preview_key != Some((pass, due)) {
+                capture.preview_key = Some((pass, due));
+                self.view.recording_notes = Some(Arc::new(recording::note_preview(
+                    &capture.map,
+                    window,
+                    pass,
+                    capture.baseline,
+                    &capture.input[..due],
+                )));
+            }
+            let start = if timeline.looping {
+                timeline.loop_range[0]
+            } else {
+                capture.map.tick_at(window.origin)
+            };
+            Some([start, capture.map.tick_at(frame).max(start)])
+        });
+        if state.phase == TransportPhase::Stopped && !engine.transport.view().pending {
+            self.finish_recording(None)?;
+        }
+        Ok(())
+    }
+
+    fn transport(&mut self, action: TransportAction) -> Result<()> {
+        use TransportAction::*;
+        self.refresh_transport();
+        if self.view.transport.pending && !matches!(action, Stop) {
+            return Err("transport is waiting for the audio device".into());
+        }
+        if self.view.recording && !matches!(action, Stop | ToggleClick) {
+            return Err("Stop recording before changing the transport.".into());
+        }
+        match action {
+            Play => self.request_play(false)?,
+            Record => self.request_play(true)?,
+            Arm(id) => {
+                let armed = (self.view.armed != Some(id)).then_some(id);
+                if armed.is_some() {
+                    self.track(id)?
+                        .plugin
+                        .as_ref()
+                        .ok_or("choose an instrument first")?;
+                    if !self
+                        .runtimes
+                        .get(&id)
+                        .is_some_and(|runtime| runtime.loading || runtime.instrument.is_some())
+                    {
+                        self.request_load(id, None)?;
+                    }
+                }
+                self.view.armed = armed;
+                self.update_live_target();
+            }
+            SetRecordMode(mode) => {
+                if self.view.project.midi.mode != mode {
+                    Arc::make_mut(&mut self.view.project.midi).mode = mode;
+                    self.mark_other_change();
+                }
+            }
+            Stop => {
+                if self.deferred_play.take().is_some() {
+                    self.view.recording = false;
+                } else if let Some(engine) = &mut self.engine {
+                    engine.transport.send(TransportCommand::Stop)?;
+                    if let Some(capture) = &mut self.recording {
+                        capture.stopping = true;
+                    }
+                }
+            }
+            Locate(tick) if tick <= MAX_TICK => {
+                if let Some(engine) = &mut self.engine {
+                    engine.transport.send(TransportCommand::Locate(tick))?;
+                } else {
+                    self.view.transport.tick = tick;
+                    self.view.transport.audible_tick = tick;
+                }
+            }
+            Locate(_) => return Err("position exceeds timeline limit".into()),
+            edit => {
+                if self.view.transport.phase != TransportPhase::Stopped
+                    && matches!(edit, SetTempo(_) | RemoveTempo(_) | SetLoopRange(_))
+                {
+                    return Err("stop playback before editing the tempo map or loop range".into());
+                }
+                let mut timeline = self.view.project.timeline.clone();
+                match edit {
+                    SetTempo(tempo) => {
+                        match timeline.changes.binary_search_by_key(&tempo.bar, |t| t.bar) {
+                            Ok(index) => timeline.changes[index] = tempo,
+                            Err(index) => timeline.changes.insert(index, tempo),
+                        }
+                    }
+                    RemoveTempo(bar) => timeline.changes.retain(|t| t.bar != bar),
+                    SetLoopRange(range) => timeline.loop_range = range,
+                    ToggleLoop => timeline.looping = !timeline.looping,
+                    ToggleClick => timeline.click = !timeline.click,
+                    ToggleCountIn => timeline.count_in = !timeline.count_in,
+                    SetStopMode(mode) => timeline.stop_mode = mode,
+                    _ => unreachable!(),
+                }
+                if timeline != self.view.project.timeline {
+                    timeline.validate()?;
+                    if let Some(engine) = &mut self.engine {
+                        engine
+                            .transport
+                            .settings(Prepared::new(&timeline, engine.rate)?)?;
+                        if matches!(edit, SetTempo(_) | RemoveTempo(_)) {
+                            engine.set_arrangement(&self.view.project.midi, &timeline)?;
+                        }
+                    }
+                    let previous = std::mem::replace(&mut self.view.project.timeline, timeline);
+                    match edit {
+                        SetTempo(_) | RemoveTempo(_) => {
+                            self.record_edit(Edit::Tempo {
+                                before: previous.changes,
+                                after: self.view.project.timeline.changes.clone(),
+                            });
+                        }
+                        SetLoopRange(_) => {
+                            self.record_edit(Edit::Loop {
+                                before: previous.loop_range,
+                                after: self.view.project.timeline.loop_range,
+                            });
+                        }
+                        _ => self.mark_other_change(),
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn refresh_transport(&mut self) {
+        if let Some(engine) = &self.engine {
+            self.view.transport = engine.transport.view();
+            if self.deferred_play.is_some() {
+                self.view.transport.pending = true;
+                self.view.transport.play_pending = true;
+            }
+        }
     }
     fn rename(&mut self, id: u64, name: String) -> Result<()> {
         let mut candidate = self.view.project.clone();
@@ -789,19 +1842,21 @@ impl Session {
         if track.name == name {
             return Ok(());
         }
-        track.name = name;
+        let before = std::mem::replace(&mut track.name, name.clone());
         candidate.validate()?;
         self.view.project = candidate;
-        self.view.dirty = true;
+        self.record_edit(Edit::Rename {
+            id,
+            before,
+            after: name,
+        });
         Ok(())
     }
     fn select(&mut self, id: Option<u64>) -> Result<()> {
         if self.view.selected != id {
             self.close_editors()?;
             self.view.selected = id;
-            if let Some(engine) = &self.engine {
-                engine.clock.select(id.unwrap_or(0));
-            }
+            self.update_live_target();
         }
         Ok(())
     }
@@ -822,7 +1877,7 @@ impl Session {
                 }
             }
             runtime.touched = true;
-            self.view.dirty = true;
+            self.mark_other_change();
         }
         Ok(())
     }
@@ -882,8 +1937,37 @@ impl Session {
                         continue;
                     }
                     if self.blocked(&job.plugin) {
+                        if self.live_target() == Some(job.id) {
+                            self.update_live_target();
+                        }
                         continue;
                     }
+                    let previous = if job.replacement {
+                        let capture = (|| -> Result<_> {
+                            if self
+                                .runtimes
+                                .get(&job.id)
+                                .is_some_and(|runtime| runtime.editor)
+                            {
+                                self.set_track_editor(job.id, false)?;
+                            }
+                            Ok(InstrumentState {
+                                state: self.capture_track_state(job.id)?,
+                                plugin: self.track(job.id)?.plugin.clone(),
+                            })
+                        })();
+                        match capture {
+                            Ok(state) => Some(state),
+                            Err(error) => {
+                                self.update_live_target();
+                                self.view.message =
+                                    format!("Instrument replacement canceled: {error}");
+                                continue;
+                            }
+                        }
+                    } else {
+                        None
+                    };
                     let runtime = self.runtimes.entry(job.id).or_default();
                     if let (Some(engine), Some(broker), Some(instrument)) = (
                         &mut self.engine,
@@ -902,22 +1986,28 @@ impl Session {
                         .iter_mut()
                         .find(|t| t.id == job.id)
                         .expect("checked track");
-                    if job.replacement {
+                    if let Some(before) = previous {
                         track.plugin = Some(job.plugin);
                         track.state = loaded.initial;
                         runtime.lost = false;
                         runtime.touched = false;
-                        self.view.dirty = true;
+                        let after = InstrumentState::from(&*track);
+                        if before.plugin != after.plugin || before.state != after.state {
+                            self.record_edit(Edit::Instrument {
+                                id: job.id,
+                                before,
+                                after,
+                                editor: false,
+                            });
+                        }
                     } else if track.state.is_empty() {
                         track.state = loaded.initial;
                     }
                     if let Err(e) = self.attach(job.id) {
                         self.view.message = e.to_string();
                     }
-                    if self.view.selected == Some(job.id)
-                        && let Some(engine) = &self.engine
-                    {
-                        engine.clock.select(job.id);
+                    if self.live_target() == Some(job.id) {
+                        self.update_live_target();
                     }
                     if self.view.selected == Some(job.id)
                         && self.runtimes.get(&job.id).is_some_and(|r| r.pending_editor)
@@ -935,23 +2025,20 @@ impl Session {
                     if fatal {
                         self.quarantine(job.plugin, error);
                     } else {
-                        if self.view.selected == Some(job.id)
-                            && self
-                                .runtimes
-                                .get(&job.id)
-                                .is_some_and(|r| r.instrument.is_some())
-                            && let Some(engine) = &self.engine
-                        {
-                            engine.clock.select(job.id);
-                        }
                         self.view.message =
                             format!("Instrument unavailable; retained state preserved: {error}");
+                    }
+                    if self.live_target() == Some(job.id) {
+                        self.update_live_target();
                     }
                 }
             }
         }
     }
     fn refresh(&mut self) {
+        self.refresh_transport();
+        self.view.edit_history = self.edits.view(self.history_available());
+        self.view.record_unavailable = self.record_unavailable();
         self.view.tracks = self.view.project.tracks.iter().map(|track| {
             let runtime = self.runtimes.get(&track.id);
             let status = if track.plugin.is_none() { "Empty" }
@@ -964,8 +2051,8 @@ impl Session {
             let diagnostics = runtime.map(|r| {
                 if let Some(broker) = &r.broker {
                     let s = &broker.stats;
-                    format!("latency {} samples · processed {} blocks · missed {} blocks · transition {} frames · stale {} blocks · MIDI {} / dropped {} · max RPC {} us · max worker {} us",
-                        s.latency.load(Ordering::Relaxed),s.processed.load(Ordering::Relaxed),s.misses.load(Ordering::Relaxed),s.transition_frames.load(Ordering::Relaxed),s.stale.load(Ordering::Relaxed),s.midi_received.load(Ordering::Relaxed),s.midi_dropped.load(Ordering::Relaxed),s.max_rpc_us.load(Ordering::Relaxed),s.max_worker_us.load(Ordering::Relaxed))
+                    format!("latency {} samples · processed {} blocks · missed {} blocks · transition {} frames · stale {} blocks · MIDI {} / dropped {} · playback overflows {} · max RPC {} us · max worker {} us",
+                        s.latency.load(Ordering::Relaxed),s.processed.load(Ordering::Relaxed),s.misses.load(Ordering::Relaxed),s.transition_frames.load(Ordering::Relaxed),s.stale.load(Ordering::Relaxed),s.midi_received.load(Ordering::Relaxed),s.midi_dropped.load(Ordering::Relaxed),s.playback_dropped.load(Ordering::Relaxed),s.max_rpc_us.load(Ordering::Relaxed),s.max_worker_us.load(Ordering::Relaxed))
                 } else { r.error.clone() }
             }).unwrap_or_default();
             TrackView { id: track.id, status: status.into(), diagnostics, loading: runtime.is_some_and(|r| r.loading), lost: runtime.is_some_and(|r| r.lost), loss_version: runtime.map_or(0,|r|r.request) }
@@ -984,7 +2071,34 @@ impl Session {
         }
     }
     fn poll(&mut self) {
+        let closed: Vec<_> = self
+            .runtimes
+            .iter_mut()
+            .filter_map(|(&id, runtime)| {
+                (runtime.editor
+                    && runtime
+                        .instrument
+                        .as_mut()
+                        .is_some_and(Instrument::editor_closed))
+                .then_some(id)
+            })
+            .collect();
+        for id in closed {
+            if let Err(error) = self.finish_track_editor(id) {
+                self.view.message = error.to_string();
+            }
+        }
         self.poll_jobs();
+        if let Some(record) = self
+            .deferred_play
+            .filter(|_| !self.loading_playback_tracks())
+        {
+            self.deferred_play = None;
+            if let Err(error) = self.start_play(record) {
+                self.view.recording = false;
+                self.view.message = error.to_string();
+            }
+        }
         let mut faults = Vec::new();
         for (id, runtime) in &mut self.runtimes {
             if (runtime
@@ -1013,8 +2127,12 @@ impl Session {
             self.last_devices = Instant::now();
             if let Err(e) = Devices::enumerate().and_then(|d| d.validate(&self.view.project.audio))
             {
+                match self.finish_recording(Some(e.to_string())) {
+                    Ok(false) => self.view.message = format!("Audio stopped: {e}"),
+                    Err(error) => self.view.message = error.to_string(),
+                    Ok(true) => {}
+                }
                 let _ = self.stop();
-                self.view.message = format!("Audio stopped: {e}");
             }
         }
         if self
@@ -1022,16 +2140,23 @@ impl Session {
             .as_ref()
             .is_some_and(|e| e.clock.errors.load(Ordering::Relaxed) != 0)
         {
+            match self.finish_recording(Some("audio device error".into())) {
+                Ok(false) => self.view.message =
+                    "Audio device error. Settings retained; Enable Audio explicitly after recovery.".into(),
+                Err(error) => self.view.message = error.to_string(),
+                Ok(true) => {}
+            }
             let _ = self.stop();
-            self.view.message =
-                "Audio device error. Settings retained; Enable Audio explicitly after recovery."
-                    .into();
+        }
+        if let Err(error) = self.poll_recording() {
+            self.view.message = error.to_string();
         }
         self.refresh();
     }
 }
 impl Drop for Session {
     fn drop(&mut self) {
+        self.finish_checkpoint();
         self.unload();
         for job in &mut self.jobs {
             if let Some(thread) = job.thread.take() {
@@ -1055,6 +2180,8 @@ impl Backend {
         let thread = std::thread::spawn(move || {
             let mut session = Session::new(executable);
             session.silence = stopping;
+            session.load_history();
+            let mut last_view = None;
             loop {
                 let mut success = None;
                 match actions.recv_timeout(Duration::from_millis(30)) {
@@ -1070,9 +2197,15 @@ impl Backend {
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
                 }
                 session.poll();
-                if updates.send((session.view.for_ui(), success)).is_err() {
+                session.poll_autosave(Instant::now());
+                let view = session.view.for_ui();
+                if success.is_none() && last_view.as_ref() == Some(&view) {
+                    continue;
+                }
+                if updates.send((view.clone(), success)).is_err() {
                     break;
                 }
+                last_view = Some(view);
                 notify();
             }
         });
@@ -1096,13 +2229,577 @@ impl Drop for Backend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn seek(session: &mut Session, target: usize) -> Result<()> {
+        session.apply(Action::SeekHistory {
+            version: session.view.edit_history.version,
+            target,
+        })
+    }
+
+    #[test]
+    fn arrangement_edit_history_is_atomic_and_view_settings_round_trip() {
+        let (directory, mut session) = isolated();
+        session.apply(Action::New).unwrap();
+        session.apply(Action::AddTrack(None)).unwrap();
+        session.apply(Action::AddTrack(None)).unwrap();
+        let apply = |session: &mut Session, edit| {
+            session.apply(Action::EditClips {
+                expected: session.view.project.midi.clone(),
+                edit,
+            })
+        };
+        apply(
+            &mut session,
+            ClipEdit::Create {
+                track: 1,
+                start: 0,
+                end: 960,
+            },
+        )
+        .unwrap();
+        let id = session.view.clip_edit_selection.as_ref().unwrap()[0];
+        let settings = ArrangementView {
+            snap: clef_model::midi::Snap::Sixteenth,
+            offset: 240,
+            zoom_milli: 72_000,
+        };
+        session.apply(Action::ArrangementView(settings)).unwrap();
+        let path = directory.0.join("Arrangement.clef");
+        save(&mut session, path.clone(), false, false).unwrap();
+        let saved_cursor = session.view.edit_history.cursor;
+        let old = session.view.project.midi.clone();
+        apply(
+            &mut session,
+            ClipEdit::Move {
+                destinations: vec![(id, 2)],
+                delta: 240,
+            },
+        )
+        .unwrap();
+        assert!(
+            session
+                .apply(Action::EditClips {
+                    expected: old,
+                    edit: ClipEdit::Delete(vec![id])
+                })
+                .is_err()
+        );
+        assert_eq!(session.view.edit_history.labels.last(), Some(&"Move Clips"));
+        assert_eq!(session.view.project.midi.find_clip(id).unwrap().0, 2);
+        seek(&mut session, saved_cursor).unwrap();
+        assert!(!session.view.dirty);
+        assert_eq!(session.view.project.midi.find_clip(id).unwrap().0, 1);
+        seek(&mut session, saved_cursor + 1).unwrap();
+        assert_eq!(session.view.project.midi.find_clip(id).unwrap().0, 2);
+        session.apply(Action::Open(path)).unwrap();
+        assert_eq!(session.view.project.arrangement_view, settings);
+        assert_eq!(session.view.project.midi.find_clip(id).unwrap().0, 1);
+    }
+
+    #[test]
+    fn history_seeks_across_track_edits_and_preserves_saved_revision() {
+        let (directory, mut session) = isolated();
+        session.apply(Action::New).unwrap();
+        session.apply(Action::AddTrack(None)).unwrap();
+        session
+            .apply(Action::AddTrack(Some((1, "Strings".into()))))
+            .unwrap();
+        let saved = directory.0.join("Saved.clef");
+        save(&mut session, saved.clone(), false, false).unwrap();
+        let at_save = session.view.edit_history.cursor;
+        assert_eq!(
+            session.view.edit_history.labels,
+            ["Add Track", "Rename Track", "Add Track"]
+        );
+        session.apply(Action::MoveTrack(2, -1)).unwrap();
+        session.apply(Action::RemoveTrack(1)).unwrap();
+
+        seek(&mut session, at_save).unwrap();
+        assert_eq!(
+            session.view.project.tracks,
+            Project::read(&saved).unwrap().tracks
+        );
+        assert!(!session.view.dirty);
+        let stale = session.view.edit_history.version;
+        let copy = directory.0.join("Copy.clef");
+        save(&mut session, copy.clone(), false, false).unwrap();
+        assert_eq!(session.view.edit_history.labels.len(), 5);
+        seek(&mut session, 5).unwrap();
+        assert_eq!(
+            session
+                .view
+                .project
+                .tracks
+                .iter()
+                .map(|track| track.id)
+                .collect::<Vec<_>>(),
+            [2]
+        );
+        assert!(session.view.dirty);
+        assert!(
+            session
+                .apply(Action::SeekHistory {
+                    version: stale,
+                    target: at_save
+                })
+                .is_err()
+        );
+        seek(&mut session, at_save).unwrap();
+        session.apply(Action::MoveTrack(2, 0)).unwrap();
+        assert_eq!(session.view.edit_history.labels.len(), 5);
+        session.apply(Action::Rename(2, "Piano".into())).unwrap();
+        assert_eq!(session.view.edit_history.labels.len(), 4);
+        assert!(seek(&mut session, 5).is_err());
+        assert!(
+            session
+                .apply(Action::Open(directory.0.join("Missing.clef")))
+                .is_err()
+        );
+        assert_eq!(session.view.edit_history.labels.len(), 4);
+        session.apply(Action::Open(copy)).unwrap();
+        assert!(session.view.edit_history.labels.is_empty());
+        assert!(!session.view.dirty);
+    }
+
+    #[test]
+    fn a_piano_roll_gesture_is_one_persisted_undo_step() {
+        use clef_model::midi::{Event, EventChange, Message};
+        let (directory, mut session) = isolated();
+        session.apply(Action::New).unwrap();
+        session.apply(Action::AddTrack(None)).unwrap();
+        session
+            .apply(Action::EditClips {
+                expected: session.view.project.midi.clone(),
+                edit: ClipEdit::Create {
+                    track: 1,
+                    start: 0,
+                    end: 960,
+                },
+            })
+            .unwrap();
+        let cursor = session.view.edit_history.cursor;
+        let before = session.view.project.midi.clone();
+        let clip = before.clips(1)[0].id();
+        let edit = ClipEdit::EditEvents {
+            clip,
+            label: "Draw MIDI Events",
+            changes: vec![
+                EventChange::Insert(Event {
+                    tick: 120,
+                    order: 0,
+                    message: Message::Note {
+                        channel: 1,
+                        key: 60,
+                        velocity: 92,
+                        end: 240,
+                        release: 0,
+                        release_order: 0,
+                    },
+                }),
+                EventChange::Insert(Event {
+                    tick: 120,
+                    order: 0,
+                    message: Message::CurvedControl {
+                        bytes: [0xb1, 11, 75],
+                        bend: -25,
+                    },
+                }),
+            ],
+        };
+        session
+            .apply(Action::EditClips {
+                expected: before.clone(),
+                edit: edit.clone(),
+            })
+            .unwrap();
+        let after = session.view.project.midi.clone();
+        assert_eq!(session.view.edit_history.cursor, cursor + 1);
+        assert!(
+            session
+                .apply(Action::EditClips {
+                    expected: before.clone(),
+                    edit
+                })
+                .is_err()
+        );
+        seek(&mut session, cursor).unwrap();
+        assert_eq!(session.view.project.midi, before);
+        seek(&mut session, cursor + 1).unwrap();
+        assert_eq!(session.view.project.midi, after);
+        let path = directory.0.join("Piano Roll.clef");
+        save(&mut session, path.clone(), false, false).unwrap();
+        assert_eq!(Project::read(&path).unwrap().midi, after);
+    }
+
+    #[test]
+    fn history_preserves_unrelated_settings_and_checks_transport() {
+        let (_directory, mut session) = isolated();
+        session.apply(Action::New).unwrap();
+        let old_range = session.view.project.timeline.loop_range;
+        let range = old_range.map(|tick| tick + 960);
+        session
+            .apply(Action::Transport(TransportAction::SetLoopRange(range)))
+            .unwrap();
+        session
+            .apply(Action::Transport(TransportAction::ToggleClick))
+            .unwrap();
+        let click = session.view.project.timeline.click;
+        session.view.transport.phase = TransportPhase::Playing;
+        assert!(seek(&mut session, 0).is_err());
+        session.view.transport.phase = TransportPhase::Stopped;
+        session.view.transport.pending = true;
+        assert!(seek(&mut session, 0).is_err());
+        session.view.transport.pending = false;
+        session.view.recording = true;
+        assert!(seek(&mut session, 0).is_err());
+        session.view.recording = false;
+        seek(&mut session, 0).unwrap();
+        assert_eq!(session.view.project.timeline.loop_range, old_range);
+        assert_eq!(session.view.project.timeline.click, click);
+        assert!(session.view.dirty);
+        seek(&mut session, 1).unwrap();
+        assert_eq!(session.view.project.timeline.loop_range, range);
+    }
+
+    #[test]
+    fn history_restores_removed_midi_and_unavailable_instrument() {
+        use clef_model::midi::{Event, Message};
+        let (directory, mut session) = isolated();
+        session.apply(Action::New).unwrap();
+        session.apply(Action::AddTrack(None)).unwrap();
+        let identity = plugin(directory.0.join("Missing.vst3"), "missing");
+        let track = &mut session.view.project.tracks[0];
+        track.plugin = Some(identity.clone());
+        track.state = vec![42];
+        let midi = Arc::make_mut(&mut session.view.project.midi);
+        midi.record(
+            1,
+            Mode::NewTake,
+            [0, 960],
+            vec![vec![Event {
+                tick: 0,
+                order: 0,
+                message: Message::Control([0xb0, 1, 64]),
+            }]],
+            false,
+        )
+        .unwrap();
+        let expected = session.view.project.clone();
+        session.quarantine(identity, "fixture quarantine".into());
+        session.apply(Action::RemoveTrack(1)).unwrap();
+        assert!(session.view.project.midi.tracks.is_empty());
+        seek(&mut session, 1).unwrap();
+        assert_eq!(session.view.project, expected);
+        assert!(session.jobs.is_empty());
+        assert!(session.view.tracks[0].status == "Quarantined");
+        seek(&mut session, 2).unwrap();
+        assert!(session.view.project.tracks.is_empty());
+        assert!(session.view.project.midi.tracks.is_empty());
+    }
+
+    #[test]
+    fn history_seek_is_atomic_when_an_instrument_has_unjournaled_changes() {
+        let (directory, mut session) = isolated();
+        session.apply(Action::New).unwrap();
+        session.apply(Action::AddTrack(None)).unwrap();
+        let before = InstrumentState::from(&session.view.project.tracks[0]);
+        session.view.project.tracks[0].plugin =
+            Some(plugin(directory.0.join("Missing.vst3"), "missing"));
+        session.view.project.tracks[0].state = vec![1];
+        let after = InstrumentState::from(&session.view.project.tracks[0]);
+        session.record_edit(Edit::Instrument {
+            id: 1,
+            before,
+            after,
+            editor: false,
+        });
+        session.apply(Action::Rename(1, "Piano".into())).unwrap();
+        seek(&mut session, 0).unwrap();
+        assert!(session.view.project.tracks.is_empty());
+        seek(&mut session, 3).unwrap();
+        assert_eq!(session.view.project.tracks[0].state, [1]);
+        session.view.project.tracks[0].state = vec![2];
+        assert!(seek(&mut session, 0).is_err());
+        assert_eq!(session.view.edit_history.cursor, 3);
+        assert_eq!(session.view.project.tracks[0].name, "Piano");
+        assert_eq!(session.view.project.tracks[0].state, [2]);
+    }
+
+    #[test]
+    #[ignore = "requires built Clef, TestSynth and native worker WindowServer access"]
+    fn native_t08_replacement_restores_an_isolated_workers_captured_state() {
+        let (directory, mut session) = isolated();
+        let instruments = scan_test_synth(&directory.0);
+        let first = instruments
+            .iter()
+            .find(|plugin| plugin.name == "VST3 Host Test Synth")
+            .unwrap()
+            .clone();
+        let second = instruments
+            .into_iter()
+            .find(|plugin| plugin.name == "VST3 Host Test Synth (Single)")
+            .unwrap();
+        let settle = |session: &mut Session| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !session.jobs.is_empty() && Instant::now() < deadline {
+                session.poll();
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            assert!(session.jobs.is_empty());
+        };
+        session.apply(Action::New).unwrap();
+        session.apply(Action::AddTrack(None)).unwrap();
+        session.apply(Action::Select(1, first.clone())).unwrap();
+        settle(&mut session);
+        assert_eq!(
+            session.view.edit_history.labels,
+            ["Add Track", "Assign Instrument"]
+        );
+        let runtime = session.runtimes.get_mut(&1).unwrap();
+        // Use the deterministic worker to simulate a snapshot-capable editor changing opaque state.
+        runtime.instrument = Some(
+            Instrument::load(&test_executable(), std::path::Path::new("@fixture"), None).unwrap(),
+        );
+        let worker = runtime.instrument.as_mut().unwrap();
+        runtime.editor = true;
+        runtime.editor_before = Some(worker.save().unwrap());
+        worker
+            .call(protocol::Request::FixtureEdit { value: 73 })
+            .unwrap();
+        session.finish_track_editor(1).unwrap();
+        session.apply(Action::Select(1, second.clone())).unwrap();
+        settle(&mut session);
+        assert_eq!(
+            session.view.edit_history.labels,
+            [
+                "Add Track",
+                "Assign Instrument",
+                "Edit Instrument State",
+                "Replace Instrument",
+            ]
+        );
+        seek(&mut session, 3).unwrap();
+        assert_eq!(session.track(1).unwrap().plugin.as_ref(), Some(&first));
+        assert_eq!(session.track(1).unwrap().state, [73]);
+        seek(&mut session, 2).unwrap();
+        assert_ne!(session.track(1).unwrap().state, [73]);
+        seek(&mut session, 4).unwrap();
+        assert_eq!(session.track(1).unwrap().plugin.as_ref(), Some(&second));
+
+        session.request_load(1, None).unwrap();
+        settle(&mut session);
+        assert!(session.runtimes[&1].instrument.is_some());
+        let previous = session.track(1).unwrap().clone();
+        session
+            .apply(Action::Select(
+                1,
+                plugin(PathBuf::from("/missing-t08.vst3"), "invalid"),
+            ))
+            .unwrap();
+        settle(&mut session);
+        assert_eq!(session.track(1).unwrap(), &previous);
+        assert_eq!(session.view.edit_history.cursor, 4);
+        assert_eq!(session.view.edit_history.labels.len(), 4);
+    }
+
+    #[test]
+    fn autosave_uses_retained_state_and_keeps_failed_transitions_recoverable() {
+        let directory = project::TemporaryDirectory::new("t07-session").unwrap();
+        let new_session =
+            || Session::with_registry(directory.0.join("quarantine.json"), PathBuf::new());
+        let mut session = new_session();
+        session.apply(Action::New).unwrap();
+        session.apply(Action::AddTrack(None)).unwrap();
+        let track = &mut session.view.project.tracks[0];
+        track.plugin = Some(Plugin {
+            id: "fixture".into(),
+            name: "Fixture".into(),
+            format: "CLAP".into(),
+            path: "/Fixture.clap".into(),
+        });
+        track.state = vec![7, 9];
+        let project = session.view.project.clone();
+        session.view.recording = true;
+        session.view.editor = true;
+        session.view.transport.phase = TransportPhase::Playing;
+        let start = session.last_checkpoint;
+        session.poll_autosave(start + AUTOSAVE_INTERVAL - Duration::from_secs(1));
+        assert!(session.journal.is_none());
+        session.poll_autosave(start + AUTOSAVE_INTERVAL);
+        session.finish_checkpoint();
+        assert!(session.view.dirty && session.view.editor && session.view.recording);
+        assert_eq!(session.view.transport.phase, TransportPhase::Playing);
+        assert_eq!(
+            session.journal.as_ref().unwrap().recover().unwrap(),
+            project
+        );
+        session.checkpoint_take = true;
+        session.poll_autosave(start + AUTOSAVE_INTERVAL + Duration::from_secs(1));
+        assert!(session.checkpoint.is_some());
+        session.finish_checkpoint();
+        drop(session);
+
+        let mut session = new_session();
+        session.load_history();
+        let id = session.view.recoveries[0].id.clone();
+        session.apply(Action::Recover(id)).unwrap();
+        assert!(session.view.dirty && session.view.project_open && session.view.path.is_none());
+        assert_eq!(session.view.project, project);
+        assert!(
+            session
+                .apply(Action::Open(directory.0.join("missing.clef")))
+                .is_err()
+        );
+        let missing_parent = directory.0.join("missing").join("copy.clef");
+        assert!(save(&mut session, missing_parent, false, false).is_err());
+        assert_eq!(
+            session.journal.as_ref().unwrap().recover().unwrap(),
+            project
+        );
+        let copy = directory.0.join("copy.clef");
+        save(&mut session, copy.clone(), false, false).unwrap();
+        assert!(!session.view.dirty);
+        assert_eq!(Project::read(&copy).unwrap(), project);
+        assert!(
+            session
+                .history
+                .as_ref()
+                .unwrap()
+                .recoveries()
+                .unwrap()
+                .is_empty()
+        );
+
+        session.apply(Action::Rename(1, "Unsaved".into())).unwrap();
+        session.start_checkpoint().unwrap();
+        session.apply(Action::DiscardBeforeClose).unwrap();
+        assert!(
+            session
+                .history
+                .as_ref()
+                .unwrap()
+                .recoveries()
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(Project::read(&copy).unwrap(), project);
+    }
     use clef_audio_io::{AudioDevice, AudioRange, SupportedBufferSize};
+
+    #[test]
+    fn unchanged_idle_snapshots_do_not_repaint_but_commands_still_complete() {
+        let backend = Backend::spawn(PathBuf::new(), || {});
+        let (_, completed) = backend
+            .receive
+            .recv_timeout(Duration::from_secs(3))
+            .unwrap();
+        assert_eq!(completed, None);
+        assert!(matches!(
+            backend.receive.recv_timeout(Duration::from_millis(120)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+
+        backend
+            .send
+            .send(Action::Transport(TransportAction::Locate(0)))
+            .unwrap();
+        let (_, completed) = backend
+            .receive
+            .recv_timeout(Duration::from_secs(3))
+            .unwrap();
+        assert_eq!(completed, Some(true));
+    }
 
     fn test_executable() -> PathBuf {
         PathBuf::from(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../target/debug/clef"
         ))
+    }
+
+    fn scan_test_synth(directory: &std::path::Path) -> Vec<Plugin> {
+        let bundle = std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendor/rust-vst3-host/test_plugins/TestSynth.vst3"
+        ))
+        .canonicalize()
+        .unwrap();
+        let catalog = directory.join("catalog.json");
+        let scan = std::process::Command::new(test_executable())
+            .arg("scan-bundle")
+            .arg(bundle)
+            .arg(&catalog)
+            .status()
+            .unwrap();
+        assert!(scan.success());
+        serde_json::from_slice(&std::fs::read(catalog).unwrap()).unwrap()
+    }
+
+    #[test]
+    #[ignore = "requires built Clef with the VST3 TestSynth and CLAP MIDI test fixtures"]
+    fn native_t10_delivers_mapped_and_raw_cc_to_isolated_instruments() {
+        let (directory, _) = isolated();
+        let synth = scan_test_synth(&directory.0)
+            .into_iter()
+            .find(|plugin| plugin.name == "VST3 Host Test Synth")
+            .unwrap();
+        let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
+        let bundle = root.join("validation-output/fixtures/ClefLatencyCLAP.clap");
+        let result = directory.0.join("clap-scan.json");
+        assert!(
+            std::process::Command::new(test_executable())
+                .arg("scan-bundle")
+                .arg(bundle)
+                .arg(&result)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let clap: Vec<Plugin> = serde_json::from_slice(&std::fs::read(result).unwrap()).unwrap();
+        let render = |plugin: &Plugin, cc, value| {
+            let mut instrument = Instrument::load_selected(
+                &test_executable(),
+                &plugin.path,
+                &plugin.id,
+                48_000,
+                None,
+            )
+            .unwrap();
+            instrument.start(true).unwrap();
+            let position = clef_engine::sequence::START;
+            let control = protocol::Midi {
+                offset: 0,
+                bytes: [0xb0, cc, value],
+            };
+            let attack = protocol::Midi {
+                offset: 5,
+                bytes: [0x90, 60, 100],
+            };
+            let mut frames = instrument
+                .process(position, &[control, attack], 128)
+                .unwrap()
+                .0;
+            for block in 1..64 {
+                frames.extend(
+                    instrument
+                        .process(position + 128 * block, &[], 128)
+                        .unwrap()
+                        .0,
+                );
+            }
+            frames
+        };
+        let low = render(&synth, 74, 5);
+        let high = render(&synth, 74, 120);
+        let difference = low
+            .iter()
+            .zip(&high)
+            .map(|(a, b)| (a[0] - b[0]).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(difference > 0.001, "VST3 CC74 difference: {difference}");
+        assert!((render(&clap[0], 11, 127)[5][0] - 0.25).abs() < 0.0001);
+        assert_eq!(render(&clap[0], 11, 0)[5][0], 0.0);
     }
 
     fn isolated() -> (crate::project::TemporaryDirectory, Session) {
@@ -1708,6 +3405,393 @@ mod tests {
             && r["peak"].as_f64().unwrap() > 0.000001));
         session.apply(Action::Disable).unwrap();
     }
+    #[test]
+    #[ignore = "requires rebuilt Clef and TestSynth, a CoreAudio output and CoreMIDI virtual source"]
+    fn native_t06_records_routes_reopens_and_plays_an_instrument_clip() {
+        use midir::os::unix::VirtualOutput;
+        let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
+        let (directory, mut session) = isolated();
+        session.apply(Action::New).unwrap();
+        let name = format!("Clef T06 fixture {}", std::process::id());
+        let mut source = midir::MidiOutput::new(&name)
+            .unwrap()
+            .create_virtual(&name)
+            .unwrap();
+        let devices = Devices::enumerate().unwrap();
+        let midi = devices
+            .midi
+            .iter()
+            .find(|(_, label)| label == &name)
+            .unwrap()
+            .0
+            .clone();
+        let mut settings = Project::read(&root.join("validation-output/T03-GUI-Pianoverse.clef"))
+            .unwrap()
+            .audio;
+        settings.midi = midi;
+        devices.validate(&settings).unwrap();
+        session.view.project.audio = settings;
+
+        let synth = scan_test_synth(&directory.0)
+            .into_iter()
+            .find(|plugin| plugin.name == "VST3 Host Test Synth")
+            .unwrap();
+        for _ in 0..2 {
+            session.apply(Action::AddTrack(None)).unwrap();
+        }
+        for track in &mut session.view.project.tracks {
+            track.plugin = Some(synth.clone());
+        }
+        fn wait(session: &mut Session, condition: impl Fn(&Session) -> bool) {
+            let deadline = Instant::now() + Duration::from_secs(8);
+            loop {
+                session.poll();
+                if condition(session) {
+                    return;
+                }
+                assert!(Instant::now() < deadline, "{}", session.view.message);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        session.apply(Action::SelectTrack(1, None)).unwrap();
+        session.apply(Action::Enable).unwrap();
+        wait(&mut session, |s| s.ready(1));
+        session.apply(Action::Editor(1, true)).unwrap();
+        wait(&mut session, |s| s.view.editor);
+        session
+            .apply(Action::Transport(TransportAction::Arm(2)))
+            .unwrap();
+        wait(&mut session, |s| s.ready(2));
+        assert_eq!(session.view.selected, Some(1));
+        assert_eq!(session.live_target(), Some(2));
+        session
+            .apply(Action::Transport(TransportAction::ToggleCountIn))
+            .unwrap();
+        wait(&mut session, |s| !s.view.transport.pending);
+        session
+            .apply(Action::Transport(TransportAction::Record))
+            .unwrap();
+        wait(&mut session, |s| {
+            s.view.transport.phase == TransportPhase::CountingIn
+        });
+        source.send(&[0x90, 55, 64]).unwrap();
+        source.send(&[0x80, 55, 0]).unwrap();
+        session
+            .apply(Action::Transport(TransportAction::Stop))
+            .unwrap();
+        wait(&mut session, |s| !s.view.recording);
+        assert!(session.view.project.midi.clips(2).is_empty());
+        session
+            .apply(Action::Transport(TransportAction::ToggleCountIn))
+            .unwrap();
+        wait(&mut session, |s| !s.view.transport.pending);
+        session
+            .apply(Action::Transport(TransportAction::SetRecordMode(
+                Mode::NewTake,
+            )))
+            .unwrap();
+        session
+            .apply(Action::Transport(TransportAction::SetLoopRange([0, 960])))
+            .unwrap();
+        wait(&mut session, |s| !s.view.transport.pending);
+        session
+            .apply(Action::Transport(TransportAction::ToggleLoop))
+            .unwrap();
+        wait(&mut session, |s| !s.view.transport.pending);
+        session
+            .apply(Action::Transport(TransportAction::Record))
+            .unwrap();
+        wait(&mut session, |s| s.view.recording_region.is_some());
+        session.last_checkpoint = Instant::now() - AUTOSAVE_INTERVAL;
+        session.poll_autosave(Instant::now());
+        assert!(session.checkpoint.is_some());
+        source.send(&[0xb0, 1, 42]).unwrap();
+        source.send(&[0x90, 60, 64]).unwrap();
+        wait(&mut session, |s| {
+            s.view.recording_notes.as_ref().is_some_and(|notes| {
+                notes
+                    .current
+                    .iter()
+                    .any(|note| note.key == 60 && note.end.is_none())
+            })
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        source.send(&[0x80, 60, 19]).unwrap();
+        wait(&mut session, |s| {
+            s.view.recording_notes.as_ref().is_some_and(|notes| {
+                notes
+                    .current
+                    .iter()
+                    .any(|note| note.key == 60 && note.end.is_some_and(|end| end > note.start))
+            })
+        });
+        wait(&mut session, |s| {
+            s.view.recording_notes.as_ref().is_some_and(|notes| {
+                notes.current.is_empty() && notes.previous.iter().any(|note| note.key == 60)
+            })
+        });
+        source.send(&[0x90, 65, 62]).unwrap();
+        wait(&mut session, |s| {
+            s.view.recording_notes.as_ref().is_some_and(|notes| {
+                notes
+                    .current
+                    .iter()
+                    .any(|note| note.key == 65 && note.end.is_none())
+                    && notes.previous.iter().any(|note| note.key == 60)
+            })
+        });
+        std::thread::sleep(Duration::from_millis(60));
+        source.send(&[0x80, 65, 23]).unwrap();
+        wait(&mut session, |s| {
+            s.view.recording_notes.as_ref().is_some_and(|notes| {
+                notes
+                    .current
+                    .iter()
+                    .any(|note| note.key == 65 && note.end.is_some())
+                    && notes.previous.iter().any(|note| note.key == 60)
+            })
+        });
+        std::thread::sleep(Duration::from_millis(50));
+        session
+            .apply(Action::Transport(TransportAction::Stop))
+            .unwrap();
+        wait(&mut session, |s| !s.view.recording);
+        assert!(session.view.recording_notes.is_none());
+        assert!(session.checkpoint_take);
+        assert!(session.view.editor && session.view.active);
+        session.finish_checkpoint();
+        session.poll_autosave(Instant::now());
+        session.finish_checkpoint();
+        assert_eq!(
+            session.journal.as_ref().unwrap().recover().unwrap().midi,
+            session.view.project.midi
+        );
+        let clips = session.view.project.midi.clips(2);
+        assert_eq!(clips.len(), 1, "{}", session.view.message);
+        assert_eq!(clips[0].takes.len(), 2);
+        assert!(clips[0].takes[0].events.iter().any(|event| matches!(
+            event.message,
+            clef_model::midi::Message::Note {
+                key: 60,
+                velocity: 64,
+                release: 19,
+                ..
+            }
+        )));
+        assert!(clips[0].active_events().any(|event| matches!(
+            event.message,
+            clef_model::midi::Message::Note {
+                key: 65,
+                release: 23,
+                ..
+            }
+        )));
+        assert!(session.view.project.midi.clips(1).is_empty());
+        let recorded = session.view.project.midi.clips(2).to_vec();
+        let recorded_revision = session.view.edit_history.cursor;
+        assert_eq!(
+            session.view.edit_history.labels[recorded_revision - 1],
+            "Record MIDI"
+        );
+        seek(&mut session, recorded_revision - 1).unwrap();
+        assert!(session.view.project.midi.clips(2).is_empty());
+        seek(&mut session, recorded_revision).unwrap();
+        assert_eq!(session.view.project.midi.clips(2), recorded);
+        let received = |s: &Session, id| {
+            s.runtimes[&id]
+                .broker
+                .as_ref()
+                .unwrap()
+                .stats
+                .midi_received
+                .load(Ordering::Relaxed)
+        };
+        assert_eq!(received(&session, 1), 0);
+        assert!(received(&session, 2) >= 3);
+        session
+            .apply(Action::Transport(TransportAction::Arm(2)))
+            .unwrap();
+        source.send(&[0x90, 62, 64]).unwrap();
+        wait(&mut session, |s| received(s, 1) > 0);
+        source.send(&[0x80, 62, 0]).unwrap();
+
+        let path = directory.0.join("Recorded.clef");
+        let expected = session.view.project.midi.clone();
+        save(&mut session, path.clone(), false, false).unwrap();
+        session.apply(Action::Open(path)).unwrap();
+        assert_eq!(session.view.project.midi, expected);
+        assert!(!session.view.active);
+        assert_eq!(session.view.armed, None);
+        session.apply(Action::Enable).unwrap();
+        session
+            .apply(Action::Transport(TransportAction::Play))
+            .unwrap();
+        let stats = |s: &Session| {
+            s.runtimes
+                .get(&2)?
+                .broker
+                .as_ref()
+                .map(|broker| broker.stats.clone())
+        };
+        wait(&mut session, |s| {
+            stats(s).is_some_and(|stats| {
+                stats.playback_blocks.load(Ordering::Relaxed) >= 2
+                    && f32::from_bits(stats.peak.load(Ordering::Relaxed)) > 0.00001
+            })
+        });
+        let stats = stats(&session).unwrap();
+        assert_eq!(stats.midi_received.load(Ordering::Relaxed), 0);
+        assert_eq!(stats.playback_dropped.load(Ordering::Relaxed), 0);
+        session
+            .apply(Action::Transport(TransportAction::Stop))
+            .unwrap();
+        wait(&mut session, |s| {
+            s.view.transport.phase == TransportPhase::Stopped && !s.view.transport.pending
+        });
+
+        // T09: publish edited MIDI to the other live worker and play only its repeated segment.
+        let clip = session.view.project.midi.clips(2)[0].id();
+        let edit = |session: &mut Session, edit| {
+            session.apply(Action::EditClips {
+                expected: session.view.project.midi.clone(),
+                edit,
+            })
+        };
+        edit(
+            &mut session,
+            ClipEdit::Move {
+                destinations: vec![(clip, 1)],
+                delta: 0,
+            },
+        )
+        .unwrap();
+        edit(
+            &mut session,
+            ClipEdit::Resize {
+                clip,
+                end: 1_920,
+                repeat: true,
+            },
+        )
+        .unwrap();
+        assert!(session.view.project.midi.clips(2).is_empty());
+        assert!(
+            session.view.project.midi.clips(1)[0]
+                .active_events()
+                .any(|event| event.tick >= 960)
+        );
+        assert!(session.view.project.timeline.looping);
+        session
+            .apply(Action::Transport(TransportAction::ToggleLoop))
+            .unwrap();
+        wait(&mut session, |s| !s.view.transport.pending);
+        session
+            .apply(Action::Transport(TransportAction::Locate(960)))
+            .unwrap();
+        wait(&mut session, |s| !s.view.transport.pending);
+        session
+            .apply(Action::Transport(TransportAction::Play))
+            .unwrap();
+        wait(&mut session, |s| {
+            s.runtimes[&1].broker.as_ref().is_some_and(|broker| {
+                broker.stats.playback_blocks.load(Ordering::Relaxed) >= 2
+                    && f32::from_bits(broker.stats.peak.load(Ordering::Relaxed)) > 0.00001
+            })
+        });
+        session
+            .apply(Action::Transport(TransportAction::Stop))
+            .unwrap();
+        wait(&mut session, |s| {
+            s.view.transport.phase == TransportPhase::Stopped && !s.view.transport.pending
+        });
+        seek(&mut session, 0).unwrap();
+        assert_eq!(session.view.project.midi.clips(2), expected.clips(2));
+        assert!(session.view.project.midi.clips(1).is_empty());
+        session
+            .apply(Action::Transport(TransportAction::ToggleLoop))
+            .unwrap();
+        wait(&mut session, |s| !s.view.transport.pending);
+
+        session
+            .apply(Action::Transport(TransportAction::Arm(2)))
+            .unwrap();
+        for mode in [Mode::Merge, Mode::Replace] {
+            session
+                .apply(Action::Transport(TransportAction::Locate(0)))
+                .unwrap();
+            wait(&mut session, |s| !s.view.transport.pending);
+            session
+                .apply(Action::Transport(TransportAction::SetRecordMode(mode)))
+                .unwrap();
+            session
+                .apply(Action::Transport(TransportAction::Record))
+                .unwrap();
+            wait(&mut session, |s| s.view.recording_region.is_some());
+            source.send(&[0x90, 70, 48]).unwrap();
+            std::thread::sleep(Duration::from_millis(30));
+            source.send(&[0x80, 70, 0]).unwrap();
+            wait(&mut session, |s| {
+                s.view
+                    .recording_notes
+                    .as_ref()
+                    .is_some_and(|notes| notes.previous.iter().any(|note| note.key == 70))
+            });
+            session
+                .apply(Action::Transport(TransportAction::Stop))
+                .unwrap();
+            wait(&mut session, |s| !s.view.recording);
+        }
+        let before_recovery = session.view.project.midi.clone();
+        session
+            .apply(Action::Transport(TransportAction::ToggleLoop))
+            .unwrap();
+        wait(&mut session, |s| !s.view.transport.pending);
+        session
+            .apply(Action::Transport(TransportAction::Locate(0)))
+            .unwrap();
+        wait(&mut session, |s| !s.view.transport.pending);
+        session
+            .apply(Action::Transport(TransportAction::SetRecordMode(
+                Mode::Replace,
+            )))
+            .unwrap();
+        session
+            .apply(Action::Transport(TransportAction::Record))
+            .unwrap();
+        wait(&mut session, |s| s.view.recording_region.is_some());
+        source.send(&[0x90, 67, 62]).unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        source.send(&[0x80, 67, 17]).unwrap();
+        wait(&mut session, |s| {
+            s.recording
+                .as_ref()
+                .is_some_and(|take| take.input.len() >= 2)
+        });
+        drop(source);
+        session.last_devices = Instant::now() - Duration::from_secs(3);
+        wait(&mut session, |s| !s.view.active && !s.view.recording);
+        let recovered = &session.view.project.midi.clips(2)[0];
+        let original = &before_recovery.clips(2)[0];
+        assert_eq!(
+            recovered.active_events().collect::<Vec<_>>(),
+            original.active_events().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            recovered.takes.len(),
+            original.takes.len() + 1,
+            "{}",
+            session.view.message
+        );
+        assert!(recovered.takes.last().unwrap().events.iter().any(|event| {
+            matches!(
+                event.message,
+                clef_model::midi::Message::Note { key: 67, .. }
+            )
+        }));
+        assert!(session.view.message.contains("Recording interrupted"));
+        session.apply(Action::Disable).unwrap();
+    }
+
     #[test]
     #[ignore = "opens saved T03 audio output, creates owned virtual MIDI and eight fixture workers; build Clef first"]
     fn native_multitrack_fixture_routing_and_failure_isolation() {

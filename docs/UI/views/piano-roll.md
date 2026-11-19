@@ -3,7 +3,7 @@ name: Piano roll
 kind: view
 reference: paintKeybed, keybedKeyBounds, paintPitchRows, pitchRowBounds, paintKeyRows, paintScaleMark, paintRollGrid, paintRollRuler, paintPlayhead, paintNote
 status: mixed
-impl: planned
+impl: gallery
 reference-source: [Source/PianoRoll.cpp, Source/PianoRoll.h]
 components: [note, range-overlay, shadows, scroll-zoom-bars]
 views: [timeline-rulers, controller-lanes, articulation-band, tool-row, midi-functions]
@@ -18,7 +18,54 @@ snapshot: snapshots/piano-roll.png, snapshots/piano-roll-harmony.png, snapshots/
 
 The product's core surface.
 
-## Anatomy
+## Clef T10
+
+Open the lower dock by double-clicking a selected clip or by pressing Enter from a focused
+arrangement clip; focus moves into the editor so arrangement commands stop firing. The dock
+updates with the arrangement selection, and replacing the edit target scrolls the view to
+the new clip's start so its notes are visible. Each selected clip has a separate pitch lane,
+including clips that overlap or belong to the same track, and a lane name appends an
+ordinal when two lanes would read the same. Click a lane label or grid, or tab to it, to
+make that clip the edit target. Use the split handle between the arrangement and the editor
+to redistribute height.
+
+```text
+surface Piano Roll
+  row wrap: heading + Snap + Follow + MIDI Functions + Close + Scroll + Zoom
+  row: keybed column + project-time ruler
+  optional row wrap: MIDI functions
+  column vertical scroll
+    row per selected clip: clip identity + active clip pitch controls
+    row per selected clip: keybed + pitch and time grid
+    row: Velocity + editable velocity bars
+    rows: open CC lanes for the active clip
+    row wrap: controller selector + channel + Add Lane
+```
+
+- Double-click to create a note. Click to select and audition, Command or Shift to extend
+  selection, drag empty space for a marquee, and drag a note or a resize handle to edit.
+  Option temporarily bypasses snap for pointer and keyboard edits. A repeat source edit
+  previews on visible occurrences.
+- Shift with the wheel moves the lane's pitch window; Lowest pitch and Rows set it directly.
+- The keybed keeps a pitch cursor while it has focus: arrows move it, a 30 % accent band
+  marks it, and Enter or Space auditions it on the clip channel. Clicking the keybed
+  auditions the clicked pitch and focuses it.
+- Tab can reach visible notes and named controls. Enter on a note auditions it while stopped.
+  With the grid focused, Enter or Insert creates, arrows adjust position or pitch, Shift with
+  a horizontal arrow adjusts length, and Command-A/C/V/D selects, copies, pastes or duplicates.
+  Delete and Backspace remove the selection. Undo and redo use project edit history.
+- Empty clips retain the pitch grid. An unavailable clip has readable notes and values, with
+  time and pitch navigation available and the MIDI functions disabled. The dock keeps ruler
+  and grid alignment at 760 points. Additional lanes and controller controls are reachable
+  through vertical scrolling.
+- [Docked arrangement at 760 points](../snapshots/egui/t10-dock-760.png),
+  [multiple clips at 1024 points](../snapshots/egui/t10-multiple-1024.png),
+  [selection at 760 points](../snapshots/egui/t10-selection-760.png),
+  [snap preview at 1024 points](../snapshots/egui/t10-snap-preview-1024.png),
+  [empty clip at 760 points](../snapshots/egui/t10-empty-760.png), and
+  [disabled MIDI functions at 1024 points](../snapshots/egui/t10-unavailable-1024.png).
+
+## Legacy anatomy
 - **Parts column** (with more than one open part): 160 wide (100–320, hideable), 26-pixel rows with
   a 3-pixel stripe, a visibility mark (dot shown, ring ghost, dash hidden), part and track name;
   active row a 35 % selection fill.

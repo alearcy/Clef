@@ -11,3 +11,4 @@ clef-model = { path = "../model" }
 clef-plugin-host = { path = "../plugin-host" }
 clef-session = { path = "../session" }
 eframe = { version = "=0.34.3", default-features = false, features = ["glow", "accesskit", "default_fonts"] }
+jiff = { version = "=0.2.46", default-features = false, features = ["std"] }

@@ -52,3 +52,14 @@ AccessKit selected-state information, a 44-point target, a 13-point name and an
 retains full identity and lifecycle state. Panel, field hover, disabled text and
 accent selection/focus use foundation roles. Keyboard focus has an inset edge
 shown only after keyboard input, independently of the selected-row edge.
+
+## Clef Startup Variant — T07
+
+`primitives::project::row` renders startup and recovery lists at 44 points. The top line is
+the project name. The second shows its path, timestamp or unavailable status. Both truncate
+independently. The accessible name and tooltip retain the full identity and status.
+Idle rows use `panel`, hover and selected rows use `field`, and focus or selection adds
+an `accent` outline. Unavailable rows use `disabled` text and remain selectable for repair.
+See [recent](../snapshots/egui/t07-startup-recent-1024.png),
+[missing](../snapshots/egui/t07-startup-missing-760.png) and
+[recovery](../snapshots/egui/t07-recovery-ready-760.png).

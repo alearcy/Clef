@@ -10,7 +10,8 @@ clef-model = { path = "../model" }
 clef-audio-io = { path = "../audio-io" }
 clef-plugin-host = { path = "../plugin-host" }
 clef-engine = { path = "../engine" }
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 midir = "=0.11.1"
-serde_json = { workspace = true }

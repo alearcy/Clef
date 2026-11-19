@@ -31,3 +31,9 @@ on every open/close and leaves the parent window and event loop to eframe. Host
 resizes and plugin resize requests are negotiated on the main thread; queued
 requests from a detached view are discarded. No native application window is
 constructed by Clef. The broader sidechain/product surface above is outside T02.
+
+The worker requests a hidden window at startup. On editor open it attaches the original view,
+applies the viewport geometry, and prepares the embedded view for display before requesting
+visibility and focus. Closing the editor cancels a pending reveal. See [T25](../../specs/T25-ui-flicker.md).
+On macOS the worker runs as an accessory process so the Dock represents the
+main Clef app even when several plugin workers are running.

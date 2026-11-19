@@ -29,3 +29,10 @@ Section headings are painted by `paintSectionHeading` (the channel strip uses it
 
 ## Alignment
 Captions, readouts and names are `juce::Label`s with a zero border (`setBorderSize({})`), so their text starts on the same left edge as the section headings and the controls; JUCE's default label border would indent them by a few pixels.
+
+## Clef Startup Variant — T07
+
+`primitives::project::{heading, body, caption}` use the 16-, 13- and 11-point foundation
+styles. The local font family loads macOS SF Pro. Captions use `secondary` and wrap within the
+available width. See [recent project details](../snapshots/egui/t07-startup-recent-1024.png)
+and [recovery with fallback](../snapshots/egui/t07-recovery-fallback-760.png).

@@ -17,11 +17,6 @@ reference and remains a planning draft.
 
 | Task | Status | Specification | Next step / dependency |
 | --- | --- | --- | --- |
-| T06 — MIDI Recording and Clip Playback | Todo | [T06 specification](docs/specs/T06-midi-recording.md) | P0. After T05. |
-| T07 — Autosave, Crash Recovery, and Recent Projects | Todo | [T07 specification](docs/specs/T07-autosave-recovery.md) | P1. After T06; protect recorded work. |
-| T08 — Undo/Redo and Edit History | Todo | [T08 specification](docs/specs/T08-undo-redo.md) | P1. After T06; before arrangement and piano-roll editing. |
-| T09 — Arrangement and Clip Editing | Todo | [T09 specification](docs/specs/T09-arrangement-editing.md) | P1. After T06 and T08. |
-| T10 — Piano Roll and MIDI Editing | Todo | [T10 specification](docs/specs/T10-piano-roll.md) | P1. After T06 and T08. |
 | T26 — MIDI Comping and Take Lanes | Todo | [T26 specification](docs/specs/T26-midi-comping.md) | P2. After T10; extends the MIDI take and comp model shared with T27. |
 | T11 — Mixer and Master Section | Todo | [T11 specification](docs/specs/T11-mixer.md) | P1. After T04. |
 | T12 — Insert Effects Hosting | Todo | [T12 specification](docs/specs/T12-effect-hosting.md) | P1. After T04 and T11. |

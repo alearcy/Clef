@@ -176,6 +176,27 @@ A view doc (`docs/UI/views/<id>.md`) describes composition only. It must contain
 7. When the design is silent, ask. Do not infer taste.
 8. C++/JUCE/Tracktion symbols are not APIs. That code is not in this repository.
 
+## Interaction frame regressions
+
+For changes that affect these interactions, check the frames around the state transition and
+record the relevant evidence in the task specification. See [T25](../specs/T25-ui-flicker.md).
+
+- **Range editing.** Keep a valid preview visible through pointer release and session
+  acknowledgment. Cancel, an invalid edit, and rejection restore the committed range. Compare
+  the drag, release, and pending frames so a one-frame reappearance of the old range fails.
+- **Buttons and transport.** Preserve the appearance of unrelated available controls during
+  pointer presses, releases, and session or audio-engine acknowledgments. Keep the execution
+  gates and show longer waits through status feedback. Verify sidebar and transport buttons
+  with audio enabled and playback stopped. Stop should remain dim during unrelated updates and
+  become available for pending Play, count-in, and playback.
+- **Plugin editor presentation.** Attach, size, and prepare the embedded editor before revealing
+  its window. Cancel a pending reveal when closing, hiding, or handling an open failure. Check
+  first open and reopen on macOS with an affected plugin and a control plugin when available.
+  Pocket Strings VST3 is the T25 reproduction case.
+
+Use frame-level assertions for deterministic UI state and live observation or a recording for
+transient compositor behavior. A settled screenshot covers the final state only.
+
 ## Dense editing surfaces
 
 These rules apply to the timeline, arrangement, and piano roll:

@@ -37,3 +37,12 @@ with `peacock` fill (READ while automation read is on).
 - Don't colour it with a track colour.
 
 Raised (UI10 Fix 7): a body 2 px shorter than its bounds with a 1-pixel top light and a soft 2-pixel shadow under it (`paintControlBody`, `ControlDepth::raised`); hover adds the `controlEdge` edge; lit or pressed keeps the body and shadow and drops the top light; disabled is flat `panel` with a `divider` edge. See control depth in [foundations](../foundations.md).
+
+## Clef Startup Variant — T07
+
+`primitives::project::button` uses the shared 24-point button metrics. The enabled primary
+action uses `peacock`, secondary actions use `field`, and disabled actions expose their
+disabled state through AccessKit. Each button dispatches a shared project command.
+See [New Project](../snapshots/egui/t07-startup-empty-1024.png),
+[disabled Open](../snapshots/egui/t07-startup-missing-760.png) and
+[Recover](../snapshots/egui/t07-recovery-ready-1024.png).

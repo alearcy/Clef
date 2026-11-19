@@ -801,6 +801,7 @@ dependencies = [
  "raw-window-handle",
  "serde",
  "serde_json",
+ "winit",
 ]
 
 [[package]]
@@ -812,6 +813,7 @@ dependencies = [
  "clef-model",
  "clef-plugin-host",
  "midir",
+ "serde",
  "serde_json",
 ]
 
@@ -824,6 +826,7 @@ dependencies = [
  "clef-plugin-host",
  "clef-session",
  "eframe",
+ "jiff",
 ]
 
 [[package]]

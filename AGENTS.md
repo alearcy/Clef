@@ -12,7 +12,7 @@ Record all tasks, their status, and links to specifications in `TASKS.md`. Keep 
 
 Give every task its own English Markdown specification in `docs/specs/`, linked from `TASKS.md`, including planning drafts. Keep requirements, scope, acceptance criteria, open questions, decisions, progress details, and verification evidence in that specification or linked supporting documents, not inline in `TASKS.md`.
 
-Keep `TASKS.md` a concise index: task ID and title, status, specification link, and at most a short dependency or next-step note. For Done tasks, retain only the ID and title, Done status, specification link, and optionally a completion date or one-line outcome. Preserve detailed completion history and evidence in the associated specification or linked documents.
+Keep `TASKS.md` a concise index of open work only: task ID and title, `Todo` or `In Progress` status, specification link, and at most a short dependency or next-step note. Do not keep a Done list or completed tasks in the index; when a task is completed, remove its row. The task specification in `docs/specs/` is the completion record, so keep the completion date, history, and verification evidence there.
 
 Before each development task, interview the user in Italian about goals, workflows, constraints, edge cases, and acceptance criteria. Do not replace unresolved product decisions with assumptions.
 
@@ -36,6 +36,8 @@ Clef hosts VST3 through its Steinberg SDK bridge. Read [native/AGENTS.md](native
 Build Clef-owned windows and controls with **egui/eframe**. Do not construct application windows or controls directly with AppKit, `NSWindow`, or other native macOS UI libraries. Host original plugin editors through the egui windowing path; isolate any unavoidable plugin-ABI embedding glue from the application UI. Native plugin editors do not authorize a native macOS application UI.
 
 For UI tasks, start from `docs/UI/index.md`. It indexes every component and view; use it to locate the few files a change touches and do not read the whole `docs/UI/` tree. Then read `docs/UI/README.md` for the binding rules, `docs/UI/foundations.md` for the tokens, and `docs/UI/contract.md` for the primitive and surface contract, the gallery gate, and the rules for agents. Follow their design, behavior, accessibility, and proposal approval rules. Update UI documentation, and its index entry, with implementation.
+
+Use `docs/UI/` as the design authority for Clef. Do not use the Impeccable skill for Clef UI work.
 
 These references contain legacy C++/JUCE/Tracktion paths and symbols. That code is not in this repository and is reference-only: translate the design into Rust + egui, never treat its paths, symbols, or classes as APIs, and never add JUCE, Tracktion, or native AppKit UI code. Resolve conflicts with the user.
 

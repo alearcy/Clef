@@ -1,22 +1,33 @@
 //! Independent bounded worker paths sharing one device callback and sample clock.
+use crate::transport::SampleMap;
 use crate::{
     live::{Configuration, channel_message},
     project::MAX_TRACKS,
     protocol::{BLOCK, Frame, MAX_EVENTS, Midi, Result},
+    recording::{
+        CONTROLS, Captured, ControllerBaseline, MAX_CAPTURE_MESSAGES, Plan, Projection, Published,
+        Scheduler, capture_message, control_index,
+    },
     rpc::{AudioConnection, Instrument},
+    transport::{Control, Prepared, Renderer},
 };
 use clef_audio_io::{self as audio_io, MidiInputConnection, Stream, StreamTrait};
+use clef_model::{midi::Arrangement, timeline::Timeline};
 use rtrb::{Consumer, Producer, RingBuffer};
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
-};
 use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+    },
+};
 
 struct Packet {
     at: u64,
     epoch: u64,
     token: u64,
+    transport: u64,
     frames: [Frame; BLOCK],
 }
 #[derive(Clone, Copy)]
@@ -44,7 +55,11 @@ pub struct TrackStats {
     pub midi_delivered: AtomicU64,
     pub midi_received: AtomicU64,
     pub midi_dropped: AtomicU64,
+    pub playback_dropped: AtomicU64,
+    pub playback_blocks: AtomicU64,
     release: AtomicBool,
+    audition: AtomicU32,
+    mute_recording: AtomicBool,
 }
 pub struct Clock {
     origin: Instant,
@@ -65,6 +80,19 @@ pub struct Clock {
     pub callbacks: AtomicU64,
     pub min_callback: AtomicU64,
     pub max_callback: AtomicU64,
+    timeline: Published,
+    record_window: Published,
+    record_end: AtomicU64,
+    capture_target: AtomicU64,
+    capture_epoch: AtomicU64,
+    capture_overflow: AtomicBool,
+    capture_writing: AtomicBool,
+    output_latency: AtomicU64,
+    playback_generation: AtomicU64,
+    plan_revision: AtomicU64,
+    has_plans: AtomicBool,
+    plans: Mutex<HashMap<u64, Arc<Plan>>>,
+    controls: [AtomicU32; CONTROLS],
 }
 impl Clock {
     fn new() -> Self {
@@ -89,9 +117,22 @@ impl Clock {
             callbacks: AtomicU64::new(0),
             min_callback: AtomicU64::new(u64::MAX),
             max_callback: AtomicU64::new(0),
+            timeline: Published::default(),
+            record_window: Published::default(),
+            record_end: AtomicU64::new(u64::MAX),
+            capture_target: AtomicU64::new(0),
+            capture_epoch: AtomicU64::new(0),
+            capture_overflow: AtomicBool::new(false),
+            capture_writing: AtomicBool::new(false),
+            output_latency: AtomicU64::new(0),
+            playback_generation: AtomicU64::new(0),
+            plan_revision: AtomicU64::new(0),
+            has_plans: AtomicBool::new(false),
+            plans: Mutex::new(HashMap::new()),
+            controls: std::array::from_fn(|_| AtomicU32::new(0)),
         }
     }
-    fn event_position(&self, now_ns: u64, rate: u32) -> Option<u64> {
+    fn event_position(&self, now_ns: u64, rate: u32) -> Option<(u64, u64)> {
         // One writer (the device callback); bounded retry on the MIDI thread.
         for _ in 0..3 {
             let version = self.anchor_sequence.load(Ordering::Acquire);
@@ -103,16 +144,26 @@ impl Clock {
             }
             let frame = self.anchor_frame.load(Ordering::Relaxed);
             let at = self.anchor_ns.load(Ordering::Relaxed);
+            let latency = self.output_latency.load(Ordering::Relaxed);
             std::sync::atomic::fence(Ordering::Acquire);
             if version == self.anchor_sequence.load(Ordering::Acquire) {
                 let delta =
                     u128::from(now_ns.saturating_sub(at)) * u128::from(rate) / 1_000_000_000;
-                return Some(frame.saturating_add(delta.min(u128::from(u64::MAX)) as u64));
+                return Some((
+                    frame.saturating_add(delta.min(u128::from(u64::MAX)) as u64),
+                    latency,
+                ));
             }
         }
-        Some(self.played.load(Ordering::Acquire))
+        Some((
+            self.played.load(Ordering::Acquire),
+            self.output_latency.load(Ordering::Relaxed),
+        ))
     }
     pub fn select(&self, id: u64) {
+        if self.selected.load(Ordering::Acquire) == id {
+            return;
+        }
         self.selected.store(0, Ordering::Release);
         self.revision.fetch_add(1, Ordering::AcqRel);
         self.selected.store(id, Ordering::Release);
@@ -153,9 +204,10 @@ struct Mix {
     pair: [usize; 2],
     bound: usize,
     lead: u64,
+    transport: Option<Renderer>,
 }
 impl Mix {
-    fn fill(&mut self, output: &mut [f32]) {
+    fn fill(&mut self, output: &mut [f32], output_latency: u64) {
         output.fill(0.0);
         let count = (output.len() / self.channels) as u64;
         let now = self
@@ -178,9 +230,49 @@ impl Mix {
             self.clock.played.store(self.position, Ordering::Release);
             return;
         }
+        let mut playback_generation = self.clock.playback_generation.load(Ordering::Relaxed);
+        if let Some(transport) = &mut self.transport {
+            let scheduled = self.clock.has_plans.load(Ordering::Acquire)
+                || self.clock.capture_target.load(Ordering::Acquire) != 0;
+            let hold = if scheduled {
+                self.lead + u64::from(self.clock.latency.load(Ordering::Acquire)) + 2 * BLOCK as u64
+            } else {
+                0
+            };
+            transport.begin_device_callback(hold);
+            let timeline = transport.projection(self.position);
+            if let Some(previous) = self
+                .clock
+                .timeline
+                .get()
+                .filter(|previous| *previous != timeline)
+            {
+                if scheduled
+                    && previous.start != u64::MAX
+                    && previous.limit > 0
+                    && previous.generation != timeline.generation
+                {
+                    playback_generation = timeline.generation;
+                    self.clock
+                        .playback_generation
+                        .store(playback_generation, Ordering::Release);
+                }
+                self.clock.timeline.set(timeline);
+                if transport.recording() {
+                    self.clock.record_window.set(timeline);
+                }
+            }
+            if transport.take_record_stop() {
+                self.clock.record_end.store(
+                    self.position.saturating_sub(output_latency),
+                    Ordering::Release,
+                );
+            }
+        }
         for frame in output.chunks_exact_mut(self.channels) {
             let epoch = self.clock.epoch.load(Ordering::Acquire);
-            let mut sum = [0.0_f32; 2];
+            let click = self.transport.as_mut().map_or(0.0, Renderer::sample);
+            let mut sum = [click; 2];
             for reader in &mut self.readers {
                 if !reader.stats.active.load(Ordering::Acquire)
                     || reader.stats.failed.load(Ordering::Acquire)
@@ -200,7 +292,10 @@ impl Mix {
                         reader.used = false;
                     }
                     if reader.next.as_ref().is_some_and(|p| {
-                        p.epoch != epoch || p.token != token || p.at + BLOCK as u64 <= self.position
+                        p.epoch != epoch
+                            || p.token != token
+                            || p.transport < playback_generation
+                            || p.at + BLOCK as u64 <= self.position
                     }) {
                         if reader
                             .next
@@ -255,6 +350,15 @@ impl Mix {
             }
             self.position += 1;
         }
+        if let Some(transport) = &mut self.transport {
+            if transport.take_record_stop() {
+                self.clock.record_end.store(
+                    self.position.saturating_sub(output_latency),
+                    Ordering::Release,
+                );
+            }
+            transport.publish(output_latency.saturating_add(count));
+        }
         self.clock.played.store(self.position, Ordering::Release);
     }
 }
@@ -297,9 +401,16 @@ pub struct Engine {
     pub rate: u32,
     pub buffer: u32,
     pub lead: u64,
+    pub transport: Control,
+    capture: Consumer<Captured>,
 }
 impl Engine {
-    pub fn start(config: Configuration, silence: Arc<AtomicBool>) -> Result<Self> {
+    pub fn start(
+        config: Configuration,
+        silence: Arc<AtomicBool>,
+        timing: Prepared,
+        tick: u64,
+    ) -> Result<Self> {
         let Configuration {
             device,
             pair,
@@ -336,6 +447,7 @@ impl Engine {
             senders.push(tx);
             inputs.push(Some(rx));
         }
+        let (mut capture_tx, capture) = RingBuffer::new(MAX_CAPTURE_MESSAGES);
         let state = clock.clone();
         let mut owners = [u64::MAX; 16 * 128];
         let midi = audio_io::midi_input(
@@ -353,6 +465,12 @@ impl Engine {
                 };
                 let revision = state.revision.load(Ordering::Acquire);
                 let selected = state.selected.load(Ordering::Acquire);
+                if let Some(index) = control_index(bytes) {
+                    state.controls[index].store(
+                        u32::from_le_bytes([bytes[0], bytes[1], bytes[2], 0]),
+                        Ordering::Release,
+                    );
+                }
                 if !belongs_to_selection(&mut owners, bytes, revision) {
                     return;
                 }
@@ -367,9 +485,25 @@ impl Engine {
                         return;
                     }
                     let now = state.origin.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
-                    let Some(at) = state.event_position(now, rate) else {
+                    let Some((at, output_latency)) = state.event_position(now, rate) else {
                         return;
                     };
+                    let capture_epoch = state.capture_epoch.load(Ordering::SeqCst);
+                    if capture_epoch % 2 == 1
+                        && state.capture_target.load(Ordering::Acquire) == selected
+                        && capture_message(bytes)
+                    {
+                        state.capture_writing.store(true, Ordering::SeqCst);
+                        if state.capture_epoch.load(Ordering::SeqCst) == capture_epoch
+                            && !state.capture_overflow.load(Ordering::Acquire)
+                        {
+                            let heard = at.saturating_sub(output_latency);
+                            if capture_tx.push(Captured { at: heard, bytes }).is_err() {
+                                state.capture_overflow.store(true, Ordering::Release);
+                            }
+                        }
+                        state.capture_writing.store(false, Ordering::SeqCst);
+                    }
                     if senders[slot]
                         .push(Input {
                             at,
@@ -387,6 +521,7 @@ impl Engine {
                 }
             },
         )?;
+        let (transport, renderer) = Renderer::new(timing, tick);
         let mut mix = Mix {
             readers,
             clock: clock.clone(),
@@ -395,14 +530,15 @@ impl Engine {
             pair,
             bound,
             lead,
+            transport: Some(renderer),
         };
         let errors = clock.clone();
-        let stream = audio_io::output_stream(
+        let stream = audio_io::timed_output_stream(
             &device,
             channel_count,
             rate,
             buffer,
-            move |out| mix.fill(out),
+            move |out, latency| mix.fill(out, latency),
             move || {
                 errors.errors.fetch_add(1, Ordering::Relaxed);
             },
@@ -417,8 +553,138 @@ impl Engine {
             rate,
             buffer,
             lead,
+            transport,
+            capture,
         })
     }
+    pub fn set_arrangement(&self, arrangement: &Arrangement, timeline: &Timeline) -> Result<()> {
+        if arrangement.tracks.is_empty() && self.clock.plan_revision.load(Ordering::Acquire) == 0 {
+            return Ok(());
+        }
+        let map = SampleMap::new(timeline, self.rate)?;
+        let plans = arrangement
+            .tracks
+            .iter()
+            .map(|(&id, clips)| Ok((id, Arc::new(Plan::new(clips, &map)?))))
+            .collect::<Result<_>>()?;
+        *self
+            .clock
+            .plans
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = plans;
+        self.clock
+            .has_plans
+            .store(!arrangement.tracks.is_empty(), Ordering::Release);
+        self.clock.plan_revision.fetch_add(1, Ordering::Release);
+        Ok(())
+    }
+
+    pub fn begin_capture(&mut self, target: u64) -> Result<ControllerBaseline> {
+        for _ in 0..MAX_CAPTURE_MESSAGES {
+            if self.capture.pop().is_err() {
+                break;
+            }
+        }
+        self.clock.record_window.set(Projection::default());
+        self.clock.record_end.store(u64::MAX, Ordering::Release);
+        self.clock.capture_overflow.store(false, Ordering::Release);
+        let baseline = self.clock.controls.each_ref().map(|value| {
+            let [status, key, data, _] = value.load(Ordering::Acquire).to_le_bytes();
+            [status, key, data]
+        });
+        self.clock.capture_target.store(target, Ordering::Release);
+        self.clock.capture_epoch.fetch_add(1, Ordering::SeqCst);
+        if let Err(error) = self.transport.send(crate::transport::Command::Record) {
+            self.end_capture();
+            return Err(error);
+        }
+        Ok(baseline)
+    }
+
+    pub fn recording_window(&self) -> Option<Projection> {
+        self.clock
+            .record_window
+            .get()
+            .filter(|window| window.limit > 0)
+    }
+
+    pub fn recording_end(&self) -> u64 {
+        let end = self.clock.record_end.load(Ordering::Acquire);
+        if end != u64::MAX {
+            return end;
+        }
+        let now = self
+            .clock
+            .origin
+            .elapsed()
+            .as_nanos()
+            .min(u128::from(u64::MAX)) as u64;
+        let played = self.clock.played.load(Ordering::Acquire);
+        self.clock
+            .event_position(now, self.rate)
+            .map_or(0, |(position, latency)| {
+                position.min(played).saturating_sub(latency)
+            })
+    }
+
+    pub fn drain_capture(&mut self, into: &mut Vec<Captured>) -> bool {
+        for _ in 0..MAX_CAPTURE_MESSAGES {
+            let Ok(event) = self.capture.pop() else { break };
+            if into.len() == MAX_CAPTURE_MESSAGES {
+                self.clock.capture_overflow.store(true, Ordering::Release);
+                break;
+            }
+            into.push(event);
+        }
+        self.clock.capture_overflow.load(Ordering::Acquire)
+    }
+
+    pub fn end_capture(&self) {
+        self.clock.capture_epoch.fetch_add(1, Ordering::SeqCst);
+        self.clock.capture_target.store(0, Ordering::Release);
+        // Only the CoreMIDI producer can hold this flag, across a single ring push.
+        while self.clock.capture_writing.load(Ordering::SeqCst) {
+            std::thread::yield_now();
+        }
+    }
+
+    pub fn mute_recording(&self, id: u64, muted: bool) {
+        if let Some(stats) = self
+            .clock
+            .tracks
+            .iter()
+            .find(|stats| stats.id.load(Ordering::Acquire) == id)
+        {
+            stats.mute_recording.store(muted, Ordering::Release);
+        }
+    }
+
+    pub fn release_live(&self, id: u64) {
+        if let Some(stats) = self
+            .clock
+            .tracks
+            .iter()
+            .find(|stats| stats.id.load(Ordering::Acquire) == id)
+        {
+            stats.release.store(true, Ordering::Release);
+        }
+    }
+
+    pub fn audition(&self, id: u64, channel: u8, key: u8, velocity: u8) {
+        if channel < 16
+            && key < 128
+            && (1..128).contains(&velocity)
+            && let Some(stats) = self.clock.tracks.iter().find(|stats| {
+                stats.id.load(Ordering::Acquire) == id && stats.active.load(Ordering::Acquire)
+            })
+        {
+            stats.audition.store(
+                u32::from_le_bytes([0x90 | channel, key, velocity, 0]),
+                Ordering::Release,
+            );
+        }
+    }
+
     pub fn attach(&mut self, id: u64, instrument: &mut Instrument) -> Result<Broker> {
         let slot = self
             .outputs
@@ -441,11 +707,15 @@ impl Engine {
             &stats.midi_delivered,
             &stats.midi_received,
             &stats.midi_dropped,
+            &stats.playback_dropped,
+            &stats.playback_blocks,
         ] {
             counter.store(0, Ordering::Relaxed);
         }
         stats.peak.store(0, Ordering::Relaxed);
         stats.release.store(false, Ordering::Release);
+        stats.audition.store(0, Ordering::Release);
+        stats.mute_recording.store(false, Ordering::Release);
         stats.failed.store(false, Ordering::Release);
         stats.id.store(id, Ordering::Release);
         stats.latency.store(instrument.latency, Ordering::Release);
@@ -463,6 +733,7 @@ impl Engine {
         self.clock.refresh_latency();
         let clock = self.clock.clone();
         let lead = self.lead;
+        let audition_frames = u64::from(self.rate) / 6;
         let stop = Arc::new(AtomicBool::new(false));
         let stopping = stop.clone();
         let report = stats.clone();
@@ -478,6 +749,11 @@ impl Engine {
                 .into_iter()
                 .filter(|e| e.bytes[1] != 120)
                 .collect();
+            let mut scheduler = Scheduler::new();
+            let mut projection = Projection::default();
+            let mut plan_revision = 0;
+            let mut plan = None;
+            let mut audition: Option<(u64, [u8; 3])> = None;
             let result: Result<()> = (|| {
                 let _ = crate::threading::audio_priority(true);
                 while !stopping.load(Ordering::Acquire) {
@@ -493,14 +769,40 @@ impl Engine {
                     }
                     events.clear();
                     let next_revision = clock.revision.load(Ordering::Acquire);
-                    if next_revision != revision || report.release.swap(false, Ordering::AcqRel) {
+                    let release_live = report.release.swap(false, Ordering::AcqRel);
+                    if next_revision != revision || release_live {
                         revision = next_revision;
-                        events.extend_from_slice(&releases);
+                        scheduler.release_live();
+                        audition = None;
+                    }
+                    let next_plan = clock.plan_revision.load(Ordering::Acquire);
+                    if next_plan != plan_revision
+                        && let Ok(plans) = clock.plans.try_lock()
+                    {
+                        plan = plans.get(&id).cloned();
+                        plan_revision = next_plan;
+                        scheduler.replace_plan();
+                    }
+                    if let Some(next) = clock.timeline.get() {
+                        projection = next;
+                    }
+                    let [status, key, velocity, _] =
+                        report.audition.swap(0, Ordering::AcqRel).to_le_bytes();
+                    let stopped = projection.limit == 0;
+                    if let Some((end, bytes)) = audition
+                        && (end <= elapsed || status != 0 || !stopped)
+                    {
+                        scheduler.live(Midi { offset: 0, bytes });
+                        audition = None;
+                    }
+                    if stopped && status != 0 {
+                        scheduler.live(Midi {
+                            offset: 0,
+                            bytes: [status, key, velocity],
+                        });
+                        audition = Some((elapsed + audition_frames, [status - 0x10, key, 0]));
                     }
                     for _ in 0..MAX_EVENTS {
-                        if events.len() == MAX_EVENTS {
-                            break;
-                        }
                         if pending.is_none() {
                             pending = input.pop().ok();
                         }
@@ -518,13 +820,23 @@ impl Engine {
                             break;
                         }
                         report.midi_delivered.fetch_add(1, Ordering::Relaxed);
-                        events.push(Midi {
+                        scheduler.live(Midi {
                             offset: event.at.saturating_sub(elapsed) as u32,
                             bytes: event.bytes,
                         });
                         pending = None;
                     }
-                    events.sort_by_key(|e| e.offset);
+                    if scheduler.schedule(
+                        plan.as_deref(),
+                        projection,
+                        elapsed + lead + u64::from(clock.latency.load(Ordering::Acquire)),
+                        report.mute_recording.load(Ordering::Acquire),
+                    ) {
+                        report.playback_blocks.fetch_add(1, Ordering::Relaxed);
+                    }
+                    if scheduler.render(&mut events) {
+                        report.playback_dropped.fetch_add(1, Ordering::Relaxed);
+                    }
                     if delay_epoch != epoch {
                         delay = crate::graph::Delay::new(
                             clock
@@ -570,6 +882,7 @@ impl Engine {
                             at: elapsed + lead,
                             epoch,
                             token,
+                            transport: projection.generation,
                             frames,
                         })
                         .map_err(|_| "audio queue full")?;
@@ -658,10 +971,10 @@ mod tests {
         clock.anchor_sequence.store(2, Ordering::Release);
         clock.anchor_frame.store(1000, Ordering::Relaxed);
         clock.anchor_ns.store(5_000_000_000, Ordering::Relaxed);
-        assert_eq!(clock.event_position(5_002_000_000, 48000), Some(1096));
+        assert_eq!(clock.event_position(5_002_000_000, 48000), Some((1096, 0)));
         clock.anchor_sequence.store(3, Ordering::Release);
         clock.played.store(1280, Ordering::Release);
-        assert_eq!(clock.event_position(5_002_000_000, 48000), Some(1280));
+        assert_eq!(clock.event_position(5_002_000_000, 48000), Some((1280, 0)));
     }
     #[test]
     fn held_note_releases_cannot_migrate_to_a_new_selection_or_channel() {
@@ -697,6 +1010,7 @@ mod tests {
                 at: 257,
                 epoch: 0,
                 token: 1,
+                transport: 0,
                 frames,
             })
             .ok()
@@ -719,9 +1033,10 @@ mod tests {
             pair: [0, 1],
             bound: 4,
             lead: 0,
+            transport: None,
         };
         let mut out = vec![0.0; 800];
-        mix.fill(&mut out);
+        mix.fill(&mut out, 0);
         assert!((out[(257 + 37) * 2] - 0.6).abs() < 1e-6);
         assert!(
             out.iter()
@@ -730,7 +1045,7 @@ mod tests {
         );
         clock.tracks[0].failed.store(true, Ordering::Relaxed);
         let mut out = vec![1.0; BLOCK * 2];
-        mix.fill(&mut out);
+        mix.fill(&mut out, 0);
         assert!(out.iter().all(|v| *v == 0.0));
     }
     #[test]
@@ -743,6 +1058,7 @@ mod tests {
             at: 0,
             epoch: 0,
             token: 0,
+            transport: 0,
             frames: [[2.0; 2]; BLOCK],
         })
         .ok()
@@ -763,13 +1079,14 @@ mod tests {
             pair: [0, 1],
             bound: 4,
             lead: 0,
+            transport: None,
         };
         let mut out = [0.0; 2];
-        mix.fill(&mut out);
+        mix.fill(&mut out, 0);
         assert_eq!(out, [1.0; 2]);
         assert_eq!(clock.clipped.load(Ordering::Relaxed), 2);
         clock.epoch.store(1, Ordering::Release);
-        mix.fill(&mut out);
+        mix.fill(&mut out, 0);
         assert_eq!(out, [0.0; 2]);
     }
 }
@@ -833,6 +1150,7 @@ mod callback_proof {
                     at: (block * BLOCK) as u64,
                     epoch: 0,
                     token: 0,
+                    transport: 0,
                     frames,
                 })
                 .ok()
@@ -856,6 +1174,7 @@ mod callback_proof {
             pair: [2, 3],
             bound: 8,
             lead: 0,
+            transport: None,
         }
     }
     #[test]
@@ -867,7 +1186,7 @@ mod callback_proof {
                 let mut output = vec![0.0; 768 * 4];
                 COUNT.with(|c| c.set(Some(0)));
                 for chunk in output.chunks_mut(partition * 4) {
-                    mix.fill(chunk);
+                    mix.fill(chunk, 0);
                 }
                 let count = COUNT.with(|c| c.replace(None).unwrap());
                 assert_eq!(count, 0);
@@ -892,17 +1211,132 @@ mod callback_proof {
         }
     }
     #[test]
+    fn click_wraps_on_sample_and_only_feeds_the_selected_pair_without_allocating() {
+        use crate::transport::Command;
+        use clef_model::timeline::Timeline;
+        let timing = Timeline {
+            click: true,
+            looping: true,
+            loop_range: [0, 9],
+            ..Default::default()
+        };
+        let (mut control, renderer) = Renderer::new(Prepared::new(&timing, 48_000).unwrap(), 0);
+        let mut mix = prepared(&[0]);
+        mix.readers.clear();
+        mix.transport = Some(renderer);
+        control.send(Command::Play).unwrap();
+        let mut output = [0.0; 612 * 4];
+        COUNT.with(|c| c.set(Some(0)));
+        for chunk in output.chunks_mut(83 * 4) {
+            mix.fill(chunk, 0);
+        }
+        let allocations = COUNT.with(|c| c.replace(None).unwrap());
+        assert_eq!(allocations, 0);
+        for frame in output.as_chunks::<4>().0 {
+            assert_eq!(&frame[..2], &[0.0; 2]);
+            assert_eq!(frame[2], frame[3]);
+        }
+        for wrapped in [0, 225, 450] {
+            assert_eq!(output[wrapped * 4 + 2], 0.20);
+        }
+        control.send(Command::Stop).unwrap();
+        mix.fill(&mut output, 0);
+        assert!(output.iter().all(|sample| *sample == 0.0));
+    }
+    #[test]
+    fn recording_clock_and_stop_flush_old_packets_without_allocating() {
+        use crate::transport::Command;
+        let timing = Timeline::default();
+        let (mut control, renderer) = Renderer::new(Prepared::new(&timing, 48_000).unwrap(), 0);
+        let mut mix = prepared(&[0]);
+        mix.lead = 512;
+        mix.readers.clear();
+        mix.transport = Some(renderer);
+        mix.clock.capture_target.store(1, Ordering::Release);
+        let mut output = [0.0; 64 * 4];
+        control.send(Command::Record).unwrap();
+        COUNT.with(|counter| counter.set(Some(0)));
+        mix.fill(&mut output, 17);
+        let recording = mix.clock.record_window.get().unwrap();
+        for _ in 0..15 {
+            mix.fill(&mut output, 17);
+        }
+        let allocations = COUNT.with(|counter| counter.replace(None).unwrap());
+        assert_eq!(allocations, 0);
+        control.send(Command::Stop).unwrap();
+        let old_generation = recording.generation;
+        let (mut audio, pending) = RingBuffer::new(2);
+        audio
+            .push(Packet {
+                at: mix.position,
+                epoch: 0,
+                token: 1,
+                transport: old_generation,
+                frames: [[0.5; 2]; BLOCK],
+            })
+            .ok()
+            .unwrap();
+        let track = mix.clock.tracks[0].clone();
+        track.active.store(true, Ordering::Relaxed);
+        track.token.store(1, Ordering::Relaxed);
+        // The queue fixture is prepared outside the measured callback.
+        mix.readers.push(Reader {
+            used: false,
+            epoch: 0,
+            token: 0,
+            transitioning: true,
+            queue: pending,
+            next: None,
+            stats: track,
+        });
+        COUNT.with(|counter| counter.set(Some(0)));
+        let stop = mix.position;
+        mix.fill(&mut output, 17);
+        let allocations = COUNT.with(|counter| counter.replace(None).unwrap());
+        assert_eq!(allocations, 0);
+        assert_eq!(recording.start, 512 + 2 * BLOCK as u64);
+        assert_eq!(mix.clock.record_end.load(Ordering::Acquire), stop - 17);
+        assert!(mix.clock.playback_generation.load(Ordering::Acquire) > old_generation);
+        assert!(output.iter().all(|sample| *sample == 0.0));
+    }
+
+    #[test]
     fn a_failed_path_contributes_silence_while_healthy_paths_keep_their_samples() {
         let mut mix = prepared(&[0, 257, 17]);
         let mut prefix = vec![0.0; 257 * 4];
-        mix.fill(&mut prefix);
+        mix.fill(&mut prefix, 0);
         mix.clock.tracks[0].failed.store(true, Ordering::Release);
         let mut output = vec![0.0; BLOCK * 4];
         COUNT.with(|c| c.set(Some(0)));
-        mix.fill(&mut output);
+        mix.fill(&mut output, 0);
         let allocations = COUNT.with(|c| c.replace(None).unwrap());
         assert_eq!(allocations, 0);
         assert_eq!(output[37 * 4 + 2], 0.25);
         assert!(mix.clock.tracks[0].misses.load(Ordering::Relaxed) == 0);
+    }
+
+    #[test]
+    fn scheduler_overflow_emits_the_prepared_panic_without_allocating() {
+        use crate::protocol::{MAX_EVENTS, Midi};
+        use crate::recording::Scheduler;
+        let mut scheduler = Scheduler::new();
+        for _ in 0..=MAX_EVENTS {
+            scheduler.live(Midi {
+                offset: 0,
+                bytes: [0x90, 60, 100],
+            });
+        }
+        let mut events = Vec::with_capacity(MAX_EVENTS);
+        COUNT.with(|counter| counter.set(Some(0)));
+        assert!(scheduler.render(&mut events));
+        let allocations = COUNT.with(|counter| counter.replace(None).unwrap());
+        assert_eq!(allocations, 0);
+        assert_eq!(events.len(), 48);
+        assert!(events.iter().any(|event| event.bytes == [0xb0, 123, 0]));
+        assert!(
+            events
+                .iter()
+                .all(|event| event.bytes[0] & 0xf0 == 0xb0 && event.bytes[2] == 0)
+        );
     }
 }

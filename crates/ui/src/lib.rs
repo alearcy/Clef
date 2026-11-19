@@ -6,21 +6,43 @@ use clef_plugin_host::{
     catalog::{self, Catalog},
     quarantine,
 };
-use clef_session::{Action, Backend, Devices, Snapshot};
+use clef_session::{Action, Backend, Devices, Snapshot, TransportAction};
 use eframe::egui::{self, Color32, Key, KeyboardShortcut, Modifiers};
-use std::{path::PathBuf, sync::mpsc};
+use std::{
+    path::PathBuf,
+    sync::mpsc,
+    time::{Duration, Instant},
+};
+mod primitives {
+    pub mod history;
+    pub mod piano_roll;
+    pub mod project;
+    pub mod timeline;
+    pub mod transport;
+}
+mod arrangement;
+#[doc(hidden)]
+pub mod gallery;
+mod piano_roll;
+mod startup;
+mod theme;
+mod transport;
+
+const BUSY_FEEDBACK_DELAY: Duration = Duration::from_millis(100);
 
 mod colors {
     use super::Color32;
     pub const BACKGROUND: Color32 = Color32::from_rgb(0x10, 0x1a, 0x1c);
     pub const PANEL: Color32 = Color32::from_rgb(0x17, 0x23, 0x26);
     pub const FIELD: Color32 = Color32::from_rgb(0x1f, 0x2f, 0x32);
+    pub const CANVAS: Color32 = Color32::from_rgb(0x11, 0x1c, 0x1f);
     pub const TEXT: Color32 = Color32::from_rgb(0xe3, 0xe8, 0xe5);
     pub const SECONDARY: Color32 = Color32::from_rgb(0xa4, 0xb5, 0xae);
     pub const ACCENT: Color32 = Color32::from_rgb(0x78, 0xb5, 0xaa);
     pub const PEACOCK: Color32 = Color32::from_rgb(0x33, 0x6a, 0x64);
     pub const DISABLED: Color32 = Color32::from_rgb(0x74, 0x84, 0x7d);
     pub const DANGER: Color32 = Color32::from_rgb(0xc7, 0x84, 0x7c);
+    pub const DIVIDER: Color32 = Color32::from_rgb(0x2b, 0x3b, 0x3d);
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -28,8 +50,31 @@ enum Command {
     New,
     Open,
     Save,
+    Undo,
+    Redo,
+    EditHistory,
+    CreateClip,
+    SelectAllClips,
+    DuplicateClips,
+    DeleteClips,
+    SplitClips,
+    MoveClipsLeft,
+    MoveClipsRight,
+    MoveClipsUp,
+    MoveClipsDown,
+    ResizeClipShorter,
+    ResizeClipLonger,
+    LoopClipShorter,
+    LoopClipLonger,
     SaveAs,
     Close,
+    OpenRecent,
+    LocateRecent,
+    RemoveRecent,
+    ShowRecovery,
+    RecoverProject,
+    DiscardRecovery,
+    RecoveryLater,
     Settings,
     Commands,
     AddTrack,
@@ -50,7 +95,46 @@ enum Command {
     NextTrack,
     Quarantine,
     Reactivate,
+    Play,
+    Record,
+    ArmTrack,
+    RecordMerge,
+    RecordReplace,
+    RecordNewTake,
+    Stop,
+    PlayStop,
+    ReturnToStart,
+    ToggleLoop,
+    ToggleClick,
+    ToggleCountIn,
+    TempoMap,
+    TransportSettings,
+    KeepStopPosition,
+    ReturnStopPosition,
 }
+
+impl Command {
+    fn is_clip(self) -> bool {
+        use Command::*;
+        matches!(
+            self,
+            CreateClip
+                | SelectAllClips
+                | DuplicateClips
+                | DeleteClips
+                | SplitClips
+                | MoveClipsLeft
+                | MoveClipsRight
+                | MoveClipsUp
+                | MoveClipsDown
+                | ResizeClipShorter
+                | ResizeClipLonger
+                | LoopClipShorter
+                | LoopClipLonger
+        )
+    }
+}
+
 struct Binding {
     command: Command,
     title: &'static str,
@@ -63,7 +147,34 @@ fn commands() -> Vec<Binding> {
         (Open, "Open Project…", Some(Key::O)),
         (Save, "Save", Some(Key::S)),
         (SaveAs, "Save As…", None),
+        (Redo, "Redo", Some(Key::Z)),
+        (Undo, "Undo", Some(Key::Z)),
+        (EditHistory, "Edit History…", None),
+        (CreateClip, "Create Clip", Some(Key::Enter)),
+        (SelectAllClips, "Select All Clips", Some(Key::A)),
+        (DuplicateClips, "Duplicate", Some(Key::D)),
+        (DeleteClips, "Delete", Some(Key::Backspace)),
+        (SplitClips, "Split at Playhead", Some(Key::E)),
+        (MoveClipsLeft, "Move Clips Earlier", Some(Key::ArrowLeft)),
+        (MoveClipsRight, "Move Clips Later", Some(Key::ArrowRight)),
+        (MoveClipsUp, "Move Clips Up a Track", Some(Key::ArrowUp)),
+        (
+            MoveClipsDown,
+            "Move Clips Down a Track",
+            Some(Key::ArrowDown),
+        ),
+        (ResizeClipShorter, "Shorten Clip", Some(Key::ArrowLeft)),
+        (ResizeClipLonger, "Lengthen Clip", Some(Key::ArrowRight)),
+        (LoopClipShorter, "Shorten Clip Loop", Some(Key::ArrowLeft)),
+        (LoopClipLonger, "Extend Clip Loop", Some(Key::ArrowRight)),
         (Close, "Close Clef", Some(Key::Q)),
+        (OpenRecent, "Open", None),
+        (LocateRecent, "Locate…", None),
+        (RemoveRecent, "Remove", None),
+        (ShowRecovery, "Recovery…", None),
+        (RecoverProject, "Recover", None),
+        (DiscardRecovery, "Discard…", None),
+        (RecoveryLater, "Later", None),
         (Settings, "Audio/MIDI Settings", None),
         (Commands, "Commands / Keyboard Shortcuts", Some(Key::K)),
         (AddTrack, "Add Instrument Track", None),
@@ -84,12 +195,41 @@ fn commands() -> Vec<Binding> {
         (NextTrack, "Select Next Track", None),
         (Quarantine, "Show Quarantined Plugins…", None),
         (Reactivate, "Reactivate Plugin…", None),
+        (Play, "Play", None),
+        (Record, "Record MIDI", None),
+        (ArmTrack, "Toggle Record Arm for Selected Track", None),
+        (RecordMerge, "Record Mode: Merge", None),
+        (RecordReplace, "Record Mode: Replace", None),
+        (RecordNewTake, "Record Mode: New take", None),
+        (Stop, "Stop", None),
+        (PlayStop, "Play / Stop", Some(Key::Space)),
+        (ReturnToStart, "Return to Start", None),
+        (ToggleLoop, "Loop", None),
+        (ToggleClick, "Metronome", None),
+        (ToggleCountIn, "One-Bar Count-In", None),
+        (TempoMap, "Tempo and Meter Map…", None),
+        (TransportSettings, "Transport Settings…", None),
+        (KeepStopPosition, "Stop Mode: Keep Position", None),
+        (ReturnStopPosition, "Stop Mode: Return to Play Start", None),
     ]
     .into_iter()
     .map(|(command, title, key)| Binding {
         command,
         title,
-        shortcut: key.map(|key| KeyboardShortcut::new(Modifiers::COMMAND, key)),
+        shortcut: key.map(|key| {
+            KeyboardShortcut::new(
+                match command {
+                    PlayStop => Modifiers::NONE,
+                    DeleteClips => Modifiers::NONE,
+                    MoveClipsLeft | MoveClipsRight | MoveClipsUp | MoveClipsDown => Modifiers::ALT,
+                    ResizeClipShorter | ResizeClipLonger => Modifiers::ALT | Modifiers::SHIFT,
+                    LoopClipShorter | LoopClipLonger => Modifiers::COMMAND | Modifiers::ALT,
+                    Redo => Modifiers::COMMAND | Modifiers::SHIFT,
+                    _ => Modifiers::COMMAND,
+                },
+                key,
+            )
+        }),
     })
     .collect()
 }
@@ -107,10 +247,15 @@ enum Confirm {
     Reactivate(Plugin),
     Retained(bool),
     Overwrite(PathBuf),
+    SplitClips(
+        std::sync::Arc<clef_model::midi::Arrangement>,
+        clef_model::midi::ClipEdit,
+    ),
 }
 #[derive(Clone, Copy)]
 enum FileMode {
     Open,
+    Locate,
     Save,
 }
 struct FilePicker {
@@ -177,13 +322,21 @@ pub fn run(executable: PathBuf) -> Result<()> {
 }
 
 struct App {
+    transport_ui: transport::TransportUi,
+    arrangement_ui: arrangement::ArrangementUi,
+    piano_roll: piano_roll::PianoRoll,
+    piano_roll_open: bool,
     executable: PathBuf,
     quit_gate: Option<QuitGate>,
     backend: Backend,
     view: Snapshot,
-    busy: bool,
+    actions_in_flight: usize,
+    busy_since: Option<Instant>,
+    busy_visible: bool,
     pending_after_save: Option<Transition>,
     awaiting_save: bool,
+    awaiting_close: bool,
+    startup: startup::Startup,
     exiting: bool,
     confirm: Option<Confirm>,
     file: Option<FilePicker>,
@@ -197,6 +350,7 @@ struct App {
     plugin_search: String,
     bindings: Vec<Binding>,
     commands_open: bool,
+    history_window: primitives::history::HistoryWindow,
     command_search: String,
     rebinding: Option<usize>,
     rename: String,
@@ -211,6 +365,7 @@ struct App {
 }
 impl App {
     fn new(context: egui::Context, executable: PathBuf) -> Self {
+        primitives::project::install_font(&context);
         let mut style = (*context.global_style()).clone();
         style.visuals = egui::Visuals::dark();
         style.visuals.panel_fill = colors::BACKGROUND;
@@ -234,13 +389,21 @@ impl App {
         style.spacing.interact_size.y = 24.0;
         context.set_global_style(style);
         Self {
+            transport_ui: transport::TransportUi::default(),
+            arrangement_ui: arrangement::ArrangementUi::default(),
+            piano_roll: piano_roll::PianoRoll::default(),
+            piano_roll_open: false,
             quit_gate: None,
             backend: Backend::spawn(executable.clone(), move || context.request_repaint()),
             executable,
             view: Snapshot::default(),
-            busy: false,
+            actions_in_flight: 0,
+            busy_since: None,
+            busy_visible: false,
             pending_after_save: None,
             awaiting_save: false,
+            awaiting_close: false,
+            startup: startup::Startup::default(),
             exiting: false,
             confirm: None,
             file: None,
@@ -254,6 +417,7 @@ impl App {
             plugin_search: String::new(),
             bindings: commands(),
             commands_open: false,
+            history_window: primitives::history::HistoryWindow::default(),
             command_search: String::new(),
             rebinding: None,
             rename: String::new(),
@@ -268,17 +432,30 @@ impl App {
         }
     }
     fn send(&mut self, action: Action) {
-        if matches!(action, Action::Disable) {
+        if matches!(action, Action::Disable) && !self.view.recording {
             self.backend
                 .silence
                 .store(true, std::sync::atomic::Ordering::Release);
         }
-        if self.busy && !matches!(action, Action::Disable) {
+        if self.busy_since.is_some()
+            && !matches!(
+                action,
+                Action::Disable | Action::Transport(TransportAction::Stop)
+            )
+        {
             return;
         }
+        let loop_range = match &action {
+            Action::Transport(TransportAction::SetLoopRange(range)) => Some(*range),
+            _ => None,
+        };
         match self.backend.send.send(action) {
             Ok(()) => {
-                self.busy = true;
+                self.actions_in_flight += 1;
+                self.busy_since.get_or_insert_with(Instant::now);
+                if let Some(range) = loop_range {
+                    self.transport_ui.pending_loop_range = Some(range);
+                }
                 self.status.clear();
             }
             Err(_) => {
@@ -289,14 +466,36 @@ impl App {
         }
     }
     fn enabled(&self, command: Command) -> bool {
-        if (self.busy && command != Command::Disable)
-            || self.confirm.is_some()
-            || self.file.is_some()
-        {
+        let may_interrupt = matches!(command, Command::Disable | Command::Stop)
+            || command == Command::PlayStop && self.play_stop_command() == Command::Stop;
+        (self.busy_since.is_none() || may_interrupt) && self.command_available(command, true)
+    }
+    fn command_available(&self, command: Command, wait_for_transport: bool) -> bool {
+        if self.confirm.is_some() || self.file.is_some() {
             return false;
         }
         use Command::*;
+        if !self.view.project_open {
+            return self.startup.command_available(command, &self.view);
+        }
+        if self.view.recording {
+            match command {
+                New | Open | Close | Save | SaveAs | ApplySettings => return false,
+                RemoveTrack | Instrument | Restart if self.view.selected == self.view.armed => {
+                    return false;
+                }
+                _ => {}
+            }
+        }
         match command {
+            command if command.is_clip() => self.clip_command_enabled(command),
+            Undo => self.view.edit_history.available && self.view.edit_history.cursor > 0,
+            Redo => {
+                self.view.edit_history.available
+                    && self.view.edit_history.cursor < self.view.edit_history.labels.len()
+            }
+            OpenRecent | LocateRecent | RemoveRecent | ShowRecovery | RecoverProject
+            | DiscardRecovery | RecoveryLater => false,
             AddTrack => self.view.project.tracks.len() < crate::project::MAX_TRACKS,
             RemoveTrack | MoveUp | MoveDown | PreviousTrack | NextTrack => {
                 let index = self
@@ -329,15 +528,20 @@ impl App {
             Editor => self.view.track().is_some_and(|t| t.plugin.is_some()) && !self.view.failed,
             CloseEditor => self.view.editor,
             Enable => {
-                self.view.track().is_some_and(|t| t.plugin.is_some())
-                    && !self.view.active
-                    && !self.view.failed
+                !self.view.active
+                    && !self.view.project.audio.device.is_empty()
+                    && !self.view.project.audio.midi.is_empty()
             }
             Disable => self.view.active,
             Restart => self.view.track().is_some_and(|t| t.plugin.is_some()),
             Rescan => self.scan_job.is_none(),
             Refresh => self.device_job.is_none(),
             ApplySettings => self.settings_open,
+            Play | Record | ArmTrack | RecordMerge | RecordReplace | RecordNewTake | Stop
+            | PlayStop | ReturnToStart | ToggleLoop | ToggleClick | ToggleCountIn | TempoMap
+            | TransportSettings | KeepStopPosition | ReturnStopPosition => {
+                self.transport_enabled(command, wait_for_transport)
+            }
             _ => true,
         }
     }
@@ -347,18 +551,26 @@ impl App {
             .shortcut
             .map(|s| ui.ctx().format_shortcut(&s))
             .unwrap_or_default();
-        ui.add_enabled(self.enabled(command), egui::Button::new(binding.title))
-            .on_hover_text(if hint.is_empty() {
-                binding.title.into()
-            } else {
-                format!("{} ({hint})", binding.title)
-            })
-            .clicked()
+        ui.add_enabled(
+            self.command_available(command, false),
+            egui::Button::new(binding.title),
+        )
+        .on_hover_text(if hint.is_empty() {
+            binding.title.into()
+        } else {
+            format!("{} ({hint})", binding.title)
+        })
+        .clicked()
+            && self.enabled(command)
     }
     fn has_unsaved_changes(&self) -> bool {
         self.view.dirty || self.view.track().is_some_and(|t| t.name != self.rename)
     }
     fn transition(&mut self, next: Transition, ctx: &egui::Context) {
+        if self.view.recording {
+            self.status = "Stop recording before leaving the project.".into();
+            return;
+        }
         if self.has_unsaved_changes() {
             self.confirm = Some(Confirm::Unsaved(next));
         } else {
@@ -376,8 +588,13 @@ impl App {
                 self.send(Action::Open(path));
             }
             Transition::Close => {
-                self.exiting = true;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                if self.has_unsaved_changes() {
+                    self.awaiting_close = true;
+                    self.send(Action::DiscardBeforeClose);
+                } else {
+                    self.exiting = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
             }
         }
     }
@@ -391,7 +608,10 @@ impl App {
             self.confirm = Some(Confirm::Retained(as_new));
             return;
         }
-        if !as_new && let Some(path) = self.view.path.clone() {
+        if !as_new
+            && !self.view.read_only
+            && let Some(path) = self.view.path.clone()
+        {
             self.awaiting_save = true;
             self.send(Action::Save {
                 path,
@@ -400,7 +620,26 @@ impl App {
                 use_retained: self.retained_approved.clone(),
             });
         } else {
-            self.file = Some(FilePicker::new(FileMode::Save, self.view.path.as_ref()));
+            let mut picker = FilePicker::new(
+                FileMode::Save,
+                self.view
+                    .path
+                    .as_ref()
+                    .or(self.view.recovered_from.as_ref()),
+            );
+            if let Some(stem) = self
+                .view
+                .recovered_from
+                .as_ref()
+                .and_then(|p| p.file_stem())
+            {
+                picker.name = format!("{}-recovered.clef", stem.to_string_lossy());
+            } else if self.view.read_only
+                && let Some(stem) = self.view.path.as_ref().and_then(|p| p.file_stem())
+            {
+                picker.name = format!("{}-copy.clef", stem.to_string_lossy());
+            }
+            self.file = Some(picker);
         }
     }
     fn refresh_devices(&mut self, ctx: egui::Context) {
@@ -430,11 +669,21 @@ impl App {
         }
         use Command::*;
         match command {
+            CreateClip | SelectAllClips | DuplicateClips | DeleteClips | SplitClips
+            | MoveClipsLeft | MoveClipsRight | MoveClipsUp | MoveClipsDown | ResizeClipShorter
+            | ResizeClipLonger | LoopClipShorter | LoopClipLonger => {
+                self.dispatch_clip_command(command)
+            }
             New => self.transition(Transition::New, ctx),
             Open => self.file = Some(FilePicker::new(FileMode::Open, self.view.path.as_ref())),
             Save => self.save(false),
             SaveAs => self.save(true),
+            Undo => self.seek_history(self.view.edit_history.cursor - 1),
+            Redo => self.seek_history(self.view.edit_history.cursor + 1),
+            EditHistory => self.history_window.open = true,
             Close => self.transition(Transition::Close, ctx),
+            OpenRecent | LocateRecent | RemoveRecent | ShowRecovery | RecoverProject
+            | DiscardRecovery | RecoveryLater => self.dispatch_startup(command, ctx),
             Settings => {
                 self.settings = self.view.project.audio.clone();
                 self.settings_open = true;
@@ -511,10 +760,21 @@ impl App {
                 }
             }
             ApplySettings => self.send(Action::Settings(self.settings.clone())),
+            Play | Record | ArmTrack | RecordMerge | RecordReplace | RecordNewTake | Stop
+            | PlayStop | ReturnToStart | ToggleLoop | ToggleClick | ToggleCountIn | TempoMap
+            | TransportSettings | KeepStopPosition | ReturnStopPosition => {
+                self.dispatch_transport(command)
+            }
         }
     }
     fn poll(&mut self, ctx: &egui::Context) {
         while let Ok((view, completed)) = self.backend.receive.try_recv() {
+            if self.history_window.pending
+                && let Some(success) = completed
+            {
+                self.history_window.pending = false;
+                self.history_window.error = (!success).then(|| view.message.clone());
+            }
             if self.view.selected != view.selected
                 || self.rename.is_empty()
                 || self.view.track().is_none_or(|t| t.name == self.rename)
@@ -532,9 +792,35 @@ impl App {
                     })
                 });
             }
+            self.arrangement_ui.acknowledge(
+                self.view.project_epoch != view.project_epoch,
+                completed.is_some(),
+                view.clip_edit_selection.as_deref(),
+                &view.project.midi,
+                view.project.arrangement_view,
+            );
+            let project_changed = self.view.project_epoch != view.project_epoch;
+            let midi_changed = !std::sync::Arc::ptr_eq(&self.view.project.midi, &view.project.midi);
+            self.piano_roll
+                .complete(&view, completed.is_some(), project_changed, midi_changed);
+            if project_changed {
+                self.piano_roll_open = false;
+            }
             self.view = view;
+            self.startup.update(&self.view);
             if let Some(success) = completed {
-                self.busy = false;
+                self.actions_in_flight -= 1;
+                if self.actions_in_flight == 0 {
+                    self.busy_since = None;
+                }
+                self.transport_ui.pending_loop_range = None;
+                if self.awaiting_close {
+                    self.awaiting_close = false;
+                    if success {
+                        self.exiting = true;
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                }
                 if self.awaiting_save {
                     self.awaiting_save = false;
                     self.retained_approved.clear();
@@ -601,13 +887,35 @@ impl App {
             }
             return;
         }
+        let text_has_focus = ctx
+            .memory(|memory| memory.focused())
+            .is_some_and(|id| egui::TextEdit::load_state(ctx, id).is_some());
         let selected = self
             .bindings
             .iter()
             .filter(|b| self.enabled(b.command))
+            .filter(|b| !b.command.is_clip() || !text_has_focus && self.arrangement_ui.focused(ctx))
+            .filter(|b| !text_has_focus || !matches!(b.command, Command::Undo | Command::Redo))
             .find_map(|b| {
                 b.shortcut
-                    .filter(|s| ctx.input_mut(|i| i.consume_shortcut(s)))
+                    .filter(|s| {
+                        (s.modifiers != Modifiers::NONE
+                            || !ctx.output(|output| output.ime.is_some()))
+                            && ctx.input_mut(|i| {
+                                if !b.command.is_clip() && !matches!(b.command, Command::Undo | Command::Redo) {
+                                    return i.consume_shortcut(s);
+                                }
+                                let mut consumed = false;
+                                i.events.retain(|event| {
+                                    let matched = matches!(event, egui::Event::Key {
+                                        key, modifiers, pressed: true, ..
+                                    } if *key == s.logical_key && modifiers.matches_exact(s.modifiers));
+                                    consumed |= matched;
+                                    !matched
+                                });
+                                consumed
+                            })
+                    })
                     .map(|_| b.command)
             });
         if let Some(command) = selected {
@@ -721,7 +1029,7 @@ impl App {
                                 ui.colored_label(colors::SECONDARY, &entry.reason);
                                 if ui
                                     .add_enabled(
-                                        !self.busy,
+                                        self.busy_since.is_none(),
                                         egui::Button::new("Reactivate Plugin…"),
                                     )
                                     .clicked()
@@ -743,21 +1051,40 @@ impl App {
     fn main_surface(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let mut selected = None;
         ui.horizontal_wrapped(|ui| {
-            for command in [
-                Command::New,
-                Command::Open,
-                Command::Save,
-                Command::SaveAs,
-                Command::Settings,
-                Command::Commands,
-            ] {
+            for command in [Command::New, Command::Open, Command::Save, Command::SaveAs] {
+                if self.button(ui, command) {
+                    selected = Some(command);
+                }
+            }
+            let commands = [Command::Undo, Command::Redo, Command::EditHistory];
+            let rows = commands.map(|command| {
+                let binding = self
+                    .bindings
+                    .iter()
+                    .find(|binding| binding.command == command)
+                    .unwrap();
+                let label = self.command_label(binding);
+                let shortcut = binding
+                    .shortcut
+                    .map(|shortcut| ctx.format_shortcut(&shortcut))
+                    .unwrap_or_default();
+                (label, shortcut, self.enabled(command))
+            });
+            if let Some(index) = primitives::history::edit_menu(
+                ui,
+                rows.each_ref().map(|(label, shortcut, enabled)| {
+                    (label.as_str(), shortcut.as_str(), *enabled)
+                }),
+            ) {
+                selected = Some(commands[index]);
+            }
+            for command in [Command::Settings, Command::Commands] {
                 if self.button(ui, command) {
                     selected = Some(command);
                 }
             }
         });
-        ui.add_space(20.0);
-        ui.horizontal(|ui| {
+        let project_title = |ui: &mut egui::Ui| {
             ui.heading(
                 self.view
                     .path
@@ -769,9 +1096,9 @@ impl App {
             if self.has_unsaved_changes() {
                 ui.colored_label(colors::SECONDARY, "Unsaved changes");
             }
-        });
-        ui.add_space(12.0);
-        ui.horizontal_wrapped(|ui| {
+        };
+        let mut audio_control = |ui: &mut egui::Ui| {
+            ui.set_min_height(ui.spacing().interact_size.y);
             let command = if self.view.active {
                 Command::Disable
             } else {
@@ -792,49 +1119,55 @@ impl App {
                     "Audio stopped"
                 },
             );
-            if self.busy {
+            if self.busy_visible {
                 ui.spinner();
                 ui.label("Working…");
             }
-        });
-        ui.add_space(12.0);
-        let mut choose = None;
-        let height = (ui.available_height() - 140.0).max(110.0);
-        let left_width = if ui.available_width() >= 920.0 {
-            320.0
-        } else {
-            240.0
         };
+        if self.piano_roll_open {
+            ui.horizontal_wrapped(|ui| {
+                project_title(ui);
+                audio_control(ui);
+            });
+        } else {
+            ui.add_space(20.0);
+            ui.horizontal(project_title);
+            ui.add_space(12.0);
+            ui.horizontal_wrapped(audio_control);
+        }
+        ui.add_space(12.0);
+        selected = self.transport_bar(ui).or(selected);
+        ui.add_space(8.0);
+        let mut choose = None;
+        let mut transport_action = None;
+        let height = (ui.available_height() - 78.0).max(150.0);
+        let arrangement_height = if self.piano_roll_open {
+            self.piano_roll.split_height(height)
+        } else {
+            height
+        };
+        let details_width = if ui.available_width() >= 920.0 {
+            292.0
+        } else {
+            244.0
+        };
+        let arrangement_width =
+            (ui.available_width() - details_width - ui.spacing().item_spacing.x).max(300.0);
         ui.horizontal_top(|ui| {
+            ui.vertical(|ui| {
+                ui.set_width(arrangement_width);
+                let result = self.timeline_surface(ui, arrangement_height, arrangement_width);
+                choose = result.0;
+                transport_action = result.2;
+                if result.1 { selected = Some(Command::AddTrack); }
+            });
             egui::Frame::new().fill(colors::PANEL).inner_margin(12.0).show(ui, |ui| { ui.vertical(|ui| {
-                ui.set_width(left_width - 24.0);
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(egui::RichText::new(format!("Tracks ({})",self.view.project.tracks.len())).size(16.0));
-                    if self.button(ui,Command::AddTrack) { selected = Some(Command::AddTrack); }
-                });
-                egui::ScrollArea::vertical().id_salt("tracks").max_height(height-45.0).show(ui,|ui| {
-                    for (index, track) in self.view.project.tracks.iter().enumerate() {
-                        let state = self.view.state(track.id).map(|s|s.status.as_str()).unwrap_or("Empty");
-                        let plugin = track.plugin.as_ref().map(|p|format!("{} · {}",p.name,p.format)).unwrap_or_else(||"No instrument".into());
-                        let is_selected = self.view.selected == Some(track.id);
-                        let response=Self::track_row(ui,&track.name,&format!("{plugin} · {state}"),left_width-24.0,is_selected,!self.busy && self.confirm.is_none(),self.keyboard_mode);
-                        if self.track_focus == Some(track.id) { response.request_focus(); response.scroll_to_me(Some(egui::Align::Center)); self.track_focus = None; }
-                        if response.clicked() { choose = Some(track.id); }
-                        if response.double_clicked() { choose = Some(track.id); self.rename_focus = true; }
-                        if response.has_focus() {
-                            if ui.input_mut(|i|i.consume_key(Modifiers::NONE,Key::ArrowDown)) && index+1 < self.view.project.tracks.len() {choose=Some(self.view.project.tracks[index+1].id);}
-                            if ui.input_mut(|i|i.consume_key(Modifiers::NONE,Key::ArrowUp)) && index>0 {choose=Some(self.view.project.tracks[index-1].id);}
-                        }
-                    }
-                });
-            }); });
-            egui::Frame::new().fill(colors::PANEL).inner_margin(12.0).show(ui, |ui| { ui.vertical(|ui| {
-                ui.set_width((ui.available_width()-24.0).max(240.0));
-                egui::ScrollArea::vertical().id_salt("track-details").max_height(height).show(ui,|ui| {
+                ui.set_width(details_width - 24.0);
+                egui::ScrollArea::vertical().id_salt("track-details").max_height(arrangement_height).show(ui,|ui| {
                     if let Some(track) = self.view.track().cloned() {
                         ui.label(egui::RichText::new("Selected instrument track").size(16.0));
                         let label = ui.label("Track name");
-                        let edit = ui.add_enabled(!self.busy,egui::TextEdit::singleline(&mut self.rename).id_salt(("track-name",track.id)).desired_width(f32::INFINITY)).labelled_by(label.id);
+                        let edit = ui.add_enabled(!self.busy_visible,egui::TextEdit::singleline(&mut self.rename).id_salt(("track-name",track.id)).desired_width(f32::INFINITY)).labelled_by(label.id);
                         if self.rename_focus { edit.request_focus(); self.rename_focus=false; }
                         if edit.has_focus() && ui.input_mut(|i|i.consume_key(Modifiers::NONE,Key::Escape)) { self.rename=track.name.clone(); }
                         if edit.lost_focus() && ui.input(|i|i.key_pressed(Key::Enter)) { selected=Some(Command::Rename); }
@@ -850,7 +1183,8 @@ impl App {
                         ui.add_space(12.0);
                         let audio = &self.view.project.audio;
                         let midi = self.devices.midi.iter().find(|(id,_)| id == &audio.midi).map(|(_,n)| n.as_str()).unwrap_or("MIDI input unavailable / not selected");
-                        ui.label(format!("MIDI: {midi} / selected track"));
+                        let target = self.view.armed.and_then(|id| self.view.project.tracks.iter().find(|track| track.id == id));
+                        ui.label(format!("MIDI: {midi} / {}", target.map_or("selected track", |track| track.name.as_str())));
                         ui.label(format!("Output: stereo {}–{}",audio.pair[0]+1,audio.pair[1]+1));
                     } else {
                         ui.label("Add an instrument track, choose a plugin, then play the selected track.");
@@ -858,8 +1192,30 @@ impl App {
                 });
             }); });
         });
-        if let Some(id) = choose {
-            self.select_track(id);
+        if let Some(id) = self.arrangement_ui.open_roll.take()
+            && let Some((_, clip)) = self.view.project.midi.find_clip(id)
+        {
+            self.piano_roll.open(id, clip);
+            self.piano_roll_open = true;
+            ui.ctx().request_repaint();
+        }
+        if self.piano_roll_open {
+            self.piano_roll.gutter(ui, height);
+            let editor_height = ui.available_height();
+            let enabled = self.view.edit_history.available
+                && self.busy_since.is_none()
+                && self.confirm.is_none()
+                && self.file.is_none();
+            if let Some(action) = self.piano_roll.show(
+                ui,
+                editor_height,
+                &self.view,
+                &self.arrangement_ui.selected,
+                enabled,
+                &mut self.piano_roll_open,
+            ) {
+                self.send(action);
+            }
         }
         egui::ScrollArea::vertical()
             .id_salt("session-status")
@@ -883,9 +1239,26 @@ impl App {
                 if !self.view.quarantine_error.is_empty() {
                     ui.colored_label(colors::DANGER, &self.view.quarantine_error);
                 }
+                if !self.view.history_message.is_empty() {
+                    ui.colored_label(colors::DANGER, &self.view.history_message);
+                }
                 ui.add_space(8.0);
                 if !self.view.actual.is_empty() {
                     ui.colored_label(colors::SECONDARY, &self.view.actual);
+                }
+                if self.view.recording {
+                    let label = match self.view.transport.phase {
+                        clef_session::TransportPhase::CountingIn => "Count-in",
+                        clef_session::TransportPhase::Playing
+                            if self.view.recording_region.is_some() =>
+                        {
+                            "Recording MIDI"
+                        }
+                        _ => "Preparing MIDI recording",
+                    };
+                    ui.colored_label(colors::DANGER, label);
+                } else if let Some(reason) = self.view.record_unavailable {
+                    ui.colored_label(colors::SECONDARY, reason);
                 }
                 let message = if self.status.is_empty() {
                     &self.view.message
@@ -901,6 +1274,12 @@ impl App {
                     message,
                 );
             });
+        if let Some(action) = transport_action {
+            self.send(Action::Transport(action));
+        }
+        if let Some(id) = choose {
+            self.select_track(id);
+        }
         if let Some(command) = selected {
             self.dispatch(command, ctx);
         }
@@ -920,7 +1299,7 @@ impl App {
             let search = self.plugin_search.to_lowercase();
             egui::ScrollArea::vertical().max_height(320.0).show(ui,|ui| {
                 for plugin in &self.catalog.plugins {
-                    if format!("{} {}",plugin.name,plugin.format).to_lowercase().contains(&search) && ui.add_enabled(!self.busy && !self.view.quarantine.iter().any(|e| crate::quarantine::same(&e.plugin,plugin)),egui::Button::new(format!("{} · {}{}",plugin.name,plugin.format,if self.view.quarantine.iter().any(|e| crate::quarantine::same(&e.plugin,plugin)) {" · Quarantined"} else {""})).frame(false)).on_hover_text(plugin.path.display().to_string()).clicked() { picked = Some(plugin.clone()); }
+                    if format!("{} {}",plugin.name,plugin.format).to_lowercase().contains(&search) && ui.add_enabled(self.busy_since.is_none() && !self.view.quarantine.iter().any(|e| crate::quarantine::same(&e.plugin,plugin)),egui::Button::new(format!("{} · {}{}",plugin.name,plugin.format,if self.view.quarantine.iter().any(|e| crate::quarantine::same(&e.plugin,plugin)) {" · Quarantined"} else {""})).frame(false)).on_hover_text(plugin.path.display().to_string()).clicked() { picked = Some(plugin.clone()); }
                 }
                 if self.catalog.plugins.is_empty() && self.scan_job.is_none() { ui.label("No instruments found. Install a VST3 or CLAP instrument, then Rescan."); }
             });
@@ -993,6 +1372,7 @@ impl App {
         let mut navigate = None;
         let title = match picker.mode {
             FileMode::Open => "Open Project",
+            FileMode::Locate => "Locate Project",
             FileMode::Save => "Save Project",
         };
         egui::Window::new(title)
@@ -1072,6 +1452,11 @@ impl App {
             self.file = None;
             match mode {
                 FileMode::Open => self.transition(Transition::Open(path), ctx),
+                FileMode::Locate => {
+                    if let Some(old) = self.startup.selected.clone() {
+                        self.send(Action::RelinkRecent(old, path));
+                    }
+                }
                 FileMode::Save => {
                     if path.exists() {
                         self.confirm = Some(Confirm::Overwrite(path));
@@ -1101,6 +1486,9 @@ impl App {
                 "Retry this unavailable instrument from retained state? Quarantined plugins require Reactivate first."
             }
             Confirm::Overwrite(_) => "Replace the existing project file?",
+            Confirm::SplitClips(_, _) => {
+                "This cut crosses MIDI notes. Split the notes at the playhead?"
+            }
             Confirm::Remove(_) => "Remove this track and discard its unsaved instrument state?",
             Confirm::Reactivate(_) => {
                 "Reactivate this plugin for all affected tracks? Unsnapshotted edits in terminated instances cannot be restored. Tracks remain unloaded until explicit use."
@@ -1145,6 +1533,8 @@ impl App {
                         "Save"
                     } else if matches!(confirm, Confirm::Retained(_)) {
                         "Save Using Retained State"
+                    } else if matches!(confirm, Confirm::SplitClips(_, _)) {
+                        "Split Notes"
                     } else {
                         "Continue"
                     })
@@ -1160,6 +1550,11 @@ impl App {
                 }
             });
         });
+        if matches!(confirm, Confirm::SplitClips(_, _))
+            && ctx.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape))
+        {
+            choice = Some(2);
+        }
         if let Some(choice) = choice {
             self.resolve_confirmation(choice, ctx);
         }
@@ -1192,6 +1587,7 @@ impl App {
             }
             Confirm::Remove(id) => self.send(Action::RemoveTrack(id)),
             Confirm::Reactivate(plugin) => self.send(Action::Reactivate(plugin)),
+            Confirm::SplitClips(expected, edit) => self.send_clip_edit(expected, edit),
             Confirm::Retained(as_new) => {
                 self.retained_approved = self
                     .view
@@ -1214,6 +1610,31 @@ impl App {
         }
     }
 
+    fn seek_history(&mut self, target: usize) {
+        self.history_window.error = None;
+        self.send(Action::SeekHistory {
+            version: self.view.edit_history.version,
+            target,
+        });
+        self.history_window.pending = self.busy_since.is_some();
+    }
+
+    fn command_label(&self, binding: &Binding) -> String {
+        let history = &self.view.edit_history;
+        let edit = match binding.command {
+            Command::Undo => history
+                .cursor
+                .checked_sub(1)
+                .and_then(|index| history.labels.get(index)),
+            Command::Redo => history.labels.get(history.cursor),
+            _ => None,
+        };
+        edit.map_or_else(
+            || binding.title.into(),
+            |edit| format!("{} {edit}", binding.title),
+        )
+    }
+
     fn command_window(&mut self, ctx: &egui::Context) {
         if !self.commands_open {
             return;
@@ -1226,9 +1647,10 @@ impl App {
             ui.label("Bindings apply to this Clef session. Set: press Command/Ctrl/Option + key; Escape cancels.");
             egui::ScrollArea::vertical().max_height(420.0).show(ui,|ui| {
                 for (index,binding) in self.bindings.iter().enumerate() {
-                    if !binding.title.to_lowercase().contains(&self.command_search.to_lowercase()) { continue; }
+                    let title = self.command_label(binding);
+                    if !title.to_lowercase().contains(&self.command_search.to_lowercase()) { continue; }
                     ui.horizontal(|ui| {
-                        if ui.add_enabled(self.enabled(binding.command),egui::Button::new(binding.title)).clicked() { selected = Some(binding.command); }
+                        if ui.add_enabled(self.enabled(binding.command),egui::Button::new(title)).clicked() { selected = Some(binding.command); }
                         ui.label(binding.shortcut.map(|s| ctx.format_shortcut(&s)).unwrap_or_else(|| "Unbound".into()));
                         if ui.button(if self.rebinding == Some(index) { "Press keys…" } else { "Set" }).clicked() { rebind = Some(index); }
                     });
@@ -1260,7 +1682,13 @@ impl eframe::App for App {
             }
         });
         self.poll(ctx);
+        if self.confirm.is_none() && self.file.is_none() {
+            self.arrangement_ui.cancel(ctx);
+        }
         self.shortcuts(ctx);
+        self.busy_visible = self
+            .busy_since
+            .is_some_and(|started| started.elapsed() >= BUSY_FEEDBACK_DELAY);
         let name = self
             .view
             .path
@@ -1268,36 +1696,98 @@ impl eframe::App for App {
             .and_then(|p| p.file_stem())
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "Untitled".into());
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
-            "{}{} — Clef",
-            name,
-            if self.has_unsaved_changes() { " *" } else { "" }
-        )));
+        let title = if self.view.project_open {
+            format!(
+                "{}{} — Clef",
+                name,
+                if self.has_unsaved_changes() { " *" } else { "" }
+            )
+        } else {
+            "Clef".into()
+        };
+        if !ctx.input(|i| i.viewport().title.as_deref() == Some(title.as_str())) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+        }
         let os_quit = self.quit_gate.is_some() && unsafe { clef_take_quit_request() };
         if (os_quit || ctx.input(|i| i.viewport().close_requested())) && !self.exiting {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            if !self.busy && self.confirm.is_none() {
+            if self.busy_since.is_none() && self.confirm.is_none() {
                 self.transition(Transition::Close, ctx);
             }
         }
     }
     fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        egui::Frame::new().inner_margin(12.0).show(ui, |ui| {
-            self.main_surface(ui, &ctx);
-        });
+        if self.view.project_open {
+            egui::Frame::new().inner_margin(12.0).show(ui, |ui| {
+                self.main_surface(ui, &ctx);
+            });
+        } else {
+            self.startup_surface(ui, &ctx);
+        }
         self.plugin_picker(&ctx);
         self.settings(&ctx);
+        self.transport_windows(&ctx);
         self.command_window(&ctx);
+        let history_enabled =
+            self.view.edit_history.available && self.enabled(Command::EditHistory);
+        if self.view.project_open
+            && self.history_window.open
+            && let Some(target) =
+                self.history_window
+                    .show(&ctx, &self.view.edit_history, history_enabled)
+        {
+            self.seek_history(target);
+        }
         self.files(&ctx);
         self.quarantine_windows(&ctx);
         self.confirmation(&ctx);
+        if let Some(started) = self.busy_since
+            && !self.busy_visible
+        {
+            ctx.request_repaint_after(BUSY_FEEDBACK_DELAY.saturating_sub(started.elapsed()));
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redo_shortcut_never_falls_through_to_undo() {
+        let ctx = egui::Context::default();
+        let mut app = App::new(ctx.clone(), PathBuf::new());
+        app.view.project_open = true;
+        app.view.edit_history = clef_session::HistoryView {
+            labels: vec!["Add Track"],
+            cursor: 1,
+            available: true,
+            ..Default::default()
+        };
+        let press_z = |app: &mut App, modifiers| {
+            let _ = ctx.run_ui(
+                egui::RawInput {
+                    events: vec![egui::Event::Key {
+                        key: Key::Z,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers,
+                    }],
+                    ..Default::default()
+                },
+                |_| app.shortcuts(&ctx),
+            );
+        };
+        press_z(
+            &mut app,
+            Modifiers::MAC_CMD | Modifiers::COMMAND | Modifiers::SHIFT,
+        );
+        assert_eq!(app.actions_in_flight, 0);
+        press_z(&mut app, Modifiers::MAC_CMD | Modifiers::COMMAND);
+        assert_eq!(app.actions_in_flight, 1);
+    }
     #[test]
     fn dirty_project_transition_waits_for_confirmation_and_cancel_keeps_it() {
         let context = egui::Context::default();
@@ -1308,11 +1798,11 @@ mod tests {
             app.confirm,
             Some(Confirm::Unsaved(Transition::New))
         ));
-        assert!(!app.busy);
+        assert!(app.busy_since.is_none());
         app.resolve_confirmation(2, &context);
         assert!(app.view.dirty);
         assert!(app.confirm.is_none());
-        assert!(!app.busy);
+        assert!(app.busy_since.is_none());
     }
     #[test]
     fn save_before_close_waits_for_success_and_failed_save_cancels_close() {
@@ -1334,11 +1824,11 @@ mod tests {
             use_retained: Vec::new(),
         });
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-        while app.busy && std::time::Instant::now() < deadline {
+        while app.busy_since.is_some() && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(10));
             app.poll(&context);
         }
-        assert!(!app.busy);
+        assert!(app.busy_since.is_none());
         assert!(!app.exiting);
         assert!(app.pending_after_save.is_none());
         assert!(app.view.dirty);
@@ -1352,6 +1842,12 @@ mod tests {
         app.view.dirty = true;
         app.transition(Transition::Close, &context);
         app.resolve_confirmation(1, &context);
+        assert!(!app.exiting);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !app.exiting && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+            app.poll(&context);
+        }
         assert!(app.exiting);
     }
     #[test]
@@ -1374,5 +1870,114 @@ mod tests {
             Some(Confirm::Unsaved(Transition::Close))
         ));
         assert!(!app.exiting);
+    }
+    #[test]
+    fn switching_arrangement_clip_does_not_flash_a_widget_rect_warning() {
+        let context = egui::Context::default();
+        let mut app = App::new(context.clone(), PathBuf::new());
+        app.view.project_open = true;
+        app.view.project.tracks = vec![
+            crate::project::Track {
+                id: 1,
+                name: "One".into(),
+                plugin: None,
+                state: Vec::new(),
+            },
+            crate::project::Track {
+                id: 2,
+                name: "Two".into(),
+                plugin: None,
+                state: Vec::new(),
+            },
+        ];
+        app.view.project.next_id = 3;
+        for (track, tick) in [(1u64, 0u64), (2, 240)] {
+            clef_model::midi::Arrangement::record(
+                std::sync::Arc::make_mut(&mut app.view.project.midi),
+                track,
+                clef_model::midi::Mode::Merge,
+                [0, 960],
+                vec![vec![clef_model::midi::Event {
+                    tick,
+                    order: 1,
+                    message: clef_model::midi::Message::Note {
+                        channel: 2,
+                        key: 60,
+                        velocity: 90,
+                        end: tick + 240,
+                        release: 0,
+                        release_order: 2,
+                    },
+                }]],
+                false,
+            )
+            .unwrap();
+        }
+        let a = app.view.project.midi.clips(1)[0].id();
+        app.piano_roll
+            .open(a, app.view.project.midi.find_clip(a).unwrap().1);
+        app.piano_roll_open = true;
+        let render = |app: &mut App, events: Vec<egui::Event>| {
+            context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1280.0, 800.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| app.main_surface(ui, &context),
+            )
+        };
+        let first = render(&mut app, Vec::new());
+        let mut clip_centers = first
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(rect)
+                    if rect.fill == colors::PEACOCK
+                        && rect.rect.width() > 40.0
+                        && rect.rect.height() > 30.0 =>
+                {
+                    Some(rect.rect.center())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        clip_centers.sort_by(|left, right| left.y.total_cmp(&right.y));
+        assert_eq!(clip_centers.len(), 2, "both arrangement clips are visible");
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let mut warnings = Vec::new();
+        for (frame, center) in [0usize, 1, 0]
+            .into_iter()
+            .enumerate()
+            .map(|(frame, index)| (frame, clip_centers[index]))
+        {
+            for (step, events) in [
+                ("move", vec![egui::Event::PointerMoved(center)]),
+                ("press", vec![button(center, true)]),
+                ("release", vec![button(center, false)]),
+            ] {
+                let output = render(&mut app, events);
+                for clipped in output.shapes {
+                    if let egui::Shape::Rect(rect) = clipped.shape
+                        && rect.stroke.color == egui::Color32::RED
+                        && rect.stroke.width >= 2.0
+                    {
+                        warnings.push((frame, step, rect.rect));
+                    }
+                }
+            }
+        }
+        assert!(
+            warnings.is_empty(),
+            "switching clips painted widget-rect warnings: {warnings:?}"
+        );
     }
 }

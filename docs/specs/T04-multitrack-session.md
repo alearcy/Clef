@@ -1,6 +1,6 @@
 # T04 — Multitrack Session and Instrument Engine
 
-**Status:** Implemented and verified automatically/natively. The user confirmed playback on all eight instrument tracks with a physical MIDI keyboard. Specific listening checks remain open. UI remains provisional by explicit agreement; T18 stays separate.
+**Status:** Done (2026-11-18). The user accepted the multitrack workflow, audio continuity, and restored instrument sound. The provisional UI was accepted for T04. T18 owns the UI foundation and gallery.
 **Priority:** P0.
 **Date:** 2026-11-17
 **Task:** [T04](../../TASKS.md)
@@ -83,6 +83,10 @@ implementation behavior, not additional decisions already confirmed by the user.
   Loaded healthy tracks remain processed while audio is enabled, including their tails.
 - Keep at most one original plugin editor open at a time; changing selection closes the
   old editor without unloading its instrument. New/Open/Close release all session workers.
+  Loading an instrument must keep the worker's editor window hidden until its original
+  view is attached and an editor open has been requested, including with audio stopped.
+  On macOS, only the main Clef process appears in the Dock. Plugin workers can still
+  present their editor windows on request.
 
 ### Realtime mixing and device behavior
 
@@ -175,7 +179,7 @@ specification and that proposal require approval before implementation.
 
 ## Acceptance Criteria and Evidence Plan
 
-See [implementation verification](#implementation-verification-and-scope-confirmation--2026-11-18) for results and remaining gates. Eight tracks is the initial scale target;
+See [implementation verification](#implementation-verification-and-scope-confirmation--2026-11-18) for results. Eight tracks is the initial scale target;
 performance feasibility is measured rather than promised for arbitrary plugins.
 
 1. **Track editing:** add/remove/rename/reorder with stable IDs; selection and worker
@@ -259,7 +263,7 @@ performance feasibility is measured rather than promised for arbitrary plugins.
   this inline implementation provisional until the shared primitive/gallery batch lands.
 - No new DSP/hosting dependency or application-window technology was adopted.
 
-## Remaining Approval and Measurement Boundaries
+## User Acceptance and Measurement Boundaries
 
 - The original T04 specification and written UI proposal were approved on 2026-11-17;
   their approval is not pending again.
@@ -271,9 +275,10 @@ performance feasibility is measured rather than promised for arbitrary plugins.
   including a zero-miss observed interval after the catch-up correction. This is not a
   general performance budget. See [implementation verification](#implementation-verification-and-scope-confirmation--2026-11-18) for the measured configuration.
 - The physical keyboard trial confirmed playback on all eight tracks, selected-track-only
-  routing, and held-note and sustain release with tails. User confirmation remains open
-  for restored sound and uninterrupted audio, including healthy-track continuation
-  during another worker's failure.
+  routing, and held-note and sustain release with tails. On 2026-11-18, the user
+  accepted the audio continuity check, including healthy-track continuation during
+  another worker's failure. The user also confirmed by listening that the instrument
+  sound was restored after saving and reopening the project.
 
 ## Approval Gate
 
@@ -291,8 +296,8 @@ was started under T04.
 The user confirmed playing each of the eight MIDI tracks with a virtual instrument in
 the review project using a physical MIDI keyboard. The user also confirmed that only
 the selected track received new notes and that held notes and sustain released while
-preserving release tails. The remaining listening checks are listed in
-[Remaining Approval and Measurement Boundaries](#remaining-approval-and-measurement-boundaries).
+preserving release tails. The listening results are recorded in
+[User Acceptance and Measurement Boundaries](#user-acceptance-and-measurement-boundaries).
 
 Verification completed: 53 default automated tests passed, 9 native tests passed when
 explicitly selected, locked check/build, fmt check and warning-free clippy passed.
@@ -316,6 +321,34 @@ after reopening. The fixture quarantine entry was cleared through the UI after t
 
 Implementation and automated/native verification are complete for the agreed
 functional/provisional scope. Playback with a physical keyboard is confirmed on all
-eight tracks, with specific listening checks still open. Performance observations
-remain bounded to the recorded runs and presets. Gallery goldens and full UI contract
+eight tracks, and the user confirmed restored instrument sound after save/reopen.
+Performance observations remain bounded to the recorded runs and presets. Gallery goldens and full UI contract
 conformance belong to T18.
+
+### Empty editor window at worker startup (2026-11-18)
+
+With audio stopped, both Zebra2 and ZebraHZ VST3 workers showed a visible
+640×480 window before receiving an editor request. The eframe first-paint path
+orders the root window onscreen. Queueing a hide command during setup applies
+it after that paint. The before/after probe sampled window visibility, size and
+attached subviews on the worker main thread. With the fix, both workers stayed
+hidden before the first request, attached their original views and logged
+painting on both opens, and hid on both closes. This probe measured view
+lifecycle and plugin paint callbacks.
+
+The rebuilt bundle completed two open/close cycles with verified paint
+callbacks for Zebra2 VST3 and ZebraHZ in both VST3 and CLAP. The default
+suite passed 53 tests. Locked check/build, formatting and Clippy also passed.
+
+### Separate worker icons in the macOS Dock (2026-11-18)
+
+macOS reported regular activation policy for the running Clef app and both
+loaded instrument workers. The worker's eframe event loop now selects the
+macOS accessory policy through the already locked winit version. The main
+application retains its existing activation policy. The isolated Zebra2 CLAP
+and Pocket Strings VST3 workers reported accessory policy before, during,
+and after two editor open/close cycles each. Zebra2 also logged its paint
+callback on both opens.
+
+The user confirmed that the updated build showed a single Dock icon and
+accepted the editor and Dock checks as complete.

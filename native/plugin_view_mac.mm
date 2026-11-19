@@ -22,6 +22,14 @@ extern "C" void* clef_plugin_parent_create(void* raw_parent) noexcept {
         return surface;
     }
 }
+extern "C" void clef_plugin_parent_prepare(void* raw_surface) noexcept {
+    @autoreleasepool {
+        NSView* surface = static_cast<NSView*>(raw_surface);
+        [surface layoutSubtreeIfNeeded];
+        [surface displayIfNeeded];
+        [CATransaction flush];
+    }
+}
 extern "C" void clef_plugin_parent_detach(void* raw_surface) noexcept {
     @autoreleasepool {
         NSView* surface = static_cast<NSView*>(raw_surface);

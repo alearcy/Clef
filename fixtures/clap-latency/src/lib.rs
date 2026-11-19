@@ -30,6 +30,7 @@ pub struct Audio<'a> {
     delay: [f32; 257],
     cursor: usize,
     elapsed: u64,
+    expression: [u8; 16],
     latency: usize,
 }
 impl Plugin for Fixture {
@@ -99,6 +100,7 @@ impl<'a> PluginAudioProcessor<'a, Shared<'a>, Main<'a>> for Audio<'a> {
             delay: [0.0; 257],
             cursor: 0,
             elapsed: 0,
+            expression: [127; 16],
             latency: latency as usize,
         })
     }
@@ -142,12 +144,16 @@ impl<'a> PluginAudioProcessor<'a, Shared<'a>, Main<'a>> for Audio<'a> {
         for event in events.input {
             if let Some(CoreEventSpace::Midi(midi)) = event.as_core_event() {
                 let data = midi.data();
+                let channel = usize::from(data[0] & 0x0f);
+                if data[0] & 0xf0 == 0xb0 && data[1] == 11 {
+                    self.expression[channel] = data[2];
+                }
                 if data[0] & 0xf0 == 0x90 && data[2] > 0 {
                     let offset = event.header().time() as usize;
                     if offset >= count {
                         return Err(PluginError::Message("invalid MIDI offset"));
                     }
-                    input[offset] = 0.25;
+                    input[offset] = 0.25 * f32::from(self.expression[channel]) / 127.0;
                 }
             }
         }

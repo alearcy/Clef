@@ -16,6 +16,15 @@ snapshot: snapshots/arrangement.png
 
 # Arrangement
 
+## Piano Roll Entry
+
+Double-click a selected MIDI clip or press Enter on a focused clip to open the
+[Piano Roll](piano-roll.md) below the timeline. The dock shows every selected clip in
+its own lane. Double-clicking an empty arrangement lane continues to create a clip.
+
+The live Clef MIDI editor is documented under
+[T09 arrangement editing](multitrack-session.md#t09-arrangement-editing).
+
 ## Anatomy, top to bottom
 1. [Timeline rulers](timeline-rulers.md) with the locator band.
 2. **Global band**: tempo, marker, [chord](chord-lane.md) and arrangement lanes. Headers painted by `paintGlobalHeader`

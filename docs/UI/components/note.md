@@ -3,7 +3,7 @@ name: Note
 kind: component
 reference: composer::style::paintNote, NoteState
 status: shared
-impl: planned
+impl: app
 tokens: [capLight, oxblood, danger, text]
 used-in: [piano-roll, arrangement]
 snapshot: snapshots/kit-gallery.png
@@ -14,6 +14,13 @@ snapshot: snapshots/kit-gallery.png
 > Rust + egui. See [README](../README.md) and the [UI contract](../contract.md).
 
 # Note
+
+Clef's T10 roll uses `ui::primitives::piano_roll::paint_note` for rest, selection,
+primary resize handles, and an edit preview, with `note_focus` exposing pitch,
+channel and velocity to the keyboard and accessibility tree. The roll owns tick and
+pitch conversion through a shared viewport. Its current gallery cases include
+[selection](../snapshots/egui/t10-selection-760.png) and
+[snap preview](../snapshots/egui/t10-snap-preview-1024.png).
 
 ## Purpose
 A MIDI note in the roll, and inline in arrangement parts.
