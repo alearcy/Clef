@@ -138,6 +138,12 @@ impl From<&Track> for InstrumentState {
 }
 
 pub(super) enum Edit {
+    Mix {
+        target: clef_model::mixer::Target,
+        control: clef_model::mixer::Control,
+        before: i16,
+        after: i16,
+    },
     Track {
         slot: Box<TrackSlot>,
         added: bool,
@@ -214,6 +220,7 @@ impl Edit {
         match self {
             Self::Track { added: true, .. } => "Add Track",
             Self::Track { added: false, .. } => "Remove Track",
+            Self::Mix { control, .. } => control.label(),
             Self::Move { .. } => "Move Track",
             Self::Rename { .. } => "Rename Track",
             Self::Instrument { editor: true, .. } => "Edit Instrument State",
@@ -254,7 +261,7 @@ impl Edit {
                 Self::Tempo { before, after } => {
                     (before.capacity() + after.capacity()) * size_of::<Tempo>()
                 }
-                Self::Move { .. } | Self::Loop { .. } => 0,
+                Self::Move { .. } | Self::Loop { .. } | Self::Mix { .. } => 0,
             }
     }
 
@@ -302,6 +309,14 @@ impl Edit {
                         .tracks
                         .remove(&slot.track.id);
                 }
+            }
+            Self::Mix {
+                target,
+                control,
+                before,
+                after,
+            } => {
+                project.set_mix(*target, *control, if forward { *after } else { *before })?;
             }
             Self::Move { id, before, after } => {
                 let index = track_index(project, *id)?;

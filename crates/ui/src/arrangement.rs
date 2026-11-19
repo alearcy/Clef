@@ -702,6 +702,7 @@ mod tests {
                     id,
                     name: format!("Track {id}"),
                     plugin: None,
+                    mix: Default::default(),
                     state: vec![],
                 })
                 .collect();

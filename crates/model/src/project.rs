@@ -64,6 +64,8 @@ pub struct Track {
     pub id: u64,
     pub name: String,
     pub plugin: Option<Plugin>,
+    #[serde(default, skip_serializing_if = "crate::mixer::Channel::is_default")]
+    pub mix: crate::mixer::Channel,
     #[serde(skip)]
     pub state: Vec<u8>,
 }
@@ -80,6 +82,8 @@ pub struct Project {
     pub midi: Arc<Arrangement>,
     #[serde(default)]
     pub arrangement_view: ArrangementView,
+    #[serde(default)]
+    pub master: crate::mixer::Level,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,6 +125,8 @@ struct Metadata {
     midi: Arc<Arrangement>,
     #[serde(default, skip_serializing_if = "default_arrangement_view")]
     arrangement_view: ArrangementView,
+    #[serde(default, skip_serializing_if = "crate::mixer::Level::is_default")]
+    master: crate::mixer::Level,
     state_lengths: Vec<usize>,
 }
 
@@ -150,13 +156,58 @@ impl Default for Project {
             timeline: Timeline::default(),
             midi: Arc::default(),
             arrangement_view: ArrangementView::default(),
+            master: Default::default(),
         }
     }
 }
 
 impl Project {
+    pub fn mix(&self, target: crate::mixer::Target) -> Result<crate::mixer::Channel> {
+        match target {
+            crate::mixer::Target::Master => Ok(crate::mixer::Channel {
+                level: self.master,
+                ..Default::default()
+            }),
+            crate::mixer::Target::Track(id) => self
+                .tracks
+                .iter()
+                .find(|track| track.id == id)
+                .map(|track| track.mix)
+                .ok_or_else(|| "Mixer track is unavailable.".into()),
+        }
+    }
+
+    pub fn set_mix(
+        &mut self,
+        target: crate::mixer::Target,
+        control: crate::mixer::Control,
+        value: i16,
+    ) -> Result<()> {
+        if !target.accepts(control) {
+            return Err("Mixer control is unavailable for this channel.".into());
+        }
+        match target {
+            crate::mixer::Target::Master => {
+                let mut channel = self.mix(target)?;
+                channel.set(control, value)?;
+                self.master = channel.level;
+                Ok(())
+            }
+            crate::mixer::Target::Track(id) => self
+                .tracks
+                .iter_mut()
+                .find(|track| track.id == id)
+                .ok_or("Mixer track is unavailable.")?
+                .mix
+                .set(control, value),
+        }
+    }
+
     pub fn validate(&self) -> Result<()> {
         self.timeline.validate()?;
+        if !self.mix(crate::mixer::Target::Master)?.valid() {
+            return Err("Invalid master mixer settings.".into());
+        }
         self.arrangement_view.validate()?;
         self.midi
             .validate(self.tracks.iter().map(|track| track.id))?;
@@ -194,6 +245,9 @@ impl Project {
             {
                 return Err("invalid track name or state size".into());
             }
+            if !track.mix.valid() {
+                return Err("Invalid track mixer settings.".into());
+            }
             if let Some(plugin) = &track.plugin {
                 if !valid_text(&plugin.name)
                     || !valid_text(&plugin.id)
@@ -228,6 +282,7 @@ impl Project {
                     id: t.id,
                     name: t.name.clone(),
                     plugin: t.plugin.clone(),
+                    mix: t.mix,
                     state: Vec::new(),
                 })
                 .collect(),
@@ -236,6 +291,7 @@ impl Project {
             timeline: self.timeline.clone(),
             midi: self.midi.clone(),
             arrangement_view: self.arrangement_view,
+            master: self.master,
             state_lengths: lengths.clone(),
         })?;
         if metadata.len() > MAX_METADATA {
@@ -283,6 +339,7 @@ impl Project {
                     id: 1,
                     name: t.name,
                     plugin: t.plugin,
+                    mix: Default::default(),
                     state: Vec::new(),
                 })
                 .collect();
@@ -303,6 +360,7 @@ impl Project {
                     timeline: Timeline::default(),
                     midi: Arc::default(),
                     arrangement_view: ArrangementView::default(),
+                    master: Default::default(),
                 },
                 lengths,
             )
@@ -317,6 +375,7 @@ impl Project {
                     timeline: metadata.timeline,
                     midi: metadata.midi,
                     arrangement_view: metadata.arrangement_view,
+                    master: metadata.master,
                 },
                 metadata.state_lengths,
             )
@@ -397,11 +456,48 @@ mod tests {
                     name: "Piano".into(),
                     format: "VST3".into(),
                 }),
+                mix: Default::default(),
                 state: vec![0, 255, 1, 2],
             }],
             next_id: 2,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn mixer_round_trips_and_older_metadata_opens_at_unity() {
+        use crate::mixer::{Channel, Control, Level, Target};
+        let mut project = sample();
+        let mut bytes = Vec::new();
+        project.write(&mut bytes).unwrap();
+        let header = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+        let metadata: serde_json::Value = serde_json::from_slice(&bytes[16..16 + header]).unwrap();
+        assert!(metadata.get("master").is_none());
+        assert!(metadata["tracks"][0].get("mix").is_none());
+        let old = Project::decode(&mut bytes.as_slice()).unwrap();
+        assert_eq!(old.master, Level::default());
+        assert_eq!(old.tracks[0].mix, Channel::default());
+
+        for (control, value) in [
+            (Control::Gain, 91),
+            (Control::Pan, -52),
+            (Control::Width, 178),
+            (Control::Fader, -107),
+            (Control::Mute, 1),
+            (Control::Solo, 1),
+        ] {
+            project.set_mix(Target::Track(1), control, value).unwrap();
+        }
+        project.set_mix(Target::Master, Control::Pan, 20).unwrap();
+        project
+            .set_mix(Target::Master, Control::Fader, -45)
+            .unwrap();
+        bytes.clear();
+        project.write(&mut bytes).unwrap();
+        assert_eq!(Project::decode(&mut bytes.as_slice()).unwrap(), project);
+        assert!(project.set_mix(Target::Master, Control::Width, 42).is_err());
+        project.tracks[0].mix.width = 201;
+        assert!(project.write(&mut bytes).is_err());
     }
     #[test]
     fn project_round_trip_keeps_binary_state_and_routing() {
@@ -619,6 +715,7 @@ mod tests {
                         id,
                         name: format!("Track {id}"),
                         plugin: None,
+                        mix: Default::default(),
                         state: vec![],
                     })
                     .collect(),

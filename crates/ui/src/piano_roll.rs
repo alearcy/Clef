@@ -1808,12 +1808,14 @@ mod tests {
             id: 1,
             name: "Strings".into(),
             plugin: None,
+            mix: Default::default(),
             state: Vec::new(),
         });
         view.project.tracks.push(Track {
             id: 2,
             name: "Piano".into(),
             plugin: None,
+            mix: Default::default(),
             state: Vec::new(),
         });
         let model = std::sync::Arc::make_mut(&mut view.project.midi);
@@ -1949,12 +1951,14 @@ mod tests {
                 id: 1,
                 name: "One".into(),
                 plugin: None,
+                mix: Default::default(),
                 state: Vec::new(),
             },
             clef_model::project::Track {
                 id: 2,
                 name: "Two".into(),
                 plugin: None,
+                mix: Default::default(),
                 state: Vec::new(),
             },
         ];

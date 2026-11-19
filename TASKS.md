@@ -13,12 +13,17 @@ identifier and is not renumbered when a task is inserted. T26–T29 were added o
 decisions already taken in the external Composer DAW project; each specification cites the
 reference and remains a planning draft.
 
+## In Progress
+
+| Task | Status | Specification | Next step / dependency |
+| --- | --- | --- | --- |
+| T11 — Mixer and Master Section | In Progress | [T11 specification](docs/specs/T11-mixer.md) | P1. Two-instrument listening verification pending. |
+
 ## Todo
 
 | Task | Status | Specification | Next step / dependency |
 | --- | --- | --- | --- |
 | T26 — MIDI Comping and Take Lanes | Todo | [T26 specification](docs/specs/T26-midi-comping.md) | P2. After T10; extends the MIDI take and comp model shared with T27. |
-| T11 — Mixer and Master Section | Todo | [T11 specification](docs/specs/T11-mixer.md) | P1. After T04. |
 | T12 — Insert Effects Hosting | Todo | [T12 specification](docs/specs/T12-effect-hosting.md) | P1. After T04 and T11. |
 | T13 — Export and Bounce | Todo | [T13 specification](docs/specs/T13-export.md) | P1. After T11; include T12 effects if present. |
 | T14 — Audio Tracks and Recording | Todo | [T14 specification](docs/specs/T14-audio-recording.md) | P1. After T05 and T11; media-storage decision required. |

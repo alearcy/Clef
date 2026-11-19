@@ -3,6 +3,7 @@ use clef_plugin_host::{protocol, rpc, threading};
 
 pub mod graph;
 pub mod live;
+mod mixer;
 pub mod multitrack;
 pub mod recording;
 pub mod render;

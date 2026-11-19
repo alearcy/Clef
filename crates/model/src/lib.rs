@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 pub mod midi;
+pub mod mixer;
 pub mod project;
 pub mod timeline;
 

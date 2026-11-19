@@ -3,7 +3,7 @@ name: Level meter
 kind: component
 reference: composer::style::paintLevelMeter, LevelMeterState
 status: shared
-impl: planned
+impl: app
 tokens: [field, divider, accent, danger, secondary]
 used-in: [track-header, channel-strip, mixer]
 snapshot: snapshots/kit-gallery.png
@@ -14,6 +14,16 @@ snapshot: snapshots/kit-gallery.png
 > Rust + egui. See [README](../README.md) and the [UI contract](../contract.md).
 
 # Level meter
+
+## Clef T11
+
+`strip_meter` and `header_meter` in `crates/ui/src/primitives/mixer.rs` paint the same stereo
+reading from the session. The mixer scale and fader share one mapping and draw ticks at +6, 0, −6,
+−12, −24, −36 and −48 dB. The sequencer version is a frameless 9-point meter without labels.
+The session owns the immediate attack, 20 dB/s decay, one-second hold and clip latch. Clear a
+clipped channel by clicking its mixer meter or invoking its clip reset command. See the
+[mixer](../snapshots/egui/t11-playing-1024.png) and [header](../snapshots/egui/t11-header-1024.png)
+snapshots. T11 uses these primitives provisionally pending T18 design-system acceptance.
 
 ## Purpose
 Post-fader level: peak, hold tick and a clipped flag.

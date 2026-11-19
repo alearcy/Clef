@@ -3,7 +3,7 @@ name: Mixer
 kind: view
 reference: paintChannelBackground, ChannelRole, paintLevelMeter, channelWidth, channelGap
 status: mixed
-impl: planned
+impl: app
 reference-source: [Source/Mixer.cpp, Source/Mixer.h, Source/ProjectSession.h (MixerSection)]
 components: [search-field, slot-button, power-button, tap-button, knob, width-knob, fader, level-meter, mute-solo, track-state-button, automation-mode-chip, chip, knob-cell, range-overlay, menus]
 snapshot: snapshots/mixer.png
@@ -14,6 +14,45 @@ snapshot: snapshots/mixer.png
 > Rust + egui. See [README](../README.md) and the [UI contract](../contract.md).
 
 # Mixer
+
+## Clef T11
+
+The [T11 mixer](../../specs/T11-mixer.md#ui-proposal) is a provisional egui workspace view. The
+Mixer and Sequencer buttons switch the workspace through the Show Mixer command. The transport
+stays available. The bank follows project track order and Master stays docked on the right. The
+bank scrolls horizontally when its strips exceed the available width. If the window is too short,
+the entire mixer scrolls vertically, keeping the bank and Master aligned.
+
+```text
+workspace
+  toolbar: Mixer / Sequencer
+  transport
+  vertical scroll
+    row
+      horizontal scroll: instrument strip × track count
+      fixed channel width: Master strip
+strip
+  Gain and readout
+  row: Pan and readout, Width and readout
+  row: fader, shared dB ticks, stereo meter
+  fader readout
+  row: Mute, Solo
+  route caption
+  channel name and selection edge
+```
+
+Master carries Pan, the fader and meter, and an Output caption. The strip reserves the Gain and
+Mute/Solo rows to align its fader and name with the bank. When the project is empty, Master is the
+only strip. With audio stopped, readings are idle and controls remain available. Meter and clip
+states are the same readings used by the sequencer's instrument headers. Long names truncate and
+retain a full accessible label. Use Tab to move between controls, arrows to adjust a focused knob
+or fader, and Left/Right at a focused channel name to move between strips. Selecting a strip shares
+instrument selection with the sequencer. Selecting Master retains the instrument selection.
+
+Evidence at [760 points](../snapshots/egui/t11-playing-760.png) and
+[1024 points](../snapshots/egui/t11-long-bank-1024.png).
+
+## Legacy reference
 
 ## Search row
 D101: a 30-pixel row above the bank with the mixer's own [search field](../components/search-field.md)

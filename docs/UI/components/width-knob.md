@@ -3,7 +3,7 @@ name: Width knob
 kind: component
 reference: composer::style::WidthKnob (paintWidthKnob); app ChannelStrip::WidthKnob sets range and text
 status: shared
-impl: planned
+impl: app
 reference-source: [Source/ChannelStrip.cpp] (range, default, description)
 tokens: [cap, accent, capDark]
 used-in: [channel-strip, mixer]
@@ -15,6 +15,13 @@ snapshot: snapshots/shared-controls.png
 > Rust + egui. See [README](../README.md) and the [UI contract](../contract.md).
 
 # Width knob
+
+## Clef T11
+
+The provisional mixer places the 30-point Width knob beside Pan. The fan opens over 0–200%, with
+100% restoring the original stereo width. The control shows its percentage and accepts pointer
+drag, arrow keys, double-click or Option-click to reset, and Escape to cancel a drag. See the
+[T11 mixer](../views/mixer.md#clef-t11) for layout and evidence.
 
 ## Purpose
 Stereo width, drawn as what it does.

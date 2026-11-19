@@ -15,6 +15,7 @@ use std::{
 };
 mod primitives {
     pub mod history;
+    pub mod mixer;
     pub mod piano_roll;
     pub mod project;
     pub mod timeline;
@@ -23,6 +24,7 @@ mod primitives {
 mod arrangement;
 #[doc(hidden)]
 pub mod gallery;
+mod mixer;
 mod piano_roll;
 mod startup;
 mod theme;
@@ -53,6 +55,12 @@ enum Command {
     Undo,
     Redo,
     EditHistory,
+    ShowMixer,
+    MixerPrevious,
+    MixerNext,
+    MixerMute,
+    MixerSolo,
+    ResetMixerClip,
     CreateClip,
     SelectAllClips,
     DuplicateClips,
@@ -150,6 +158,12 @@ fn commands() -> Vec<Binding> {
         (Redo, "Redo", Some(Key::Z)),
         (Undo, "Undo", Some(Key::Z)),
         (EditHistory, "Edit History…", None),
+        (ShowMixer, "Show Mixer", Some(Key::M)),
+        (MixerPrevious, "Mixer: Previous Channel", None),
+        (MixerNext, "Mixer: Next Channel", None),
+        (MixerMute, "Mixer: Toggle Mute", None),
+        (MixerSolo, "Mixer: Toggle Solo", None),
+        (ResetMixerClip, "Mixer: Clear Clip Indicator", None),
         (CreateClip, "Create Clip", Some(Key::Enter)),
         (SelectAllClips, "Select All Clips", Some(Key::A)),
         (DuplicateClips, "Duplicate", Some(Key::D)),
@@ -219,6 +233,7 @@ fn commands() -> Vec<Binding> {
         shortcut: key.map(|key| {
             KeyboardShortcut::new(
                 match command {
+                    ShowMixer => Modifiers::COMMAND | Modifiers::SHIFT,
                     PlayStop => Modifiers::NONE,
                     DeleteClips => Modifiers::NONE,
                     MoveClipsLeft | MoveClipsRight | MoveClipsUp | MoveClipsDown => Modifiers::ALT,
@@ -326,6 +341,7 @@ struct App {
     arrangement_ui: arrangement::ArrangementUi,
     piano_roll: piano_roll::PianoRoll,
     piano_roll_open: bool,
+    mixer_ui: mixer::MixerUi,
     executable: PathBuf,
     quit_gate: Option<QuitGate>,
     backend: Backend,
@@ -393,6 +409,7 @@ impl App {
             arrangement_ui: arrangement::ArrangementUi::default(),
             piano_roll: piano_roll::PianoRoll::default(),
             piano_roll_open: false,
+            mixer_ui: mixer::MixerUi::default(),
             quit_gate: None,
             backend: Backend::spawn(executable.clone(), move || context.request_repaint()),
             executable,
@@ -445,6 +462,9 @@ impl App {
         {
             return;
         }
+        if !matches!(action, Action::CommitMix(_)) {
+            self.cancel_mix_gesture();
+        }
         let loop_range = match &action {
             Action::Transport(TransportAction::SetLoopRange(range)) => Some(*range),
             _ => None,
@@ -490,7 +510,12 @@ impl App {
             }
         }
         match command {
-            command if command.is_clip() => self.clip_command_enabled(command),
+            command if command.is_clip() => {
+                !self.mixer_ui.open && self.clip_command_enabled(command)
+            }
+            ShowMixer | MixerPrevious | MixerNext | MixerMute | MixerSolo | ResetMixerClip => {
+                self.mixer_command_available(command)
+            }
             Undo => self.view.edit_history.available && self.view.edit_history.cursor > 0,
             Redo => {
                 self.view.edit_history.available
@@ -553,14 +578,22 @@ impl App {
             .shortcut
             .map(|s| ui.ctx().format_shortcut(&s))
             .unwrap_or_default();
+        let title = match command {
+            Command::ShowMixer if self.mixer_ui.open => "Sequencer",
+            Command::ShowMixer => "Mixer",
+            Command::Settings if self.mixer_ui.open => "Settings",
+            Command::Commands if self.mixer_ui.open => "Commands",
+            _ => binding.title,
+        };
+        let description = self.command_label(binding);
         ui.add_enabled(
             self.command_available(command, false),
-            egui::Button::new(binding.title),
+            egui::Button::new(title),
         )
         .on_hover_text(if hint.is_empty() {
-            binding.title.into()
+            description
         } else {
-            format!("{} ({hint})", binding.title)
+            format!("{description} ({hint})")
         })
         .clicked()
             && self.enabled(command)
@@ -683,6 +716,9 @@ impl App {
             Undo => self.seek_history(self.view.edit_history.cursor - 1),
             Redo => self.seek_history(self.view.edit_history.cursor + 1),
             EditHistory => self.history_window.open = true,
+            ShowMixer | MixerPrevious | MixerNext | MixerMute | MixerSolo | ResetMixerClip => {
+                self.dispatch_mixer(command)
+            }
             Close => self.transition(Transition::Close, ctx),
             OpenRecent | LocateRecent | RemoveRecent | ShowRecovery | RecoverProject
             | DiscardRecovery | RecoveryLater => self.dispatch_startup(command, ctx),
@@ -771,6 +807,9 @@ impl App {
     }
     fn poll(&mut self, ctx: &egui::Context) {
         while let Ok((view, completed)) = self.backend.receive.try_recv() {
+            if self.view.selected != view.selected {
+                self.mixer_ui.follow_instrument_selection();
+            }
             if self.history_window.pending
                 && let Some(success) = completed
             {
@@ -802,6 +841,12 @@ impl App {
                 view.project.arrangement_view,
             );
             let project_changed = self.view.project_epoch != view.project_epoch;
+            if completed == Some(false) && self.mixer_ui.commit_pending() {
+                self.status.clone_from(&view.message);
+            }
+            if project_changed || completed.is_some() {
+                self.mixer_ui.acknowledge(project_changed);
+            }
             let midi_changed = !std::sync::Arc::ptr_eq(&self.view.project.midi, &view.project.midi);
             self.piano_roll
                 .complete(&view, completed.is_some(), project_changed, midi_changed);
@@ -897,6 +942,7 @@ impl App {
             .bindings
             .iter()
             .filter(|b| self.enabled(b.command))
+            .filter(|b| b.command != Command::PlayStop || !self.mixer_ui.open || !primitives::mixer::activation_has_focus(ctx))
             .filter(|b| !b.command.is_clip() || !text_has_focus && self.arrangement_ui.focused(ctx))
             .filter(|b| !text_has_focus || !matches!(b.command, Command::Undo | Command::Redo))
             .find_map(|b| {
@@ -944,7 +990,7 @@ impl App {
                 } else {
                     egui::Stroke::NONE
                 })
-                .min_size(egui::vec2(width, 44.0)),
+                .min_size(egui::vec2(width, theme::ARRANGEMENT_TRACK_HEIGHT)),
         );
         if response.hovered() && !selected {
             ui.painter()
@@ -1081,7 +1127,7 @@ impl App {
             ) {
                 selected = Some(commands[index]);
             }
-            for command in [Command::Settings, Command::Commands] {
+            for command in [Command::ShowMixer, Command::Settings, Command::Commands] {
                 if self.button(ui, command) {
                     selected = Some(command);
                 }
@@ -1127,7 +1173,7 @@ impl App {
                 ui.label("Working…");
             }
         };
-        if self.piano_roll_open {
+        if self.piano_roll_open || self.mixer_ui.open {
             ui.horizontal_wrapped(|ui| {
                 project_title(ui);
                 audio_control(ui);
@@ -1141,6 +1187,13 @@ impl App {
         ui.add_space(12.0);
         selected = self.transport_bar(ui).or(selected);
         ui.add_space(8.0);
+        if self.mixer_ui.open {
+            self.show_mixer(ui);
+            if let Some(command) = selected {
+                self.dispatch(command, ctx);
+            }
+            return;
+        }
         let mut choose = None;
         let mut transport_action = None;
         let height = (ui.available_height() - 78.0).max(150.0);
@@ -1624,6 +1677,9 @@ impl App {
 
     fn command_label(&self, binding: &Binding) -> String {
         let history = &self.view.edit_history;
+        if binding.command == Command::ShowMixer && self.mixer_ui.open {
+            return "Show Sequencer".into();
+        }
         let edit = match binding.command {
             Command::Undo => history
                 .cursor
@@ -1688,6 +1744,7 @@ impl eframe::App for App {
         if self.confirm.is_none() && self.file.is_none() {
             self.arrangement_ui.cancel(ctx);
         }
+        self.mixer_logic(ctx);
         self.shortcuts(ctx);
         self.busy_visible = self
             .busy_since
@@ -1880,6 +1937,7 @@ mod tests {
             id: 1,
             name: "Old".into(),
             plugin: None,
+            mix: Default::default(),
             state: Vec::new(),
         }];
         app.rename = "New name".into();
@@ -1901,12 +1959,14 @@ mod tests {
                 id: 1,
                 name: "One".into(),
                 plugin: None,
+                mix: Default::default(),
                 state: Vec::new(),
             },
             crate::project::Track {
                 id: 2,
                 name: "Two".into(),
                 plugin: None,
+                mix: Default::default(),
                 state: Vec::new(),
             },
         ];

@@ -25,6 +25,11 @@ its own lane. Double-clicking an empty arrangement lane continues to create a cl
 The live Clef MIDI editor is documented under
 [T09 arrangement editing](multitrack-session.md#t09-arrangement-editing).
 
+In Clef T11, the Master row stays docked beneath the vertically scrolling tracks and above the
+timeline navigation. The header shows the shared Master stereo meter. Its lane uses the arranger
+grid and playhead at the current horizontal position and zoom. The Master row is present in an
+empty project and remains above the Piano Roll when the dock is open.
+
 ## Anatomy, top to bottom
 1. [Timeline rulers](timeline-rulers.md) with the locator band.
 2. **Global band**: tempo, marker, [chord](chord-lane.md) and arrangement lanes. Headers painted by `paintGlobalHeader`

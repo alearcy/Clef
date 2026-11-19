@@ -3,7 +3,7 @@ name: Fader
 kind: component
 reference: composer::style::LookAndFeel::drawLinearSlider
 status: shared
-impl: planned
+impl: app
 tokens: [cap, capLight, capDark, field, controlEdge]
 used-in: [channel-strip, mixer, fx-rack, arrangement]
 snapshot: snapshots/slider-travel.png
@@ -14,6 +14,13 @@ snapshot: snapshots/slider-travel.png
 > Rust + egui. See [README](../README.md) and the [UI contract](../contract.md).
 
 # Fader
+
+## Clef T11
+
+The provisional egui mixer fader uses a 38 × 210-point stage and a 22 × 40-point cap. Its travel
+uses the same dB mapping as the meter. The bottom stop is silent and the top is +6 dB. Drag and
+arrow keys adjust the value, double-click or Option-click resets to 0 dB, and Escape cancels a
+drag. See the [T11 mixer](../views/mixer.md#clef-t11) for layout and evidence.
 
 ## Purpose
 Level and other linear values with a physical feel; the character element of the UI.

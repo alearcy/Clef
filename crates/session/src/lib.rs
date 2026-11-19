@@ -30,6 +30,8 @@ use std::{
     time::{Duration, Instant},
 };
 mod edit_history;
+mod mixer;
+pub use mixer::{Meter, MixChange};
 mod recovery;
 pub use edit_history::HistoryView;
 use edit_history::{ClipChange, Edit, History, InstrumentState, TrackSlot};
@@ -40,6 +42,9 @@ const AUTOSAVE_INTERVAL: Duration = Duration::from_secs(60);
 
 pub enum Action {
     Shutdown,
+    PreviewMix(Option<MixChange>),
+    CommitMix(MixChange),
+    ResetMeter(u64, clef_model::mixer::Target),
     New,
     Open(PathBuf),
     DiscardBeforeClose,
@@ -140,6 +145,8 @@ pub struct Snapshot {
     pub recording_notes: Option<Arc<NotePreview>>,
     pub clip_edit_selection: Option<Vec<ClipId>>,
     pub project_epoch: u64,
+    pub track_meters: std::collections::BTreeMap<u64, Meter>,
+    pub master_meter: Meter,
 }
 impl Snapshot {
     pub fn track(&self) -> Option<&Track> {
@@ -168,6 +175,7 @@ impl Snapshot {
                 timeline: self.project.timeline.clone(),
                 midi: self.project.midi.clone(),
                 arrangement_view: self.project.arrangement_view,
+                master: self.project.master,
                 tracks: self
                     .project
                     .tracks
@@ -176,6 +184,7 @@ impl Snapshot {
                         id: t.id,
                         name: t.name.clone(),
                         plugin: t.plugin.clone(),
+                        mix: t.mix,
                         state: Vec::new(),
                     })
                     .collect(),
@@ -209,6 +218,8 @@ impl Snapshot {
             recording_notes: self.recording_notes.clone(),
             clip_edit_selection: self.clip_edit_selection.clone(),
             project_epoch: self.project_epoch,
+            track_meters: self.track_meters.clone(),
+            master_meter: self.master_meter,
         }
     }
 }
@@ -289,6 +300,7 @@ pub struct Session {
     last_checkpoint: Instant,
     checkpoint_take: bool,
     edits: History,
+    mixer: mixer::Mixer,
     other_changes: bool,
 }
 impl Session {
@@ -334,6 +346,7 @@ impl Session {
             last_checkpoint: Instant::now(),
             checkpoint_take: false,
             edits: History::default(),
+            mixer: mixer::Mixer::default(),
             other_changes: false,
         }
     }
@@ -1005,6 +1018,21 @@ impl Session {
             }
         }
         match action {
+            Action::PreviewMix(change) => {
+                self.preview_mix(change)?;
+                self.publish_mix();
+                return Ok(());
+            }
+            Action::CommitMix(change) => {
+                let result = self.commit_mix(change);
+                self.publish_mix();
+                result?;
+            }
+            Action::ResetMeter(epoch, target) => {
+                if epoch == self.view.project_epoch {
+                    self.reset_meter(target);
+                }
+            }
             Action::Shutdown => {}
             Action::New => {
                 self.retire_journal()?;
@@ -1146,6 +1174,7 @@ impl Session {
                     id,
                     name: format!("Instrument {}", self.view.project.tracks.len() + 1),
                     plugin: None,
+                    mix: Default::default(),
                     state: Vec::new(),
                 };
                 let index = self.view.project.tracks.len();
@@ -1343,6 +1372,7 @@ impl Session {
                     self.view.transport.tick,
                 )?;
                 self.engine = Some(engine);
+                self.publish_mix();
                 self.update_arrangement()?;
                 self.view.active = true;
                 let ids: Vec<_> = self.runtimes.keys().copied().collect();
@@ -1403,6 +1433,7 @@ impl Session {
             }
             Action::Transport(action) => self.transport(action)?,
         }
+        self.publish_mix();
         self.refresh();
         Ok(())
     }
@@ -2151,6 +2182,10 @@ impl Session {
         if let Err(error) = self.poll_recording() {
             self.view.message = error.to_string();
         }
+        if let Some(engine) = &mut self.engine {
+            engine.flush_mix();
+        }
+        self.update_meters();
         self.refresh();
     }
 }
@@ -2187,11 +2222,12 @@ impl Backend {
                 match actions.recv_timeout(Duration::from_millis(30)) {
                     Ok(Action::Shutdown) => break,
                     Ok(action) => {
-                        success = Some(true);
-                        if let Err(e) = session.apply(action) {
-                            session.view.message = e.to_string();
-                            success = Some(false);
+                        let acknowledge = !matches!(action, Action::PreviewMix(_));
+                        let result = session.apply(action);
+                        if let Err(ref error) = result {
+                            session.view.message = error.to_string();
                         }
+                        success = acknowledge.then(|| result.is_ok());
                     }
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -2235,6 +2271,49 @@ mod tests {
             version: session.view.edit_history.version,
             target,
         })
+    }
+
+    #[test]
+    fn mixer_preview_is_transient_and_commit_has_one_undo_entry() {
+        use clef_model::mixer::{Control, Target};
+        let (_directory, mut session) = isolated();
+        session.apply(Action::New).unwrap();
+        session.apply(Action::AddTrack(None)).unwrap();
+        let target = Target::Track(1);
+        let initial = session.view.edit_history.cursor;
+        let change = MixChange {
+            epoch: session.view.project_epoch,
+            target,
+            control: Control::Gain,
+            value: 80,
+        };
+        session.apply(Action::PreviewMix(Some(change))).unwrap();
+        session
+            .apply(Action::PreviewMix(Some(MixChange {
+                value: 100,
+                ..change
+            })))
+            .unwrap();
+        assert_eq!(session.view.project.mix(target).unwrap().trim, 0);
+        assert_eq!(session.view.edit_history.cursor, initial);
+        session.apply(Action::PreviewMix(None)).unwrap();
+        session.apply(Action::CommitMix(change)).unwrap();
+        assert_eq!(session.view.project.mix(target).unwrap().trim, 80);
+        assert_eq!(session.view.edit_history.cursor, initial + 1);
+        seek(&mut session, initial).unwrap();
+        assert_eq!(session.view.project.mix(target).unwrap().trim, 0);
+        seek(&mut session, initial + 1).unwrap();
+        assert_eq!(session.view.project.mix(target).unwrap().trim, 80);
+        assert!(
+            session
+                .apply(Action::CommitMix(MixChange {
+                    epoch: change.epoch.wrapping_add(1),
+                    value: 0,
+                    ..change
+                }))
+                .is_err()
+        );
+        assert_eq!(session.view.project.mix(target).unwrap().trim, 80);
     }
 
     #[test]

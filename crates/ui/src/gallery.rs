@@ -25,6 +25,15 @@ const CASES: &[&str] = &[
     "recovery-later",
 ];
 const HISTORY_CASES: &[&str] = &["history-empty", "history-ready", "history-locked"];
+const MIXER_CASES: &[&str] = &[
+    "empty",
+    "stopped",
+    "playing",
+    "long-bank",
+    "header",
+    "header-long",
+    "header-dock",
+];
 const TRANSPORT_CASES: &[&str] = &["stopped", "looping", "count-in", "recording"];
 const ARRANGEMENT_CASES: &[&str] = &[
     "arrangement-selected",
@@ -111,6 +120,7 @@ fn arrangement_fixture(app: &mut App, case: &str) {
         id: 2,
         name: "Piano".into(),
         plugin: None,
+        mix: Default::default(),
         state: Vec::new(),
     });
     view.project.next_id = 3;
@@ -238,12 +248,58 @@ fn arrangement_fixture(app: &mut App, case: &str) {
     app.view = view;
 }
 
+fn mixer_fixture(app: &mut App, case: &str) {
+    use clef_session::Meter;
+    arrangement_fixture(app, "arrangement-selected");
+    app.mixer_ui.open = !case.starts_with("header");
+    app.piano_roll_open = case == "header-dock";
+    let view = &mut app.view;
+    view.active = !matches!(case, "empty" | "stopped" | "header-empty");
+    if matches!(case, "empty" | "header-empty") {
+        view.project.tracks.clear();
+        view.project.midi = Default::default();
+        view.selected = None;
+    }
+    if view.active {
+        view.transport.phase = clef_session::TransportPhase::Playing;
+        view.project.tracks[0].mix.solo = true;
+        view.project.tracks[0].mix.trim = 25;
+        view.project.tracks[0].mix.level.pan = -23;
+        view.project.tracks[0].mix.width = 142;
+        view.project.tracks[1].mix.mute = true;
+        view.track_meters.insert(
+            1,
+            Meter {
+                level: [-35, -97],
+                hold: [12, -72],
+                clipped: true,
+            },
+        );
+        view.master_meter = Meter {
+            level: [-9, -60],
+            hold: [-4, -50],
+            clipped: false,
+        };
+    }
+    if matches!(case, "long-bank" | "header-long" | "header-dock") {
+        let template = view.project.tracks[1].clone();
+        for id in 3..=16 {
+            let mut track = template.clone();
+            track.id = id;
+            track.name = format!("Very long instrument track name {id}");
+            view.project.tracks.push(track);
+        }
+        view.project.next_id = 17;
+    }
+}
+
 fn history_fixture(case: &str) -> Snapshot {
     let mut project = clef_model::project::Project::default();
     project.tracks.push(clef_model::project::Track {
         id: 1,
         name: "Strings".into(),
         plugin: None,
+        mix: Default::default(),
         state: Vec::new(),
     });
     project.next_id = 2;
@@ -358,6 +414,11 @@ impl Gallery {
             self.frames = 0;
             return;
         }
+        if self.prefix == "t11" {
+            mixer_fixture(&mut self.app, case);
+            self.frames = 0;
+            return;
+        }
         if self.prefix == "t10" {
             piano_roll_fixture(&mut self.app, case);
             self.frames = 0;
@@ -457,7 +518,7 @@ impl eframe::App for Gallery {
                     &mut app.piano_roll_open,
                 );
             });
-        } else if matches!(self.prefix, "t08" | "t09" | "t10" | "t34") {
+        } else if matches!(self.prefix, "t08" | "t09" | "t10" | "t11" | "t34") {
             egui::Frame::new()
                 .inner_margin(12.0)
                 .show(ui, |ui| self.app.main_surface(ui, &ctx));
@@ -495,6 +556,10 @@ pub fn render_arrangement(output: PathBuf, width: u32) -> Result<()> {
 
 pub fn render_piano_roll(output: PathBuf, width: u32) -> Result<()> {
     render(output, width, "t10", ROLL_CASES)
+}
+
+pub fn render_mixer(output: PathBuf, width: u32) -> Result<()> {
+    render(output, width, "t11", MIXER_CASES)
 }
 
 pub fn render_transport(output: PathBuf, width: u32) -> Result<()> {
@@ -545,6 +610,113 @@ fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mixer_master_stays_docked_and_track_meters_line_up_at_both_widths() {
+        for width in [760.0, 1024.0] {
+            let ctx = egui::Context::default();
+            ctx.enable_accesskit();
+            let mut app = App::new(ctx.clone(), PathBuf::new());
+            for case in [
+                "long-bank",
+                "header",
+                "header-empty",
+                "header-long",
+                "header-dock",
+            ] {
+                mixer_fixture(&mut app, case);
+                let height = if case == "header-dock" { 480.0 } else { 640.0 };
+                let render = |app: &mut App, events| {
+                    let input = egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(width, height),
+                        )),
+                        events,
+                        ..Default::default()
+                    };
+                    ctx.run_ui(input, |ui| {
+                        egui::Frame::new()
+                            .inner_margin(12.0)
+                            .show(ui, |ui| app.main_surface(ui, &ctx));
+                    })
+                };
+                let _ = render(&mut app, vec![]);
+                let tree = render(&mut app, vec![])
+                    .platform_output
+                    .accesskit_update
+                    .unwrap();
+                let bounds = |label| {
+                    tree.nodes
+                        .iter()
+                        .find_map(|(_, node)| {
+                            (node.label() == Some(label) || node.value() == Some(label))
+                                .then(|| node.bounds())
+                                .flatten()
+                        })
+                        .unwrap_or_else(|| panic!("missing {label} at {width} points in {case}"))
+                };
+                if case == "long-bank" {
+                    let master = bounds("Master Fader");
+                    let pan = bounds("Strings Pan");
+                    let width_knob = bounds("Strings Width");
+                    let master_name = bounds("Master");
+                    assert!(master.x0 > f64::from(width) - 110.0 && master.x1 < f64::from(width));
+                    assert!(master_name.y1 < 640.0);
+                    assert_eq!(pan.y0, width_knob.y0);
+                    assert!(pan.x1 <= width_knob.x0);
+                    assert_eq!(bounds("Strings Fader").y0, master.y0);
+                } else if case == "header" {
+                    let strings = bounds("Strings stereo level · Clipped");
+                    let piano = bounds("Piano stereo level");
+                    assert_eq!(strings.x1, piano.x1);
+                    assert_eq!(
+                        strings.x1 - strings.x0,
+                        f64::from(crate::theme::HEADER_METER)
+                    );
+                    assert_eq!(strings.y1 - strings.y0, 44.0);
+                    assert!(bounds("Arm Strings for MIDI recording").x1 < strings.x0);
+                    let master = bounds("Master stereo level");
+                    assert_eq!(master.x1, strings.x1);
+                    assert!(master.y0 > piano.y1 && master.y1 < 640.0);
+                } else {
+                    let master = bounds("Master stereo level");
+                    assert_eq!(master.y1 - master.y0, 44.0);
+                    assert!(master.y0 > 0.0 && master.y1 < f64::from(height));
+                    if case != "header-long" {
+                        continue;
+                    }
+                    let before = bounds("Strings stereo level · Clipped");
+                    let hover =
+                        egui::Event::PointerMoved(egui::pos2(210.0, before.y0 as f32 + 10.0));
+                    let wheel = egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta: egui::vec2(0.0, -100.0),
+                        phase: egui::TouchPhase::Move,
+                        modifiers: egui::Modifiers::NONE,
+                    };
+                    let _ = render(&mut app, vec![hover.clone()]);
+                    let _ = render(&mut app, vec![hover, wheel]);
+                    let tree = render(&mut app, vec![])
+                        .platform_output
+                        .accesskit_update
+                        .unwrap();
+                    let find = |label| {
+                        tree.nodes.iter().find_map(|(_, node)| {
+                            (node.label() == Some(label))
+                                .then(|| node.bounds())
+                                .flatten()
+                        })
+                    };
+                    assert_eq!(find("Master stereo level"), Some(master));
+                    assert!(
+                        find("Strings stereo level · Clipped")
+                            .is_none_or(|after| after.y0 < before.y0)
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn startup_accessible_controls_fit_both_review_widths() {

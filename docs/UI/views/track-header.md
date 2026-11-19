@@ -16,6 +16,16 @@ snapshots: [snapshots/track-kinds-headers.png]
 
 # Track header
 
+## Clef T11 meter
+
+Each instrument header reserves a full-height, frameless 9-point stereo meter at the right edge,
+after its other controls. The meter shows the same post-fader peak, hold and clip state as its
+mixer strip. The hover label identifies the track and indicates clipping. Clear the clip latch
+from the mixer strip or the mixer command. See the [760-point header snapshot](../snapshots/egui/t11-header-760.png).
+
+The Master header is docked below the instrument track bank, with its meter aligned to the same
+right edge. See the [pinned Master in a long bank](../snapshots/egui/t11-header-long-760.png).
+
 ## Purpose
 The fixed left column of every arrangement row: identity and the controls of track, folder, bus,
 FX return and master rows. It stays fixed during horizontal scroll.

@@ -460,6 +460,7 @@ mod tests {
                 id: 1,
                 name: "Lead".into(),
                 plugin: None,
+                mix: Default::default(),
                 state: Vec::new(),
             }],
             next_id: 2,

@@ -298,15 +298,19 @@ impl App {
             });
         });
         self.transport_ui.loop_gesture = loop_gesture;
+        let row_height = crate::theme::ARRANGEMENT_TRACK_HEIGHT;
+        let master_height = row_height + ui.spacing().item_spacing.y;
         egui::ScrollArea::vertical()
             .id_salt("arrangement-tracks")
-            .max_height((height - RULER_HEIGHT - LOOP_HEIGHT - 50.0).max(50.0))
+            .max_height(
+                (height - RULER_HEIGHT - LOOP_HEIGHT - 50.0 - master_height).max(row_height),
+            )
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 if self.view.project.tracks.is_empty() {
                     ui.horizontal(|ui| {
-                        ui.allocate_space(egui::vec2(header_width, 44.0));
-                        let (_, rect) = ui.allocate_space(egui::vec2(lane_width, 44.0));
+                        ui.allocate_space(egui::vec2(header_width, row_height));
+                        let (_, rect) = ui.allocate_space(egui::vec2(lane_width, row_height));
                         viewport.lane(ui, rect, transport.audible_tick);
                     });
                 }
@@ -320,11 +324,15 @@ impl App {
                         |p| format!("{} · {}", p.name, p.format),
                     );
                     ui.horizontal_top(|ui| {
+                        let row_width = header_width
+                            - 28.0
+                            - crate::theme::HEADER_METER
+                            - 2.0 * ui.spacing().item_spacing.x;
                         let response = Self::track_row(
                             ui,
                             &track.name,
                             &format!("{plugin} · {state}"),
-                            header_width - 28.0 - ui.spacing().item_spacing.x,
+                            row_width,
                             self.view.selected == Some(track.id),
                             self.confirm.is_none(),
                             self.keyboard_mode,
@@ -346,6 +354,16 @@ impl App {
                         ) {
                             action = Some(TransportAction::Arm(track.id));
                         }
+                        crate::primitives::mixer::header_meter(
+                            ui,
+                            response.rect.height(),
+                            &track.name,
+                            self.view
+                                .track_meters
+                                .get(&track.id)
+                                .copied()
+                                .unwrap_or_default(),
+                        );
                         let (_, rect) =
                             ui.allocate_space(egui::vec2(lane_width, response.rect.height()));
                         viewport.lane_grid(ui, rect);
@@ -425,6 +443,11 @@ impl App {
                     });
                 }
             });
+        ui.horizontal_top(|ui| {
+            crate::primitives::mixer::master_header(ui, header_width, self.view.master_meter);
+            let (_, lane) = ui.allocate_space(egui::vec2(lane_width, row_height));
+            viewport.lane(ui, lane, transport.audible_tick);
+        });
         let last_bar = timeline.changes.last().map_or(1, |tempo| tempo.bar);
         let max_offset = timeline
             .bar_start(last_bar.saturating_add(64))
@@ -664,6 +687,7 @@ mod tests {
                     format: "VST3".into(),
                     path: "/fixture.vst3".into(),
                 }),
+                mix: Default::default(),
                 state: Vec::new(),
             });
             std::sync::Arc::make_mut(&mut app.view.project.midi)

@@ -1,4 +1,5 @@
 //! Independent bounded worker paths sharing one device callback and sample clock.
+use crate::mixer::{MeterPeak, PreparedMix, Ramp, accumulate};
 use crate::transport::SampleMap;
 use crate::{
     live::{Configuration, channel_message},
@@ -52,6 +53,7 @@ pub struct TrackStats {
     pub max_worker_us: AtomicU64,
     pub processed: AtomicU64,
     pub peak: AtomicU32,
+    meter: MeterPeak,
     pub midi_delivered: AtomicU64,
     pub midi_received: AtomicU64,
     pub midi_dropped: AtomicU64,
@@ -60,6 +62,11 @@ pub struct TrackStats {
     release: AtomicBool,
     audition: AtomicU32,
     mute_recording: AtomicBool,
+}
+impl TrackStats {
+    pub fn take_meter(&self) -> Frame {
+        self.meter.take(self.token.load(Ordering::Acquire))
+    }
 }
 pub struct Clock {
     origin: Instant,
@@ -74,6 +81,7 @@ pub struct Clock {
     epoch: AtomicU64,
     pub latency: AtomicU32,
     pub clipped: AtomicU64,
+    master_meter: MeterPeak,
     pub errors: AtomicU64,
     pub transitions: AtomicU64,
     latency_update: std::sync::Mutex<()>,
@@ -95,6 +103,10 @@ pub struct Clock {
     controls: [AtomicU32; CONTROLS],
 }
 impl Clock {
+    pub fn take_master_meter(&self) -> Frame {
+        self.master_meter.take(0)
+    }
+
     fn new() -> Self {
         Self {
             origin: Instant::now(),
@@ -111,6 +123,7 @@ impl Clock {
             epoch: AtomicU64::new(0),
             latency: AtomicU32::new(0),
             clipped: AtomicU64::new(0),
+            master_meter: MeterPeak::default(),
             errors: AtomicU64::new(0),
             transitions: AtomicU64::new(0),
             latency_update: std::sync::Mutex::new(()),
@@ -187,7 +200,21 @@ impl Clock {
         }
     }
 }
+#[derive(Default)]
+struct ChannelMix {
+    token: Option<u64>,
+    ramp: Ramp,
+    peak: Frame,
+}
+#[derive(Default)]
+struct DeviceMix {
+    settings: PreparedMix,
+    incoming: Option<Consumer<PreparedMix>>,
+    master: Ramp,
+    ramp_samples: u32,
+}
 struct Reader {
+    mix: ChannelMix,
     used: bool,
     epoch: u64,
     token: u64,
@@ -197,6 +224,7 @@ struct Reader {
     stats: Arc<TrackStats>,
 }
 struct Mix {
+    mixer: DeviceMix,
     readers: Vec<Reader>,
     clock: Arc<Clock>,
     position: u64,
@@ -229,6 +257,31 @@ impl Mix {
             self.position += count;
             self.clock.played.store(self.position, Ordering::Release);
             return;
+        }
+        if let Some(incoming) = self.mixer.incoming.as_mut() {
+            // The publisher and callback each do bounded work, even if the sender is faster.
+            for _ in 0..2 {
+                if let Ok(settings) = incoming.pop() {
+                    self.mixer.settings = settings;
+                }
+            }
+        }
+        let ramp_samples = self.mixer.ramp_samples.max(1);
+        self.mixer
+            .master
+            .set(self.mixer.settings.master, ramp_samples);
+        let mut master_peak = [0.0; 2];
+        for reader in &mut self.readers {
+            let token = reader.stats.token.load(Ordering::Acquire);
+            let id = reader.stats.id.load(Ordering::Acquire);
+            let target = self.mixer.settings.channel(id);
+            if reader.mix.token == Some(token) {
+                reader.mix.ramp.set(target, ramp_samples);
+            } else {
+                reader.mix.token = Some(token);
+                reader.mix.ramp.reset(target);
+            }
+            reader.mix.peak = [0.0; 2];
         }
         let mut playback_generation = self.clock.playback_generation.load(Ordering::Relaxed);
         if let Some(transport) = &mut self.transport {
@@ -321,9 +374,16 @@ impl Mix {
                 {
                     reader.transitioning = false;
                     reader.used = true;
-                    let source = packet.frames[(self.position - packet.at) as usize];
-                    sum[0] += source[0];
-                    sum[1] += source[1];
+                    if reader.mix.token == Some(token) {
+                        let source = packet.frames[(self.position - packet.at) as usize];
+                        let processed = reader.mix.ramp.apply(source);
+                        accumulate(&mut reader.mix.peak, processed);
+                        for (sum, sample) in sum.iter_mut().zip(processed) {
+                            if sample.is_finite() {
+                                *sum += sample;
+                            }
+                        }
+                    }
                 } else if self.position >= self.lead {
                     if reader.transitioning {
                         reader
@@ -338,6 +398,8 @@ impl Mix {
                     }
                 }
             }
+            let sum = self.mixer.master.apply(sum);
+            accumulate(&mut master_peak, sum);
             for channel in 0..2 {
                 if !sum[channel].is_finite() || sum[channel].abs() > 1.0 {
                     self.clock.clipped.fetch_add(1, Ordering::Relaxed);
@@ -358,6 +420,12 @@ impl Mix {
                 );
             }
             transport.publish(output_latency.saturating_add(count));
+        }
+        self.clock.master_meter.publish(0, master_peak);
+        for reader in &self.readers {
+            if let Some(token) = reader.mix.token {
+                reader.stats.meter.publish(token, reader.mix.peak);
+            }
         }
         self.clock.played.store(self.position, Ordering::Release);
     }
@@ -393,6 +461,9 @@ pub struct Broker {
     pub stats: Arc<TrackStats>,
 }
 pub struct Engine {
+    mixer: Producer<PreparedMix>,
+    desired_mix: PreparedMix,
+    mix_pending: bool,
     stream: Stream,
     midi: Option<MidiInputConnection<()>>,
     outputs: Vec<Option<Producer<Packet>>>,
@@ -435,6 +506,7 @@ impl Engine {
             let (tx, rx) = RingBuffer::new(bound);
             outputs.push(Some(tx));
             readers.push(Reader {
+                mix: ChannelMix::default(),
                 used: false,
                 epoch: 0,
                 token: 0,
@@ -522,7 +594,13 @@ impl Engine {
             },
         )?;
         let (transport, renderer) = Renderer::new(timing, tick);
+        let (mixer, incoming) = RingBuffer::new(2);
         let mut mix = Mix {
+            mixer: DeviceMix {
+                incoming: Some(incoming),
+                ramp_samples: rate / 200,
+                ..Default::default()
+            },
             readers,
             clock: clock.clone(),
             position: 0,
@@ -545,6 +623,9 @@ impl Engine {
         )?;
         stream.play()?;
         Ok(Self {
+            mixer,
+            desired_mix: PreparedMix::default(),
+            mix_pending: false,
             stream,
             midi: Some(midi),
             outputs,
@@ -557,6 +638,25 @@ impl Engine {
             capture,
         })
     }
+    pub fn set_mix(
+        &mut self,
+        project: &clef_model::project::Project,
+        preview: Option<(clef_model::mixer::Target, clef_model::mixer::Control, i16)>,
+    ) {
+        let settings = PreparedMix::new(project, preview);
+        if self.desired_mix != settings {
+            self.desired_mix = settings;
+            self.mix_pending = true;
+        }
+        self.flush_mix();
+    }
+
+    pub fn flush_mix(&mut self) {
+        if self.mix_pending && self.mixer.push(self.desired_mix.clone()).is_ok() {
+            self.mix_pending = false;
+        }
+    }
+
     pub fn set_arrangement(&self, arrangement: &Arrangement, timeline: &Timeline) -> Result<()> {
         if arrangement.tracks.is_empty() && self.clock.plan_revision.load(Ordering::Acquire) == 0 {
             return Ok(());
@@ -720,6 +820,7 @@ impl Engine {
         stats.id.store(id, Ordering::Release);
         stats.latency.store(instrument.latency, Ordering::Release);
         let token = stats.token.fetch_add(1, Ordering::AcqRel) + 1;
+        stats.meter.take(token);
         stats.ready_at.store(
             self.clock
                 .played
@@ -1016,6 +1117,7 @@ mod tests {
             .ok()
             .unwrap();
             readers.push(Reader {
+                mix: ChannelMix::default(),
                 used: false,
                 epoch: 0,
                 token: 0,
@@ -1026,6 +1128,7 @@ mod tests {
             });
         }
         let mut mix = Mix {
+            mixer: DeviceMix::default(),
             readers,
             clock: clock.clone(),
             position: 0,
@@ -1064,7 +1167,9 @@ mod tests {
         .ok()
         .unwrap();
         let mut mix = Mix {
+            mixer: DeviceMix::default(),
             readers: vec![Reader {
+                mix: ChannelMix::default(),
                 used: false,
                 epoch: 0,
                 token: 0,
@@ -1085,6 +1190,9 @@ mod tests {
         mix.fill(&mut out, 0);
         assert_eq!(out, [1.0; 2]);
         assert_eq!(clock.clipped.load(Ordering::Relaxed), 2);
+        assert_eq!(clock.tracks[0].take_meter(), [2.0; 2]);
+        assert_eq!(clock.take_master_meter(), [2.0; 2]);
+        assert_eq!(clock.take_master_meter(), [0.0; 2]);
         clock.epoch.store(1, Ordering::Release);
         mix.fill(&mut out, 0);
         assert_eq!(out, [0.0; 2]);
@@ -1157,6 +1265,7 @@ mod callback_proof {
                 .unwrap();
             }
             readers.push(Reader {
+                mix: ChannelMix::default(),
                 used: false,
                 epoch: 0,
                 token: 0,
@@ -1167,6 +1276,7 @@ mod callback_proof {
             });
         }
         Mix {
+            mixer: DeviceMix::default(),
             readers,
             clock,
             position: 0,
@@ -1210,6 +1320,40 @@ mod callback_proof {
             }
         }
     }
+
+    #[test]
+    fn mixed_aligned_tracks_publish_post_fader_peaks_without_allocating() {
+        use clef_model::project::{Project, Track};
+        let mut mix = prepared(&[0, 257]);
+        let mut project = Project::default();
+        for id in 1..=2 {
+            mix.clock.tracks[(id - 1) as usize]
+                .id
+                .store(id, Ordering::Release);
+            project.tracks.push(Track {
+                id,
+                name: format!("Instrument {id}"),
+                plugin: None,
+                mix: Default::default(),
+                state: vec![],
+            });
+        }
+        project.tracks[0].mix.solo = true;
+        project.tracks[0].mix.level.pan = -100;
+        project.master.fader = -60;
+        let (mut send, receive) = RingBuffer::new(2);
+        assert!(send.push(PreparedMix::new(&project, None)).is_ok());
+        mix.mixer.incoming = Some(receive);
+        let mut frames = [0.0; 384 * 4];
+        COUNT.with(|c| c.set(Some(0)));
+        mix.fill(&mut frames, 0);
+        assert_eq!(COUNT.with(|c| c.replace(None)), Some(0));
+        assert_eq!(mix.clock.tracks[0].take_meter(), [0.125, 0.0]);
+        assert_eq!(mix.clock.tracks[1].take_meter(), [0.0; 2]);
+        let output = 0.125 * 10.0_f32.powf(-0.3);
+        assert_eq!(mix.clock.take_master_meter(), [output, 0.0]);
+        assert_eq!(&frames[(37 + 257) * 4..][..4], &[0.0, 0.0, output, 0.0]);
+    }
     #[test]
     fn click_wraps_on_sample_and_only_feeds_the_selected_pair_without_allocating() {
         use crate::transport::Command;
@@ -1220,28 +1364,38 @@ mod callback_proof {
             loop_range: [0, 9],
             ..Default::default()
         };
-        let (mut control, renderer) = Renderer::new(Prepared::new(&timing, 48_000).unwrap(), 0);
-        let mut mix = prepared(&[0]);
-        mix.readers.clear();
-        mix.transport = Some(renderer);
-        control.send(Command::Play).unwrap();
-        let mut output = [0.0; 612 * 4];
-        COUNT.with(|c| c.set(Some(0)));
-        for chunk in output.chunks_mut(83 * 4) {
-            mix.fill(chunk, 0);
+        for master_pan in [0, -100] {
+            let (mut control, renderer) = Renderer::new(Prepared::new(&timing, 48_000).unwrap(), 0);
+            let mut mix = prepared(&[0]);
+            mix.readers.clear();
+            let project = clef_model::project::Project {
+                master: clef_model::mixer::Level {
+                    pan: master_pan,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            mix.mixer.settings = PreparedMix::new(&project, None);
+            mix.transport = Some(renderer);
+            control.send(Command::Play).unwrap();
+            let mut output = [0.0; 612 * 4];
+            COUNT.with(|c| c.set(Some(0)));
+            for chunk in output.chunks_mut(83 * 4) {
+                mix.fill(chunk, 0);
+            }
+            let allocations = COUNT.with(|c| c.replace(None).unwrap());
+            assert_eq!(allocations, 0);
+            for frame in output.as_chunks::<4>().0 {
+                assert_eq!(&frame[..2], &[0.0; 2]);
+                assert_eq!(frame[3], if master_pan == 0 { frame[2] } else { 0.0 });
+            }
+            for wrapped in [0, 225, 450] {
+                assert_eq!(output[wrapped * 4 + 2], 0.20);
+            }
+            control.send(Command::Stop).unwrap();
+            mix.fill(&mut output, 0);
+            assert!(output.iter().all(|sample| *sample == 0.0));
         }
-        let allocations = COUNT.with(|c| c.replace(None).unwrap());
-        assert_eq!(allocations, 0);
-        for frame in output.as_chunks::<4>().0 {
-            assert_eq!(&frame[..2], &[0.0; 2]);
-            assert_eq!(frame[2], frame[3]);
-        }
-        for wrapped in [0, 225, 450] {
-            assert_eq!(output[wrapped * 4 + 2], 0.20);
-        }
-        control.send(Command::Stop).unwrap();
-        mix.fill(&mut output, 0);
-        assert!(output.iter().all(|sample| *sample == 0.0));
     }
     #[test]
     fn recording_clock_and_stop_flush_old_packets_without_allocating() {
@@ -1281,6 +1435,7 @@ mod callback_proof {
         track.token.store(1, Ordering::Relaxed);
         // The queue fixture is prepared outside the measured callback.
         mix.readers.push(Reader {
+            mix: ChannelMix::default(),
             used: false,
             epoch: 0,
             token: 0,
