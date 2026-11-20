@@ -185,7 +185,9 @@ performance feasibility is measured rather than promised for arbitrary plugins.
 1. **Track editing:** add/remove/rename/reorder with stable IDs; selection and worker
    completion races cannot misassign state, MIDI, or editors. Validate zero, one, eight,
    and parser-limit sessions; refused edits preserve the previous state.
-2. **Lazy lifetime and MIDI:** no workers at Open; first explicit use loads once;
+2. **Lazy lifetime and MIDI:** no workers at Open; first explicit use loads once (since
+   [T38](T38-first-play-readiness.md), starting the audio engine is such a use for every
+   online, unquarantined instrument track);
    deselection retains workers and release tails; held notes/sustain and rapid selection
    changes do not stick or leak to the new track. Test a switch during an in-flight load
    and while MIDI is queued. Physical keyboard/listening evidence remains separate.

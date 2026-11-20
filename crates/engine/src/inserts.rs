@@ -286,7 +286,11 @@ impl Processor {
             let dry = frames.map(|frame| stage.dry.apply(frame));
             stage.set_bypassed(slot.bypassed);
             stage.failed |= slot.effect.failed.load(Ordering::Acquire);
-            if !stage.failed && slot.effect.reconfigured.swap(false, Ordering::AcqRel) {
+            if !stage.failed
+                && slot.effect.reconfigured.swap(false, Ordering::AcqRel)
+                // T38 R3: a restart that keeps the latency resumes the stage in place.
+                && slot.effect.latency.load(Ordering::Acquire) != stage.latency
+            {
                 let latency = slot.effect.latency.load(Ordering::Acquire);
                 let total = self.latency - stage.latency + latency;
                 if total > MAX_CHAIN_LATENCY {

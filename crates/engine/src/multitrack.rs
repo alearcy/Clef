@@ -84,6 +84,12 @@ pub struct Clock {
     selected: AtomicU64,
     revision: AtomicU64,
     epoch: AtomicU64,
+    /// T38: bumped when a track joins the graph; the callback echoes the value it saw at the
+    /// start of a callback in which every active track and the routing delivered packets of
+    /// the current epoch, and stores that epoch in `aligned_epoch`.
+    alignment_change: AtomicU64,
+    aligned_change: AtomicU64,
+    aligned_epoch: AtomicU64,
     pub latency: AtomicU32,
     pub clipped: AtomicU64,
     master_meter: MeterPeak,
@@ -169,6 +175,9 @@ impl Clock {
             selected: AtomicU64::new(0),
             revision: AtomicU64::new(0),
             epoch: AtomicU64::new(0),
+            alignment_change: AtomicU64::new(0),
+            aligned_change: AtomicU64::new(u64::MAX),
+            aligned_epoch: AtomicU64::new(u64::MAX),
             latency: AtomicU32::new(0),
             clipped: AtomicU64::new(0),
             master_meter: MeterPeak::default(),
@@ -235,6 +244,13 @@ impl Clock {
         self.selected.store(0, Ordering::Release);
         self.revision.fetch_add(1, Ordering::AcqRel);
         self.selected.store(id, Ordering::Release);
+    }
+    fn aligned(&self) -> bool {
+        let epoch = self.epoch.load(Ordering::Acquire);
+        epoch.is_multiple_of(2)
+            && self.aligned_epoch.load(Ordering::Acquire) == epoch
+            && self.aligned_change.load(Ordering::Acquire)
+                == self.alignment_change.load(Ordering::Acquire)
     }
     fn refresh_latency(&self) {
         let _update = self
@@ -312,6 +328,8 @@ struct RoutingInput {
     pending: RoutingPacket,
     spare: Option<BusFrames>,
     dry: Vec<DrySample>,
+    /// False when the last `process` call substituted the delayed dry signal.
+    hit: bool,
 }
 
 impl RoutingInput {
@@ -359,6 +377,7 @@ impl RoutingInput {
         clock: &Clock,
     ) -> Frame {
         let delay = u64::from(clock.master_delay.load(Ordering::Acquire));
+        self.hit = true;
         if delay == 0 {
             return source;
         }
@@ -394,6 +413,7 @@ impl RoutingInput {
         {
             return packet.frames[offset];
         }
+        self.hit = false;
 
         if position >= self.lead && offset == 0 {
             clock.transitions.fetch_add(BLOCK as u64, Ordering::Relaxed);
@@ -606,6 +626,7 @@ impl RoutingBroker {
                 },
                 spare: Some(bus_buffer()),
                 dry,
+                hit: false,
             },
         ))
     }
@@ -754,6 +775,9 @@ impl Mix {
         let routing_active =
             self.routing.is_some() && self.clock.master_delay.load(Ordering::Acquire) != 0;
         self.bus_peaks[..bus_len].fill([0.0; 2]);
+        let alignment_change = self.clock.alignment_change.load(Ordering::Acquire);
+        let start_epoch = self.clock.epoch.load(Ordering::Acquire);
+        let mut aligned = true;
         for frame in output.chunks_exact_mut(self.channels) {
             let epoch = self.clock.epoch.load(Ordering::Acquire);
             let (click, gain) = self.transport.as_mut().map_or((0.0, 1.0), |transport| {
@@ -812,8 +836,14 @@ impl Mix {
                     || !reader.stats.active.load(Ordering::Acquire)
                     || reader.stats.failed.load(Ordering::Acquire)
                 {
+                    aligned &= epoch.is_multiple_of(2);
                     continue;
                 }
+                aligned &= !reader.transitioning
+                    || reader
+                        .next
+                        .as_ref()
+                        .is_some_and(|packet| packet.at <= self.position);
                 if let Some(packet) = &reader.next
                     && packet.at <= self.position
                 {
@@ -909,6 +939,7 @@ impl Mix {
                         playback_generation,
                         &self.clock,
                     );
+                    aligned &= routing.hit;
                     routing.finish(self.position);
                     wet
                 } else {
@@ -971,6 +1002,13 @@ impl Mix {
             if let Some(token) = reader.mix.token {
                 reader.stats.meter.publish(token, reader.mix.peak);
             }
+        }
+        let epoch = self.clock.epoch.load(Ordering::Acquire);
+        if aligned && epoch == start_epoch && epoch.is_multiple_of(2) {
+            self.clock.aligned_epoch.store(epoch, Ordering::Release);
+            self.clock
+                .aligned_change
+                .store(alignment_change, Ordering::Release);
         }
         self.clock.played.store(self.position, Ordering::Release);
     }
@@ -1475,7 +1513,15 @@ impl Engine {
         stats.id.store(id, Ordering::Release);
         let initial_trim = self.desired_mix.trim(id);
         stats.trim.store(initial_trim.to_bits(), Ordering::Release);
-        stats.latency.store(instrument.latency, Ordering::Release);
+        // T38: count the track's insert chain now, so the broker's first chain check does not
+        // publish a second latency change after the transport may already have started.
+        let chain_latency = self
+            .clock
+            .chain(Target::Track(id))
+            .map_or(0, |chain| chain.latency());
+        stats
+            .latency
+            .store(instrument.latency + chain_latency, Ordering::Release);
         let token = stats.token.fetch_add(1, Ordering::AcqRel) + 1;
         stats.meter.take(token);
         stats.ready_at.store(
@@ -1489,6 +1535,7 @@ impl Engine {
         );
         stats.active.store(true, Ordering::Release);
         self.clock.refresh_latency();
+        self.clock.alignment_change.fetch_add(1, Ordering::AcqRel);
         let clock = self.clock.clone();
         let lead = self.lead;
         let rate = self.rate;
@@ -1631,7 +1678,12 @@ impl Engine {
                     }
                     let started = Instant::now();
                     if let Some(restarted) = audio.poll() {
-                        instrument_latency = restarted?;
+                        let restarted = restarted?;
+                        // T38 R3: a restart that keeps the latency needs no realignment.
+                        if restarted == instrument_latency {
+                            continue;
+                        }
+                        instrument_latency = restarted;
                         report
                             .latency
                             .store(instrument_latency + inserts.latency(), Ordering::Release);
@@ -1765,6 +1817,12 @@ impl Engine {
         }
         instrument.stop()
     }
+    /// T38: true once a callback has delivered the current epoch to every active track and
+    /// the routing since the last track joined, so a transport start plays an aligned graph.
+    pub fn aligned(&self) -> bool {
+        self.clock.aligned()
+    }
+
     pub fn summary(&self) -> String {
         format!(
             "{} Hz · requested {} frames · actual {}–{} frames · lead {} samples · plugin latency {} samples · clipped samples {}",
@@ -1941,6 +1999,60 @@ mod tests {
         clock.epoch.store(1, Ordering::Release);
         mix.fill(&mut out, 0);
         assert_eq!(out, [0.0; 2]);
+    }
+    #[test]
+    fn alignment_waits_for_every_active_track_to_deliver_the_current_epoch() {
+        let clock = Arc::new(Clock::new());
+        let (mut tx, rx) = RingBuffer::new(4);
+        let stats = clock.tracks[0].clone();
+        stats.active.store(true, Ordering::Relaxed);
+        let mut mix = Mix {
+            mixer: DeviceMix::default(),
+            routing: None,
+            bus_frame: [[0.0; 2]; MAX_TRACKS],
+            bus_ramps: std::array::from_fn(|_| (0, Ramp::default())),
+            bus_peaks: [[0.0; 2]; MAX_TRACKS],
+            readers: vec![Reader {
+                mix: ChannelMix::default(),
+                used: false,
+                epoch: 0,
+                token: 0,
+                transitioning: true,
+                queue: rx,
+                next: None,
+                stats,
+            }],
+            clock: clock.clone(),
+            position: 0,
+            channels: 2,
+            pair: [0, 1],
+            bound: 4,
+            lead: 0,
+            transport: None,
+        };
+        let mut out = [0.0; 2 * BLOCK];
+        mix.fill(&mut out, 0);
+        assert!(
+            !clock.aligned(),
+            "a joined track without packets is not aligned"
+        );
+        let packet = |at| Packet {
+            at,
+            epoch: 0,
+            token: 0,
+            transport: 0,
+            frames: [[0.0; 2]; BLOCK],
+        };
+        tx.push(packet(BLOCK as u64)).ok().unwrap();
+        mix.fill(&mut out, 0);
+        assert!(clock.aligned(), "every active track delivered the epoch");
+        clock.alignment_change.fetch_add(1, Ordering::AcqRel);
+        assert!(!clock.aligned(), "a newly joined track clears alignment");
+        tx.push(packet(2 * BLOCK as u64)).ok().unwrap();
+        mix.fill(&mut out, 0);
+        assert!(clock.aligned());
+        clock.epoch.store(2, Ordering::Release);
+        assert!(!clock.aligned(), "an epoch change clears alignment");
     }
 }
 
@@ -2233,6 +2345,7 @@ mod callback_proof {
             },
             spare: Some(vec![[[0.0; 2]; BLOCK]; MAX_TRACKS]),
             dry: vec![DrySample::default(); 4 * BLOCK],
+            hit: false,
         });
         let mut frames = vec![0.0; 3 * BLOCK * 4];
         COUNT.with(|counter| counter.set(Some(0)));
@@ -2296,6 +2409,7 @@ mod callback_proof {
             },
             spare: Some(vec![[[0.0; 2]; BLOCK]; 2]),
             dry: Vec::new(),
+            hit: false,
         };
         routing.begin(0, 1, 2, 2);
         routing.pending.direct[0] = [0.25, -0.25];
@@ -2336,6 +2450,7 @@ mod callback_proof {
                     },
                     spare: Some(vec![[[0.0; 2]; BLOCK]; MAX_TRACKS]),
                     dry: Vec::new(),
+                    hit: false,
                 };
                 routing.begin(0, 1, 2, 1);
                 routing.finish(BLOCK as u64 - 1);
@@ -2371,6 +2486,7 @@ mod callback_proof {
             },
             spare: Some(Vec::new()),
             dry: vec![DrySample::default(); lead as usize + BLOCK],
+            hit: false,
         };
         let mut heard = [[0.0; 2]; 4 * BLOCK];
         COUNT.with(|counter| counter.set(Some(0)));

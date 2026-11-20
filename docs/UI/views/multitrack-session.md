@@ -56,7 +56,10 @@ actual device callback size and final-output clipping count.
 Click or keyboard-select a track to load it on first use. Project Open restores
 only metadata/state, initially highlights the first track and leaves every worker
 unloaded and audio stopped. Clicking that initially highlighted row explicitly
-requests loading. Open Editor and Enable Audio can also request the first load.
+requests loading. Open Editor can also request the first load. Starting the audio engine
+(Enable Audio) loads every online, unquarantined instrument track in the background (T38), and a
+Play pressed meanwhile shows the pending state until those loads finish and the engine's latency
+alignment reaches every attached track; a failed load does not hold Play.
 Loading and activation run in a track job; late completions are checked against
 project generation, stable track ID and request version.
 

@@ -1822,6 +1822,7 @@ impl Session {
                         self.request_load(id, None)?;
                     }
                 }
+                failures.extend(self.preload_instruments());
                 self.view.message = if failures.is_empty() {
                     "Audio active.".into()
                 } else {
@@ -2120,7 +2121,7 @@ impl Session {
             self.view.message =
                 format!("Some MIDI tracks are unavailable: {}", warnings.join("; "));
         }
-        if self.loading_playback_tracks() {
+        if self.play_waiting() {
             self.deferred_play = Some(record);
             self.view.recording = record;
             Ok(())
@@ -2129,13 +2130,50 @@ impl Session {
         }
     }
 
-    fn loading_playback_tracks(&self) -> bool {
-        self.view
+    /// T38 R1: request a background load for every instrument track that can play, so the
+    /// first Play does not attach brokers and realign latency while the transport starts.
+    /// Returns one message per track whose request was refused.
+    fn preload_instruments(&mut self) -> Vec<String> {
+        let eligible: Vec<_> = self
+            .view
             .project
-            .midi
             .tracks
-            .keys()
-            .any(|id| self.runtimes.get(id).is_some_and(|runtime| runtime.loading))
+            .iter()
+            .filter(|track| {
+                track.kind == TrackKind::Instrument
+                    && !track.instrument_offline
+                    && track
+                        .plugin
+                        .as_ref()
+                        .is_some_and(|plugin| !self.blocked(plugin) && plugin.path.exists())
+                    && !self
+                        .runtimes
+                        .get(&track.id)
+                        .is_some_and(|r| r.instrument.is_some() || r.loading)
+            })
+            .map(|track| (track.id, track.name.clone()))
+            .collect();
+        eligible
+            .into_iter()
+            .filter_map(|(id, name)| {
+                self.request_load(id, None)
+                    .err()
+                    .map(|error| format!("{name}: {error}"))
+            })
+            .collect()
+    }
+
+    /// T38 R2: deferred Play waits while any online track is loading and until the engine
+    /// has delivered the current latency alignment to every attached track.
+    fn play_waiting(&self) -> bool {
+        let loading = self.view.project.tracks.iter().any(|track| {
+            !track.instrument_offline
+                && self
+                    .runtimes
+                    .get(&track.id)
+                    .is_some_and(|runtime| runtime.loading)
+        });
+        loading || self.engine.as_ref().is_some_and(|engine| !engine.aligned())
     }
 
     fn start_play(&mut self, record: bool) -> Result<()> {
@@ -3071,10 +3109,7 @@ impl Session {
             }
         }
         self.poll_jobs();
-        if let Some(record) = self
-            .deferred_play
-            .filter(|_| !self.loading_playback_tracks())
-        {
+        if let Some(record) = self.deferred_play.filter(|_| !self.play_waiting()) {
             self.deferred_play = None;
             if let Err(error) = self.start_play(record) {
                 self.view.recording = false;
@@ -5582,5 +5617,110 @@ mod tests {
         session.apply(Action::Open(path)).unwrap();
         assert_eq!(session.view.project, expected);
         assert_eq!(session.view.project.tracks[0].take_lanes, lanes);
+    }
+
+    #[test]
+    fn engine_start_preloads_every_playable_instrument_and_play_waits_for_loads() {
+        let (directory, mut session) = isolated();
+        while session.view.project.tracks.len() < 4 {
+            session.apply(Action::AddTrack(None)).unwrap();
+        }
+        let present = directory.0.join("Present.vst3");
+        std::fs::write(&present, b"").unwrap();
+        let quarantined = directory.0.join("Quarantined.vst3");
+        std::fs::write(&quarantined, b"").unwrap();
+        let tracks = &mut session.view.project.tracks;
+        tracks[0].plugin = Some(plugin(present.clone(), "present"));
+        tracks[1].plugin = Some(plugin(present, "offline"));
+        tracks[1].instrument_offline = true;
+        tracks[2].plugin = Some(plugin(quarantined.clone(), "quarantined"));
+        tracks[3].plugin = Some(plugin(directory.0.join("Missing.vst3"), "missing"));
+        session.view.quarantine.push(Entry {
+            plugin: plugin(quarantined, "quarantined"),
+            reason: "test".into(),
+            time: 0,
+            effect: false,
+        });
+        let ids: Vec<_> = session.view.project.tracks.iter().map(|t| t.id).collect();
+        assert!(!session.play_waiting());
+        assert!(session.preload_instruments().is_empty());
+        let loading = |s: &Session, id| s.runtimes.get(&id).is_some_and(|r| r.loading);
+        assert!(
+            loading(&session, ids[0]),
+            "playable track loads in the background"
+        );
+        for id in &ids[1..] {
+            assert!(
+                !loading(&session, *id),
+                "offline, quarantined and missing tracks stay idle"
+            );
+        }
+        assert!(
+            session.play_waiting(),
+            "Play waits while a track is loading"
+        );
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while loading(&session, ids[0]) && Instant::now() < deadline {
+            session.poll();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!loading(&session, ids[0]));
+        assert!(!session.play_waiting(), "a failed load ends the wait");
+        assert!(session.preload_instruments().is_empty());
+    }
+
+    #[test]
+    #[ignore = "requires local validation-output/T12-listening-v2.clef, its plugins, the saved output device and WindowServer"]
+    fn native_t12_first_play_starts_on_an_aligned_graph() {
+        let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
+        let (_directory, mut session) = isolated();
+        session
+            .apply(Action::Open(
+                root.join("validation-output/T12-listening-v2.clef"),
+            ))
+            .unwrap();
+        session.apply(Action::Enable).unwrap();
+        // Press Play at once, as a user would right after opening.
+        session
+            .apply(Action::Transport(TransportAction::Play))
+            .unwrap();
+        let mut passes = Vec::new();
+        for pass in 0..2 {
+            let deadline = Instant::now() + Duration::from_secs(60);
+            while session.view.transport.phase != TransportPhase::Playing {
+                assert!(Instant::now() < deadline, "{}", session.view.message);
+                session.poll();
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            let clock = session.engine.as_ref().unwrap().clock.clone();
+            let start = clock.transitions.load(Ordering::Relaxed);
+            let latency = clock.latency.load(Ordering::Relaxed);
+            // Covers the T12 CLAP fixture's one-time restart after 48 000 processed samples.
+            let end = Instant::now() + Duration::from_millis(2500);
+            while Instant::now() < end {
+                session.poll();
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let transitions = clock.transitions.load(Ordering::Relaxed) - start;
+            assert_eq!(clock.latency.load(Ordering::Relaxed), latency);
+            passes.push(transitions);
+            eprintln!("pass {pass}: {transitions} transition frames, latency {latency}");
+            session
+                .apply(Action::Transport(TransportAction::Stop))
+                .unwrap();
+            for _ in 0..100 {
+                session.poll();
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            if pass == 0 {
+                session
+                    .apply(Action::Transport(TransportAction::Play))
+                    .unwrap();
+            }
+        }
+        assert!(
+            passes[0] <= passes[1] + protocol::BLOCK as u64,
+            "first Play must not realign more than a later Play: {passes:?}"
+        );
     }
 }
