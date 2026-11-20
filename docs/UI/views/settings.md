@@ -20,6 +20,16 @@ selection edge; a match count in 10-px `secondary` while searching. On `backgrou
 16-px heading, or "Results for …" grouped by 11-px `secondary` category names. Rows: a 160-pixel
 `secondary` label, the control, an optional 11-px caption under it. Spacing, never rules.
 
+## Audio page: Applies to (T39)
+The current Audio/MIDI Settings window opens with an **Applies to** choice — All projects · This
+project — implemented as two adjacent selectable labels (the segmented-control pattern, whose
+primitive is still planned), then an 11-px `secondary` caption: "All projects saves Clef's audio
+preferences. This project saves an override in the project file." and the line "Applying restarts
+audio." It opens on This project when the project has an override, else All projects; applying All
+projects removes an override. There is no Enable or Disable Audio command: audio starts with each
+open project and restarts after every apply. A missing output falls back (override → global device
+→ macOS default) and the message names the missing and the used device.
+
 ## Plugins › Quarantined plugins (D88)
 Between Preferred format and the scanned list: the 160-pixel `secondary` label with an 11-px caption,
 11-px uppercase column captions (Plugin, Format, Reason, Since), 26-pixel [list rows](../components/list-row.md)

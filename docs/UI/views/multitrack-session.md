@@ -54,10 +54,11 @@ actual device callback size and final-output clipping count.
 ## Behavior
 
 Click or keyboard-select a track to load it on first use. Project Open restores
-only metadata/state, initially highlights the first track and leaves every worker
-unloaded and audio stopped. Clicking that initially highlighted row explicitly
-requests loading. Open Editor can also request the first load. Starting the audio engine
-(Enable Audio) loads every online, unquarantined instrument track in the background (T38), and a
+only metadata/state and initially highlights the first track; audio then starts by
+itself with the effective audio configuration (T39: project override, else Clef's
+global preferences, else the macOS default output). Clicking that initially highlighted
+row explicitly requests loading. Open Editor can also request the first load. Starting
+the audio engine loads every online, unquarantined instrument track in the background (T38), and a
 Play pressed meanwhile shows the pending state until those loads finish and the engine's latency
 alignment reaches every attached track; a failed load does not hold Play.
 Loading and activation run in a track job; late completions are checked against
@@ -80,7 +81,7 @@ outside click dismisses it; Show Quarantined Plugins opens the shared manager.
 Session-time faults use persistent row/status feedback without a disruptive modal.
 
 Reactivate names the affected tracks and warns about lost unsnapshotted edits;
-clearing the block loads nothing and does not enable audio. Retained-state Save
+clearing the block loads nothing and does not restart audio. Retained-state Save
 requires explicit confirmation naming the affected tracks. Consent is tied to
 specific failure versions, so it cannot authorize a subsequent failure silently.
 

@@ -134,7 +134,7 @@ channel.
 Power is normal plugin bypass: the instrument worker stays online and processes MIDI and state,
 but its output is replaced with silence before Gain and the effect chain. Effect tails may
 continue. **Offline** is separate: the worker is released after its state is captured into the
-project, the track does not load on open, selection, Enable Audio, playback or record preparation,
+project, the track does not load on open, selection, audio start, playback or record preparation,
 and the saved identity and state are retained. Bring Online reloads from that state. Both flags
 persist and each change is one undo step.
 

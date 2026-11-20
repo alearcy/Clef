@@ -7,6 +7,10 @@
 **Roadmap:** [Post-T03 backlog](../planning/post-T03-backlog.md)
 **Depends on:** T04; T03 audio/MIDI device selection and explicit enable/disable contract.
 
+> **2026-11-20:** [T39](T39-always-on-audio.md) removes Enable/Disable Audio and implements global
+> audio preferences, the per-project override, first-launch defaults, and missing-device fallback.
+> T17 keeps hotplug, reconnection, and the remaining scope below.
+
 ## Goal
 
 Make audio and MIDI device handling resilient across real sessions: hotplug and device

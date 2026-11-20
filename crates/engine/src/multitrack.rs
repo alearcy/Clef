@@ -1148,77 +1148,88 @@ impl Engine {
         let (mut capture_tx, capture) = RingBuffer::new(MAX_CAPTURE_MESSAGES);
         let state = clock.clone();
         let mut owners = [u64::MAX; 16 * 128];
-        let midi = audio_io::midi_input(
-            "Clef session",
-            "Clef selected track",
-            midi_id.as_deref(),
-            None,
-            false,
-            move |bytes| {
-                if state.silence.load(Ordering::Acquire) {
-                    return;
-                }
-                let Some(bytes) = channel_message(bytes) else {
-                    return;
-                };
-                let revision = state.revision.load(Ordering::Acquire);
-                let selected = state.selected.load(Ordering::Acquire);
-                if let Some(index) = control_index(bytes) {
-                    state.controls[index].store(
-                        u32::from_le_bytes([bytes[0], bytes[1], bytes[2], 0]),
-                        Ordering::Release,
-                    );
-                }
-                if !belongs_to_selection(&mut owners, bytes, revision) {
-                    return;
-                }
-                if selected == 0 {
-                    return;
-                }
-                if let Some((slot, stats)) = state.tracks.iter().enumerate().find(|(_, s)| {
-                    s.id.load(Ordering::Acquire) == selected && s.active.load(Ordering::Acquire)
-                }) {
-                    let token = stats.token.load(Ordering::Acquire);
-                    if revision != state.revision.load(Ordering::Acquire) {
-                        return;
-                    }
-                    let now = state.origin.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
-                    let Some((at, output_latency)) = state.event_position(now, rate) else {
-                        return;
-                    };
-                    let capture_epoch = state.capture_epoch.load(Ordering::SeqCst);
-                    if capture_epoch % 2 == 1
-                        && state.capture_target.load(Ordering::Acquire) == selected
-                        && capture_message(bytes)
-                    {
-                        state.capture_writing.store(true, Ordering::SeqCst);
-                        if state.capture_epoch.load(Ordering::SeqCst) == capture_epoch
-                            && !state.capture_overflow.load(Ordering::Acquire)
+        // T39: MIDI input is optional; the session reports a missing port.
+        let midi_id = midi_id.filter(|id| !id.is_empty());
+        let midi = midi_id
+            .as_deref()
+            .map(|midi_id| {
+                audio_io::midi_input(
+                    "Clef session",
+                    "Clef selected track",
+                    Some(midi_id),
+                    None,
+                    false,
+                    move |bytes| {
+                        if state.silence.load(Ordering::Acquire) {
+                            return;
+                        }
+                        let Some(bytes) = channel_message(bytes) else {
+                            return;
+                        };
+                        let revision = state.revision.load(Ordering::Acquire);
+                        let selected = state.selected.load(Ordering::Acquire);
+                        if let Some(index) = control_index(bytes) {
+                            state.controls[index].store(
+                                u32::from_le_bytes([bytes[0], bytes[1], bytes[2], 0]),
+                                Ordering::Release,
+                            );
+                        }
+                        if !belongs_to_selection(&mut owners, bytes, revision) {
+                            return;
+                        }
+                        if selected == 0 {
+                            return;
+                        }
+                        if let Some((slot, stats)) =
+                            state.tracks.iter().enumerate().find(|(_, s)| {
+                                s.id.load(Ordering::Acquire) == selected
+                                    && s.active.load(Ordering::Acquire)
+                            })
                         {
-                            let heard = at.saturating_sub(output_latency);
-                            if capture_tx.push(Captured { at: heard, bytes }).is_err() {
-                                state.capture_overflow.store(true, Ordering::Release);
+                            let token = stats.token.load(Ordering::Acquire);
+                            if revision != state.revision.load(Ordering::Acquire) {
+                                return;
+                            }
+                            let now =
+                                state.origin.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
+                            let Some((at, output_latency)) = state.event_position(now, rate) else {
+                                return;
+                            };
+                            let capture_epoch = state.capture_epoch.load(Ordering::SeqCst);
+                            if capture_epoch % 2 == 1
+                                && state.capture_target.load(Ordering::Acquire) == selected
+                                && capture_message(bytes)
+                            {
+                                state.capture_writing.store(true, Ordering::SeqCst);
+                                if state.capture_epoch.load(Ordering::SeqCst) == capture_epoch
+                                    && !state.capture_overflow.load(Ordering::Acquire)
+                                {
+                                    let heard = at.saturating_sub(output_latency);
+                                    if capture_tx.push(Captured { at: heard, bytes }).is_err() {
+                                        state.capture_overflow.store(true, Ordering::Release);
+                                    }
+                                }
+                                state.capture_writing.store(false, Ordering::SeqCst);
+                            }
+                            if senders[slot]
+                                .push(Input {
+                                    at,
+                                    revision,
+                                    token,
+                                    bytes,
+                                })
+                                .is_err()
+                            {
+                                stats.midi_dropped.fetch_add(1, Ordering::Relaxed);
+                                stats.release.store(true, Ordering::Release);
+                            } else {
+                                stats.midi_received.fetch_add(1, Ordering::Relaxed);
                             }
                         }
-                        state.capture_writing.store(false, Ordering::SeqCst);
-                    }
-                    if senders[slot]
-                        .push(Input {
-                            at,
-                            revision,
-                            token,
-                            bytes,
-                        })
-                        .is_err()
-                    {
-                        stats.midi_dropped.fetch_add(1, Ordering::Relaxed);
-                        stats.release.store(true, Ordering::Release);
-                    } else {
-                        stats.midi_received.fetch_add(1, Ordering::Relaxed);
-                    }
-                }
-            },
-        )?;
+                    },
+                )
+            })
+            .transpose()?;
         let (transport, renderer) = Renderer::new(timing, tick);
         let (mixer, incoming) = RingBuffer::new(2);
         let (routing, routing_input) = RoutingBroker::start(clock.clone(), bound, lead, rate)?;
@@ -1258,7 +1269,7 @@ impl Engine {
             desired_mix: PreparedMix::default(),
             mix_pending: false,
             stream,
-            midi: Some(midi),
+            midi,
             outputs,
             inputs,
             clock,

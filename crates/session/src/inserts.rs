@@ -91,7 +91,7 @@ impl Session {
             &self.executable,
             &insert.plugin.path,
             &insert.plugin.id,
-            self.view.project.audio.rate,
+            self.worker_rate,
             (!insert.state.is_empty()).then_some(insert.state.as_ref()),
             &AtomicBool::new(false),
         )

@@ -23,12 +23,16 @@ pub struct Configuration {
 pub struct Devices {
     pub audio: Vec<AudioDevice>,
     pub midi: Vec<(String, String)>,
+    /// The macOS default output device, when there is one.
+    pub default_output: Option<String>,
 }
 #[derive(Clone)]
 pub struct AudioDevice {
     pub id: String,
     pub name: String,
     pub configurations: Vec<AudioRange>,
+    /// The sample rate the device currently runs at, when the backend reports it.
+    pub current_rate: Option<u32>,
 }
 #[derive(Clone)]
 pub struct AudioRange {
@@ -62,15 +66,27 @@ impl Devices {
                 id: device.id()?.to_string(),
                 name: device.description()?.name().into(),
                 configurations,
+                current_rate: device
+                    .default_output_config()
+                    .ok()
+                    .map(|config| config.sample_rate()),
             });
         }
+        let default_output = cpal::default_host()
+            .default_output_device()
+            .and_then(|device| device.id().ok())
+            .map(|id| id.to_string());
         let input = midir::MidiInput::new("Clef device list")?;
         let midi = input
             .ports()
             .iter()
             .map(|p| Ok((p.id(), input.port_name(p)?)))
             .collect::<Result<Vec<_>>>()?;
-        Ok(Self { audio, midi })
+        Ok(Self {
+            audio,
+            midi,
+            default_output,
+        })
     }
     pub fn validate(&self, settings: &AudioSettings) -> Result<()> {
         let device = self
@@ -81,7 +97,8 @@ impl Devices {
         if !device.configurations.iter().any(|c| c.supports(settings)) {
             return Err("unsupported sample rate, stereo pair or buffer; choose supported values in Settings".into());
         }
-        if !self.midi.iter().any(|(id, _)| id == &settings.midi) {
+        // T39: MIDI input is optional; a missing one is reported when audio starts.
+        if !settings.midi.is_empty() && !self.midi.iter().any(|(id, _)| id == &settings.midi) {
             return Err("MIDI input unavailable; choose it in Audio/MIDI Settings".into());
         }
         Ok(())

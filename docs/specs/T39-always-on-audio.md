@@ -1,7 +1,8 @@
 # T39 — Always-On Audio and Global Audio Preferences
 
-- **Status** — Approved — 2026-11-20. Specification and UI proposal approved by the user on
-  2026-11-20; the two open questions remain to be answered before implementation.
+- **Status** — Done — 2026-11-20. Specification and UI proposal approved by the user on
+  2026-11-20; open questions answered the same day. Implementation, automated and native evidence,
+  and the user's GUI and hardware checks complete.
 - **Priority** — P1 (user request).
 - **Task** — [T39](../../TASKS.md)
 - **Dependencies** — T03 (device selection, explicit enable/disable contract, superseded here),
@@ -20,7 +21,8 @@ after a restart the user can play at once.
   **global** preference, with an optional **per-project override** chosen explicitly in Settings.
 - Audio blocks already saved in existing projects are **ignored**: they do not become overrides.
 - When the configured output device is unavailable at start, a message always tells the user;
-  the engine then falls back to the macOS default output; if there is none, audio stays off.
+  the engine then falls back: a missing project-override device tries the global device first,
+  then the macOS default output; if there is none, audio stays off.
 - There is no way to switch the engine off: Enable Audio and Disable Audio are removed.
 
 ## Scope and Acceptance Criteria
@@ -57,9 +59,11 @@ after a restart the user can play at once.
 
 ### A3 — Missing device fallback
 
-- If the effective output device is missing, the message names it and says audio is using the
-  macOS default output; the engine starts on that default with the same rate and buffer when
-  supported, else the default's current rate and a 128-frame buffer.
+- If the effective output device is missing, the message names it and the device in use. A
+  project override falls back to the global device when that is present, else to the macOS
+  default output; global preferences fall back to the macOS default output. A fallback device
+  keeps the requested rate and buffer when supported, else uses its current rate and a 128-frame
+  buffer.
 - The fallback never rewrites the global preferences or the project override.
 - If there is no default output either, audio stays off and the message says so.
 - A missing MIDI input is reported and the engine starts without MIDI input.
@@ -98,8 +102,52 @@ after a restart the user can play at once.
 - Hardware (user): restart Clef with the Audient connected → audio active at once; disconnected →
   message and macOS default output.
 
+## Implementation (2026-11-20)
+
+- Model: `Project.audio` is `Option<AudioSettings>`, the explicit override; the project format is
+  version 5 (`audio_override` key). Version 1–4 audio blocks are read and discarded.
+- `clef-audio-io`: `Devices` reports the macOS default output and each device's current rate;
+  `validate` no longer requires a MIDI input. The engine opens MIDI only when an input is set.
+- `clef-session/src/audio.rs`: `Preferences` (`~/Library/Application Support/Clef/audio.json`,
+  atomic write, invalid file reported and kept) and `resolve` (override → global device → macOS
+  default; first-launch defaults; MIDI optional).
+- Session: `start_audio` replaces Enable; `Action::Settings { audio, project }` writes the
+  preferences or the override, stops and restarts audio. `Action::Enable`/`Disable` are removed.
+  Workers follow the engine rate (`worker_rate`): a different rate captures their state and
+  reloads them.
+- UI: Enable/Disable commands and the toolbar button are removed; the toolbar shows Audio active /
+  Audio off. Audio/MIDI Settings has the Applies to choice and the agreed captions.
+
+Clarifications made during implementation:
+
+- "Clef launches" means the session starts audio as soon as a project is open; the startup
+  chooser has no project. Every Open/New/Recover restarts the engine, because leaving a project
+  already releases all workers.
+- The Applies to choice uses two egui selectable labels, the pattern the existing record-mode
+  controls use, because the segmented-control primitive is still `impl: planned`.
+- A MIDI input lost during a session is reported once and audio keeps running (MIDI optional).
+
+## Verification Evidence
+
+- Automated (2026-11-20): `cargo fmt --all --check`, `cargo clippy --all-targets --locked -- -D
+  warnings`, `cargo test --locked` — 223 passed, 26 ignored. New tests: model
+  `audio_is_an_explicit_override_and_legacy_audio_blocks_are_ignored`; session `audio::tests`
+  (resolution order, missing override → global → default, adapted fallback values, no output,
+  missing MIDI, preferences round trip and invalid file kept).
+- Native (2026-11-20, ignored `native_audio_starts_by_itself_and_settings_scope_global_or_project`,
+  macOS default output): audio starts by itself on New with first-launch defaults and writes
+  nothing; a global apply writes the preferences and restarts audio; a project apply stores an
+  override, keeps the global preferences and marks the project dirty; a later global apply removes
+  the override. T38's `native_t12_first_play_starts_on_an_aligned_graph` still reports 0
+  transition frames on both passes.
+- Not rerun: the older T03/T04 native suites (commercial plugins, virtual MIDI); they now start
+  audio with `start_audio` and read the saved T03 output through a test helper.
+- GUI (user, 2026-11-20): Settings Applies to choice, captions, and toolbar without Enable
+  confirmed correct. The legacy `docs/UI/snapshots/settings.png` is not regenerated.
+- Hardware (user, 2026-11-20): audio active on project open; global apply on the Audient EVO16
+  persists across a Clef restart; fallback behavior confirmed correct.
+
 ## Open Questions
 
-- When a project override names a missing device, should the fallback try the global device
-  before the macOS default? Proposed: no, go straight to the macOS default as agreed.
-- First-launch defaults (A1): confirm the 128-frame buffer and the device's current sample rate.
+None. Answered 2026-11-20: a missing override device tries the global device before the macOS
+default; first-launch defaults are confirmed (128-frame buffer, the device's current rate).

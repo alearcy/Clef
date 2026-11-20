@@ -48,6 +48,25 @@ pub struct AudioSettings {
     pub rate: u32,
     pub buffer: u32,
 }
+/// The current project format. Version 5 (T39) stores audio settings only as an explicit
+/// project override.
+pub const PROJECT_VERSION: u32 = 5;
+
+impl AudioSettings {
+    pub fn validate(&self) -> Result<()> {
+        let valid_text = |text: &str| text.len() <= 4096 && !text.contains('\0');
+        if !(8000..=384000).contains(&self.rate)
+            || !(1..=65536).contains(&self.buffer)
+            || self.pair[0] == self.pair[1]
+            || self.pair.iter().any(|n| *n >= 4096)
+            || !valid_text(&self.device)
+            || !valid_text(&self.midi)
+        {
+            return Err("invalid audio configuration".into());
+        }
+        Ok(())
+    }
+}
 impl Default for AudioSettings {
     fn default() -> Self {
         Self {
@@ -298,7 +317,10 @@ pub struct Project {
     pub version: u32,
     pub tracks: Vec<Track>,
     pub next_id: u64,
-    pub audio: AudioSettings,
+    /// T39: audio settings that override Clef's global audio preferences for this project.
+    /// `None` uses the global preferences.
+    #[serde(default)]
+    pub audio: Option<AudioSettings>,
     #[serde(default)]
     pub timeline: Timeline,
     #[serde(default)]
@@ -345,7 +367,12 @@ struct Metadata {
     version: u32,
     tracks: Vec<Track>,
     next_id: u64,
-    audio: AudioSettings,
+    /// Version 2–4 audio settings; read and discarded since T39 (global preferences).
+    #[allow(dead_code)]
+    #[serde(default, skip_serializing)]
+    audio: Option<AudioSettings>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    audio_override: Option<AudioSettings>,
     #[serde(default)]
     timeline: Timeline,
     #[serde(default, skip_serializing_if = "is_merge")]
@@ -379,15 +406,17 @@ struct LegacyTrack {
 struct LegacyProject {
     version: u32,
     track: Option<LegacyTrack>,
+    /// Read for format validation and discarded since T39.
+    #[allow(dead_code)]
     audio: AudioSettings,
 }
 impl Default for Project {
     fn default() -> Self {
         Self {
-            version: 4,
+            version: PROJECT_VERSION,
             tracks: Vec::new(),
             next_id: 1,
-            audio: AudioSettings::default(),
+            audio: None,
             timeline: Timeline::default(),
             record_mode: Mode::Merge,
             midi: Arc::default(),
@@ -499,17 +528,11 @@ impl Project {
         }
         self.arrangement_view.validate()?;
         let valid_text = |text: &str| text.len() <= 4096 && !text.contains('\0');
-        if self.version != 4 {
+        if self.version != PROJECT_VERSION {
             return Err("unsupported Clef project version".into());
         }
-        if !(8000..=384000).contains(&self.audio.rate)
-            || !(1..=65536).contains(&self.audio.buffer)
-            || self.audio.pair[0] == self.audio.pair[1]
-            || self.audio.pair.iter().any(|n| *n >= 4096)
-            || !valid_text(&self.audio.device)
-            || !valid_text(&self.audio.midi)
-        {
-            return Err("invalid project audio configuration".into());
+        if let Some(audio) = &self.audio {
+            audio.validate()?;
         }
         if self.tracks.len() > MAX_TRACKS || self.next_id == 0 {
             return Err("invalid track count or next identity".into());
@@ -647,7 +670,8 @@ impl Project {
                 })
                 .collect(),
             next_id: self.next_id,
-            audio: self.audio.clone(),
+            audio: None,
+            audio_override: self.audio.clone(),
             timeline: self.timeline.clone(),
             record_mode: self.record_mode,
             midi: self.midi.clone(),
@@ -739,10 +763,10 @@ impl Project {
             };
             (
                 Self {
-                    version: 4,
+                    version: PROJECT_VERSION,
                     next_id: tracks.len() as u64 + 1,
                     tracks,
-                    audio: legacy.audio,
+                    audio: None,
                     timeline: Timeline::default(),
                     record_mode: Mode::Merge,
                     midi: Arc::default(),
@@ -754,7 +778,7 @@ impl Project {
             )
         } else {
             let metadata: Metadata = serde_json::from_slice(&metadata)?;
-            if !(2..=4).contains(&metadata.version) {
+            if !(2..=PROJECT_VERSION).contains(&metadata.version) {
                 return Err("unsupported Clef project version".into());
             }
             let mut midi = metadata.midi;
@@ -767,10 +791,16 @@ impl Project {
             };
             (
                 Self {
-                    version: 4,
+                    version: PROJECT_VERSION,
                     tracks: metadata.tracks,
                     next_id: metadata.next_id,
-                    audio: metadata.audio,
+                    // Audio blocks from versions 2–4 are ignored (T39); only an explicit
+                    // version 5 override is kept.
+                    audio: if metadata.version == PROJECT_VERSION {
+                        metadata.audio_override
+                    } else {
+                        None
+                    },
                     timeline: metadata.timeline,
                     record_mode,
                     midi,
@@ -1064,7 +1094,7 @@ mod tests {
             &bytes[16 + length..],
         );
         let migrated = Project::decode(&mut old.as_slice()).unwrap();
-        assert_eq!(migrated.version, 4);
+        assert_eq!(migrated.version, PROJECT_VERSION);
         assert_eq!(migrated.record_mode, Mode::NewTake);
         assert_eq!(migrated.midi.mode, Mode::Merge);
         assert_eq!(migrated.midi.clips(track), project.midi.clips(track));
@@ -1090,7 +1120,7 @@ mod tests {
         bytes[12..16].copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(Project::decode(&mut bytes.as_slice()).is_err());
         let mut project = sample();
-        project.version = 5;
+        project.version = PROJECT_VERSION + 1;
         assert!(project.write(&mut Vec::new()).is_err());
     }
     #[test]
@@ -1103,10 +1133,10 @@ mod tests {
         changed.tracks.first_mut().unwrap().name = "Changed".into();
         assert!(changed.save(&path, false).is_err());
         assert_eq!(Project::read(&path).unwrap(), project);
-        changed.version = 5;
+        changed.version = PROJECT_VERSION + 1;
         assert!(changed.save(&path, true).is_err());
         assert_eq!(Project::read(&path).unwrap(), project);
-        changed.version = 4;
+        changed.version = PROJECT_VERSION;
         changed.save(&path, true).unwrap();
         assert_eq!(Project::read(&path).unwrap(), changed);
         assert_eq!(std::fs::read_dir(&directory.0).unwrap().count(), 1);
@@ -1145,7 +1175,7 @@ mod tests {
         let path = directory.0.join("Legacy.clef");
         std::fs::write(&path, &original).unwrap();
         let project = Project::read(&path).unwrap();
-        assert_eq!(project.version, 4);
+        assert_eq!(project.version, PROJECT_VERSION);
         assert_eq!(project.tracks[0].id, 1);
         assert_eq!(*project.tracks[0].state, [0, 255, 42]);
         assert_eq!(std::fs::read(&path).unwrap(), original);
@@ -1294,7 +1324,7 @@ mod tests {
             &bytes[16 + length..],
         );
         let migrated = Project::decode(&mut old.as_slice()).unwrap();
-        assert_eq!(migrated.version, 4);
+        assert_eq!(migrated.version, PROJECT_VERSION);
         assert_eq!(migrated.record_mode, Mode::Merge);
         assert_eq!(migrated.tracks[0].record_mode, TrackMode::Global);
         assert!(!migrated.tracks[0].take_lanes.visible);
@@ -1385,7 +1415,7 @@ mod tests {
             &bytes[16 + length..],
         );
         let migrated = Project::decode(&mut old.as_slice()).unwrap();
-        assert_eq!(migrated.version, 4);
+        assert_eq!(migrated.version, PROJECT_VERSION);
         assert_eq!(migrated.tracks[0].kind, TrackKind::Instrument);
         assert_eq!(migrated.tracks[0].output, None);
         assert!(migrated.tracks[0].sends.is_empty());
@@ -1438,5 +1468,49 @@ mod tests {
             let length = u32::from_le_bytes(written[8..12].try_into().unwrap()) as usize;
             assert_eq!(&written[16 + length..], state, "{}", path.display());
         }
+    }
+
+    #[test]
+    fn audio_is_an_explicit_override_and_legacy_audio_blocks_are_ignored() {
+        let mut project = sample();
+        project.audio = None;
+        let mut bytes = Vec::new();
+        project.write(&mut bytes).unwrap();
+        let length = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+        let metadata: serde_json::Value = serde_json::from_slice(&bytes[16..16 + length]).unwrap();
+        assert!(metadata.get("audio").is_none() && metadata.get("audio_override").is_none());
+        assert_eq!(Project::decode(&mut bytes.as_slice()).unwrap().audio, None);
+
+        let override_settings = AudioSettings {
+            device: "device".into(),
+            midi: "midi".into(),
+            ..AudioSettings::default()
+        };
+        project.audio = Some(override_settings.clone());
+        let mut bytes = Vec::new();
+        project.write(&mut bytes).unwrap();
+        assert_eq!(
+            Project::decode(&mut bytes.as_slice()).unwrap().audio,
+            Some(override_settings.clone())
+        );
+
+        let length = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+        let mut metadata: serde_json::Value =
+            serde_json::from_slice(&bytes[16..16 + length]).unwrap();
+        let object = metadata.as_object_mut().unwrap();
+        object.insert("version".into(), serde_json::json!(4));
+        let saved = object.remove("audio_override").unwrap();
+        object.insert("audio".into(), saved);
+        let old = container(
+            MAGIC,
+            &serde_json::to_vec(&metadata).unwrap(),
+            &bytes[16 + length..],
+        );
+        let migrated = Project::decode(&mut old.as_slice()).unwrap();
+        assert_eq!(migrated.version, PROJECT_VERSION);
+        assert_eq!(
+            migrated.audio, None,
+            "a version 4 audio block is not an override"
+        );
     }
 }

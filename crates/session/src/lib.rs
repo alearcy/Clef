@@ -32,6 +32,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
+mod audio;
 mod edit_history;
 mod inserts;
 mod instruments;
@@ -194,10 +195,13 @@ pub enum Action {
         target: usize,
     },
     Select(u64, Plugin),
-    Settings(AudioSettings),
+    /// Apply audio settings to Clef's global preferences or, with `project`, as this
+    /// project's override; audio restarts with them (T39).
+    Settings {
+        audio: AudioSettings,
+        project: bool,
+    },
     Editor(u64, bool),
-    Enable,
-    Disable,
     Restart(u64),
     Reactivate(Plugin),
     Transport(TransportAction),
@@ -300,6 +304,10 @@ pub struct Snapshot {
     pub failed: bool,
     pub message: String,
     pub actual: String,
+    /// The audio configuration in use while audio runs, after any fallback (T39).
+    pub audio: Option<AudioSettings>,
+    /// Clef's global audio preferences, when saved.
+    pub audio_preferences: Option<AudioSettings>,
     pub transport: TransportView,
     pub armed: Option<u64>,
     pub recording: bool,
@@ -419,6 +427,8 @@ impl Snapshot {
             failed: self.failed,
             message: self.message.clone(),
             actual: self.actual.clone(),
+            audio: self.audio.clone(),
+            audio_preferences: self.audio_preferences.clone(),
             transport: self.transport,
             armed: self.armed,
             recording: self.recording,
@@ -519,6 +529,12 @@ pub struct Session {
     saved_view: clef_model::project::ArrangementView,
     volatile: Volatile,
     paths: Paths,
+    preferences: audio::Preferences,
+    /// Start audio automatically when a project opens (the app; tests start it explicitly).
+    auto_audio: bool,
+    audio_pending: bool,
+    /// The sample rate loaded workers run at.
+    worker_rate: u32,
 }
 
 /// A transient send-level drag value applied to the engine but not to the project.
@@ -532,7 +548,11 @@ struct SendPreview {
 impl Session {
     pub fn new(executable: PathBuf) -> Self {
         match quarantine::location() {
-            Ok(path) => Self::with_registry(path, executable),
+            Ok(path) => {
+                let mut session = Self::with_registry(path, executable);
+                session.auto_audio = true;
+                session
+            }
             Err(e) => {
                 let mut s = Self::with_registry(PathBuf::new(), executable);
                 s.registry_error = e.to_string();
@@ -549,11 +569,18 @@ impl Session {
             .parent()
             .filter(|p| p.is_absolute())
             .map(|p| Store(p.to_owned()));
+        let (preferences, preferences_error) = registry
+            .parent()
+            .filter(|p| p.is_absolute())
+            .map(|p| audio::Preferences::read(p.join("audio.json")))
+            .unwrap_or_default();
         Self {
             executable,
             silence: Arc::new(AtomicBool::new(true)),
             view: Snapshot {
                 quarantine: entries,
+                audio_preferences: preferences.audio.clone(),
+                message: preferences_error.unwrap_or_default(),
                 ..Default::default()
             },
             runtimes: HashMap::new(),
@@ -580,6 +607,10 @@ impl Session {
             saved_view: Default::default(),
             volatile: Volatile::default(),
             paths: Paths::default(),
+            preferences,
+            auto_audio: false,
+            audio_pending: false,
+            worker_rate: clef_plugin_host::protocol::RATE,
         }
     }
 
@@ -715,6 +746,7 @@ impl Session {
         self.send_preview = None;
         self.view.project_open = true;
         self.view.project_epoch = self.view.project_epoch.wrapping_add(1);
+        self.audio_pending = true;
     }
 
     fn view_unsaved(&self) -> bool {
@@ -949,6 +981,7 @@ impl Session {
         self.view.recording = false;
         self.silence.store(true, Ordering::Release);
         self.view.active = false;
+        self.view.audio = None;
         let mut error = None;
         let mut faults = Vec::new();
         if let Some(mut engine) = self.engine.take() {
@@ -1161,7 +1194,7 @@ impl Session {
         runtime.error.clear();
         let (send, receive) = mpsc::channel();
         let identity = plugin.clone();
-        let rate = self.view.project.audio.rate;
+        let rate = self.worker_rate;
         let prepare_live = self.engine.is_some();
         if replacement.is_some()
             && self.live_target() == Some(id)
@@ -1341,7 +1374,7 @@ impl Session {
                 | Action::DiscardBeforeClose
                 | Action::Recover(_)
                 | Action::Save { .. }
-                | Action::Settings(_) => {
+                | Action::Settings { .. } => {
                     return Err("Stop recording before changing or saving the project.".into());
                 }
                 Action::RemoveTrack(id) | Action::Select(id, _) | Action::Restart(id)
@@ -1718,33 +1751,33 @@ impl Session {
                 self.track(id)?;
                 self.request_load(id, Some(plugin))?;
             }
-            Action::Settings(settings) => {
+            Action::Settings { audio, project } => {
                 if self.runtimes.values().any(|r| r.loading) {
                     return Err("wait for instrument loading before reconfiguring".into());
                 }
-                let mut candidate = self.view.project.clone();
-                candidate.audio = settings.clone();
-                candidate.validate()?;
-                Devices::enumerate()?.validate(&settings)?;
-                let mut captured = self.capture(&[])?;
-                captured.audio = settings;
-                let changed_rate = captured.audio.rate != self.view.project.audio.rate;
-                let loaded: Vec<_> = self
-                    .runtimes
+                audio.validate()?;
+                let devices = Devices::enumerate()?;
+                devices.validate(&audio)?;
+                let name = devices
+                    .audio
                     .iter()
-                    .filter(|(_, r)| r.instrument.is_some())
-                    .map(|(id, _)| *id)
-                    .collect();
-                self.view.project = captured;
-                self.mark_other_change();
-                if changed_rate {
-                    self.runtimes.clear();
-                    self.insert_workers.clear();
-                    for id in loaded {
-                        self.request_load(id, None)?;
-                    }
+                    .find(|device| device.id == audio.device)
+                    .map(|device| device.name.clone())
+                    .unwrap_or_default();
+                self.stop()?;
+                let override_audio = project.then(|| audio.clone());
+                if !project {
+                    self.preferences.write(audio, name)?;
+                    self.view.audio_preferences = self.preferences.audio.clone();
                 }
-                self.view.message = "Settings applied. Audio is stopped.".into();
+                if self.view.project.audio != override_audio {
+                    self.view.project.audio = override_audio;
+                    self.mark_other_change();
+                }
+                self.start_audio()?;
+                if self.view.message == "Audio active." {
+                    self.view.message = "Settings applied. Audio restarted.".into();
+                }
             }
             Action::Editor(id, open) => {
                 if self.track(id)?.instrument_offline {
@@ -1763,80 +1796,6 @@ impl Session {
                     self.view.message = "Loading instrument editor…".into();
                 } else {
                     self.set_track_editor(id, open)?;
-                }
-            }
-            Action::Enable => {
-                if self.engine.is_some() {
-                    return Err("audio already active".into());
-                }
-                let selected = self.live_target();
-                Devices::enumerate()?.validate(&self.view.project.audio)?;
-                let settings = &self.view.project.audio;
-                let device = clef_audio_io::output_by_id(&settings.device)?;
-                let timing = Prepared::new(&self.view.project.timeline, settings.rate)?;
-                self.silence.store(false, Ordering::Release);
-                let engine = Engine::start(
-                    Configuration {
-                        device,
-                        pair: settings.pair,
-                        midi_index: None,
-                        midi_id: Some(settings.midi.clone()),
-                        rate: settings.rate,
-                        buffer: settings.buffer,
-                    },
-                    self.silence.clone(),
-                    timing,
-                    self.view.transport.tick,
-                )?;
-                self.engine = Some(engine);
-                self.volatile = Volatile::default();
-                self.view.actual.clear();
-                self.sync_instrument_bypasses(&self.view.project);
-                if let Err(error) = self.reconcile_inserts(&self.view.project.clone(), true) {
-                    let _ = self.stop();
-                    return Err(error);
-                }
-                self.publish_mix();
-                self.update_arrangement()?;
-                self.view.active = true;
-                let ids: Vec<_> = self.runtimes.keys().copied().collect();
-                let mut failures = Vec::new();
-                for track in ids {
-                    if let Err(e) = self.attach(track) {
-                        failures.push(e.to_string());
-                    }
-                }
-                if let Some(id) = selected {
-                    self.engine
-                        .as_ref()
-                        .ok_or("engine unavailable")?
-                        .clock
-                        .select(id);
-                    if self.track(id)?.plugin.is_some()
-                        && !self.track(id)?.instrument_offline
-                        && !self
-                            .runtimes
-                            .get(&id)
-                            .is_some_and(|r| r.instrument.is_some() || r.loading)
-                    {
-                        self.request_load(id, None)?;
-                    }
-                }
-                failures.extend(self.preload_instruments());
-                self.view.message = if failures.is_empty() {
-                    "Audio active.".into()
-                } else {
-                    format!(
-                        "Audio active; some paths unavailable: {}",
-                        failures.join("; ")
-                    )
-                };
-            }
-            Action::Disable => {
-                let capture = self.view.recording;
-                self.stop()?;
-                if !capture {
-                    self.view.message = "Audio stopped.".into();
                 }
             }
             Action::Restart(id) => {
@@ -2071,7 +2030,7 @@ impl Session {
 
     fn record_unavailable(&self) -> Option<&'static str> {
         if self.engine.is_none() {
-            Some("Enable Audio to record.")
+            Some("Audio is off. Choose an output in Audio/MIDI Settings to record.")
         } else if self.view.armed.is_none() {
             Some("Arm an instrument track to record.")
         } else if !self.view.armed.is_some_and(|id| self.ready(id)) {
@@ -2083,7 +2042,7 @@ impl Session {
 
     fn request_play(&mut self, record: bool) -> Result<()> {
         if self.engine.is_none() {
-            return Err("Enable Audio before playback.".into());
+            return Err("Audio is off. Choose an output in Audio/MIDI Settings.".into());
         }
         if record && let Some(reason) = self.record_unavailable() {
             return Err(reason.into());
@@ -2128,6 +2087,98 @@ impl Session {
         } else {
             self.start_play(record)
         }
+    }
+
+    /// Start the audio engine with the effective configuration (T39): the project override,
+    /// else the global preferences, else first-launch defaults, with the agreed fallbacks.
+    pub(crate) fn start_audio(&mut self) -> Result<()> {
+        if self.engine.is_some() {
+            return Ok(());
+        }
+        let devices = Devices::enumerate()?;
+        let resolved = audio::resolve(
+            &devices,
+            self.view.project.audio.as_ref(),
+            self.preferences.audio.as_ref(),
+            &self.preferences.device_name,
+        )?;
+        let settings = resolved.settings;
+        if settings.rate != self.worker_rate
+            && (!self.runtimes.is_empty() || !self.insert_workers.is_empty())
+        {
+            // Workers run at the engine rate: keep their state and reload them at the new one.
+            let captured = self.capture(&[])?;
+            if captured != self.view.project {
+                self.view.project = captured;
+                self.mark_other_change();
+            }
+            self.runtimes.clear();
+            self.insert_workers.clear();
+        }
+        self.worker_rate = settings.rate;
+        let selected = self.live_target();
+        let device = clef_audio_io::output_by_id(&settings.device)?;
+        let timing = Prepared::new(&self.view.project.timeline, settings.rate)?;
+        self.silence.store(false, Ordering::Release);
+        let engine = Engine::start(
+            Configuration {
+                device,
+                pair: settings.pair,
+                midi_index: None,
+                midi_id: Some(settings.midi.clone()),
+                rate: settings.rate,
+                buffer: settings.buffer,
+            },
+            self.silence.clone(),
+            timing,
+            self.view.transport.tick,
+        )?;
+        self.engine = Some(engine);
+        self.view.audio = Some(settings);
+        self.volatile = Volatile::default();
+        self.view.actual.clear();
+        self.sync_instrument_bypasses(&self.view.project);
+        if let Err(error) = self.reconcile_inserts(&self.view.project.clone(), true) {
+            let _ = self.stop();
+            return Err(error);
+        }
+        self.publish_mix();
+        self.update_arrangement()?;
+        self.view.active = true;
+        let ids: Vec<_> = self.runtimes.keys().copied().collect();
+        let mut failures = Vec::new();
+        for track in ids {
+            if let Err(e) = self.attach(track) {
+                failures.push(e.to_string());
+            }
+        }
+        if let Some(id) = selected {
+            self.engine
+                .as_ref()
+                .ok_or("engine unavailable")?
+                .clock
+                .select(id);
+            if self.track(id)?.plugin.is_some()
+                && !self.track(id)?.instrument_offline
+                && !self
+                    .runtimes
+                    .get(&id)
+                    .is_some_and(|r| r.instrument.is_some() || r.loading)
+            {
+                self.request_load(id, None)?;
+            }
+        }
+        failures.extend(self.preload_instruments());
+        let mut message = resolved.notices;
+        if !failures.is_empty() {
+            message.push(format!("Some paths unavailable: {}", failures.join("; ")));
+        }
+        self.view.message = if message.is_empty() {
+            "Audio active.".into()
+        } else {
+            message.join(" ")
+        };
+        Ok(())
     }
 
     /// T38 R1: request a background load for every instrument track that can play, so the
@@ -3090,6 +3141,19 @@ impl Session {
         self.volatile = volatile;
     }
     fn poll(&mut self) {
+        // T39: audio starts by itself once a project is open; a failure waits for the next
+        // apply, open or launch.
+        if self.auto_audio
+            && self.audio_pending
+            && self.view.project_open
+            && self.engine.is_none()
+            && !self.view.recording
+        {
+            self.audio_pending = false;
+            if let Err(error) = self.start_audio() {
+                self.view.message = error.to_string();
+            }
+        }
         self.poll_inserts();
         let closed: Vec<_> = self
             .runtimes
@@ -3171,10 +3235,30 @@ impl Session {
         );
         if self.engine.is_some() && self.last_devices.elapsed() > RESCAN_INTERVAL {
             self.last_devices = Instant::now();
-            if let Err(e) = Devices::enumerate().and_then(|d| d.validate(&self.view.project.audio))
+            let active = self.view.audio.clone().unwrap_or_default();
+            let devices = Devices::enumerate();
+            if let Ok(devices) = &devices
+                && !active.midi.is_empty()
+                && !devices.midi.iter().any(|(id, _)| id == &active.midi)
+                && let Some(audio) = &mut self.view.audio
             {
+                // MIDI is optional (T39): report the loss once and keep audio running.
+                audio.midi.clear();
+                self.view.message =
+                    "MIDI input unavailable; choose one in Audio/MIDI Settings.".into();
+            }
+            if let Err(e) = devices.and_then(|d| {
+                d.validate(&AudioSettings {
+                    midi: String::new(),
+                    ..active
+                })
+            }) {
                 match self.finish_recording(Some(e.to_string())) {
-                    Ok(false) => self.view.message = format!("Audio stopped: {e}"),
+                    Ok(false) => {
+                        self.view.message = format!(
+                            "Audio stopped: {e}. Apply Audio/MIDI Settings to restart audio."
+                        )
+                    }
                     Err(error) => self.view.message = error.to_string(),
                     Ok(true) => {}
                 }
@@ -3188,7 +3272,7 @@ impl Session {
         {
             match self.finish_recording(Some("audio device error".into())) {
                 Ok(false) => self.view.message =
-                    "Audio device error. Settings retained; Enable Audio explicitly after recovery.".into(),
+                    "Audio device error. Settings retained; apply Audio/MIDI Settings to restart audio.".into(),
                 Err(error) => self.view.message = error.to_string(),
                 Ok(true) => {}
             }
@@ -3286,6 +3370,14 @@ impl Drop for Backend {
 
 #[cfg(test)]
 mod tests {
+    /// The output device saved by the T03 GUI fixture (a version 4 project, whose audio block
+    /// Clef no longer reads since T39).
+    fn saved_output(root: &std::path::Path) -> AudioSettings {
+        let bytes = std::fs::read(root.join("validation-output/T03-GUI-Pianoverse.clef")).unwrap();
+        let length = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+        let metadata: serde_json::Value = serde_json::from_slice(&bytes[16..16 + length]).unwrap();
+        serde_json::from_value(metadata["audio"].clone()).unwrap()
+    }
     use super::*;
 
     fn seek(session: &mut Session, target: usize) -> Result<()> {
@@ -4427,8 +4519,10 @@ mod tests {
                     max_rate: 48000,
                     buffer: SupportedBufferSize::Range { min: 32, max: 512 },
                 }],
+                current_rate: Some(48000),
             }],
             midi: vec![("midi".into(), "Keyboard".into())],
+            default_output: None,
         };
         let mut settings = AudioSettings {
             device: "device".into(),
@@ -4671,13 +4765,10 @@ mod tests {
             .unwrap()
             .create_virtual(&name)
             .unwrap();
-        session.view.project.audio =
-            Project::read(&root.join("validation-output/T03-GUI-Pianoverse.clef"))
-                .unwrap()
-                .audio;
-        session.view.project.audio.rate = 48000;
-        session.view.project.audio.buffer = 128;
-        session.view.project.audio.midi = Devices::enumerate()
+        session.view.project.audio = Some(saved_output(root));
+        session.view.project.audio.as_mut().unwrap().rate = 48000;
+        session.view.project.audio.as_mut().unwrap().buffer = 128;
+        session.view.project.audio.as_mut().unwrap().midi = Devices::enumerate()
             .unwrap()
             .midi
             .iter()
@@ -4713,7 +4804,7 @@ mod tests {
         }
         assert!(session.jobs.is_empty());
         session.view.selected = Some(1);
-        session.apply(Action::Enable).unwrap();
+        session.start_audio().unwrap();
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
             session.poll();
@@ -4769,7 +4860,7 @@ mod tests {
             rows.iter().all(|r| r["peak"].as_f64().unwrap() > 0.0),
             "latency paths: {rows:?}"
         );
-        session.apply(Action::Disable).unwrap();
+        session.stop().unwrap();
     }
     #[test]
     #[ignore = "requires generated T04-Review.clef, eight commercial workers, saved output device, virtual MIDI and WindowServer"]
@@ -4784,7 +4875,7 @@ mod tests {
             .unwrap()
             .create_virtual(&name)
             .unwrap();
-        session.view.project.audio.midi = Devices::enumerate()
+        session.view.project.audio.as_mut().unwrap().midi = Devices::enumerate()
             .unwrap()
             .midi
             .iter()
@@ -4812,7 +4903,7 @@ mod tests {
             session.view.message
         );
         session.view.selected = Some(1);
-        session.apply(Action::Enable).unwrap();
+        session.start_audio().unwrap();
         std::thread::sleep(Duration::from_millis(500));
         let warmup:Vec<_>=session.engine.as_ref().unwrap().clock.tracks.iter().filter(|s|s.id.load(Ordering::Relaxed)!=0).map(|s|serde_json::json!({"id":s.id.load(Ordering::Relaxed),"misses":s.misses.load(Ordering::Relaxed),"transition_frames":s.transition_frames.load(Ordering::Relaxed)})).collect();
         let observation_start = session
@@ -4855,7 +4946,7 @@ mod tests {
         assert!(rows.iter().all(|r| r["blocks"].as_u64().unwrap() > 0
             && r["midi"].as_u64().unwrap() > 0
             && r["peak"].as_f64().unwrap() > 0.000001));
-        session.apply(Action::Disable).unwrap();
+        session.stop().unwrap();
     }
     #[test]
     #[ignore = "requires rebuilt Clef and TestSynth, a CoreAudio output and CoreMIDI virtual source"]
@@ -4877,12 +4968,10 @@ mod tests {
             .unwrap()
             .0
             .clone();
-        let mut settings = Project::read(&root.join("validation-output/T03-GUI-Pianoverse.clef"))
-            .unwrap()
-            .audio;
+        let mut settings = saved_output(root);
         settings.midi = midi;
         devices.validate(&settings).unwrap();
-        session.view.project.audio = settings;
+        session.view.project.audio = Some(settings);
 
         let synth = scan_test_synth(&directory.0)
             .into_iter()
@@ -4906,7 +4995,7 @@ mod tests {
             }
         }
         session.apply(Action::SelectTrack(1, None)).unwrap();
-        session.apply(Action::Enable).unwrap();
+        session.start_audio().unwrap();
         wait(&mut session, |s| s.ready(1));
         session.apply(Action::Editor(1, true)).unwrap();
         wait(&mut session, |s| s.view.editor);
@@ -5074,7 +5163,7 @@ mod tests {
         assert_eq!(session.view.project.midi, expected);
         assert!(!session.view.active);
         assert_eq!(session.view.armed, None);
-        session.apply(Action::Enable).unwrap();
+        session.start_audio().unwrap();
         session
             .apply(Action::Transport(TransportAction::Play))
             .unwrap();
@@ -5241,7 +5330,7 @@ mod tests {
             )
         }));
         assert!(session.view.message.contains("Recording interrupted"));
-        session.apply(Action::Disable).unwrap();
+        session.stop().unwrap();
     }
 
     #[test]
@@ -5263,11 +5352,8 @@ mod tests {
             .unwrap()
             .0
             .clone();
-        session.view.project.audio =
-            Project::read(&root.join("validation-output/T03-GUI-Pianoverse.clef"))
-                .unwrap()
-                .audio;
-        session.view.project.audio.midi = midi;
+        session.view.project.audio = Some(saved_output(root));
+        session.view.project.audio.as_mut().unwrap().midi = midi;
         for index in 0..8 {
             session.apply(Action::AddTrack(None)).unwrap();
             let identity = directory.0.join(format!("Fixture{index}.vst3"));
@@ -5286,7 +5372,7 @@ mod tests {
             );
         }
         session.apply(Action::SelectTrack(1, None)).unwrap();
-        session.apply(Action::Enable).unwrap();
+        session.start_audio().unwrap();
         for _ in 0..20 {
             source.send(&[0x90, 60, 80]).unwrap();
             std::thread::sleep(Duration::from_millis(10));
@@ -5401,19 +5487,23 @@ mod tests {
         )
         .unwrap();
         eprintln!("{report}");
-        let missing_id = session.view.project.audio.midi.clone();
+        let missing_id = session.view.project.audio.as_ref().unwrap().midi.clone();
         drop(source);
         std::thread::sleep(Duration::from_millis(2100));
         session.poll();
-        assert!(!session.view.active);
-        assert!(session.engine.is_none());
-        assert_eq!(session.view.project.audio.midi, missing_id);
+        // T39: MIDI is optional; losing it is reported and audio keeps running.
+        assert!(session.view.active);
+        assert!(session.engine.is_some());
+        assert_eq!(
+            session.view.project.audio.as_ref().unwrap().midi,
+            missing_id
+        );
         assert!(
             session.view.message.contains("MIDI input unavailable"),
             "{}",
             session.view.message
         );
-        session.apply(Action::Disable).unwrap();
+        session.stop().unwrap();
     }
     fn note(tick: u64, end: u64, key: u8) -> clef_model::midi::Event {
         clef_model::midi::Event {
@@ -5679,7 +5769,7 @@ mod tests {
                 root.join("validation-output/T12-listening-v2.clef"),
             ))
             .unwrap();
-        session.apply(Action::Enable).unwrap();
+        session.start_audio().unwrap();
         // Press Play at once, as a user would right after opening.
         session
             .apply(Action::Transport(TransportAction::Play))
@@ -5722,5 +5812,70 @@ mod tests {
             passes[0] <= passes[1] + protocol::BLOCK as u64,
             "first Play must not realign more than a later Play: {passes:?}"
         );
+    }
+
+    #[test]
+    #[ignore = "opens the macOS default audio output and WindowServer"]
+    fn native_audio_starts_by_itself_and_settings_scope_global_or_project() {
+        let (directory, mut session) = isolated();
+        session.auto_audio = true;
+        session.apply(Action::New).unwrap();
+        session.poll();
+        assert!(session.view.active, "{}", session.view.message);
+        let in_use = session.view.audio.clone().unwrap();
+        let devices = Devices::enumerate().unwrap();
+        assert_eq!(
+            Some(&in_use.device),
+            devices.default_output.as_ref(),
+            "first launch uses the default output"
+        );
+        assert!(
+            !directory.0.join("audio.json").exists(),
+            "nothing is written before an apply"
+        );
+
+        let mut global = in_use.clone();
+        global.buffer = 256;
+        session
+            .apply(Action::Settings {
+                audio: global.clone(),
+                project: false,
+            })
+            .unwrap();
+        assert!(session.view.active);
+        assert_eq!(session.view.audio.as_ref().unwrap().buffer, 256);
+        assert_eq!(session.view.audio_preferences, Some(global.clone()));
+        assert_eq!(session.view.project.audio, None);
+        assert!(directory.0.join("audio.json").exists());
+
+        let mut local = global.clone();
+        local.buffer = 512;
+        session
+            .apply(Action::Settings {
+                audio: local.clone(),
+                project: true,
+            })
+            .unwrap();
+        assert_eq!(session.view.project.audio, Some(local));
+        assert_eq!(session.view.audio.as_ref().unwrap().buffer, 512);
+        assert_eq!(
+            session.view.audio_preferences,
+            Some(global.clone()),
+            "an override keeps the global preferences"
+        );
+        assert!(session.view.dirty);
+
+        session
+            .apply(Action::Settings {
+                audio: global.clone(),
+                project: false,
+            })
+            .unwrap();
+        assert_eq!(
+            session.view.project.audio, None,
+            "applying to all projects removes the override"
+        );
+        assert_eq!(session.view.audio.as_ref().unwrap().buffer, 256);
+        session.stop().unwrap();
     }
 }

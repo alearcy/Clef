@@ -101,8 +101,6 @@ enum Command {
     Instrument,
     Editor,
     CloseEditor,
-    Enable,
-    Disable,
     Restart,
     Rescan,
     Refresh,
@@ -228,8 +226,6 @@ fn commands() -> Vec<Binding> {
         (Instrument, "Choose Instrument", None),
         (Editor, "Open Editor", None),
         (CloseEditor, "Close Editor", None),
-        (Enable, "Enable Audio", None),
-        (Disable, "Disable Audio", None),
         (Restart, "Restart Instrument", None),
         (Rescan, "Rescan Plugins", None),
         (Refresh, "Refresh Devices", None),
@@ -424,6 +420,8 @@ struct App {
     confirm: Option<Confirm>,
     file: Option<FilePicker>,
     settings_open: bool,
+    /// Audio/MIDI Settings applies to this project only (an override) instead of all projects.
+    settings_project: bool,
     settings: AudioSettings,
     devices: Devices,
     device_job: Option<mpsc::Receiver<std::result::Result<Devices, String>>>,
@@ -503,6 +501,7 @@ impl App {
             confirm: None,
             file: None,
             settings_open: false,
+            settings_project: false,
             settings: AudioSettings::default(),
             devices: Devices::default(),
             device_job: None,
@@ -527,16 +526,7 @@ impl App {
         }
     }
     fn send(&mut self, action: Action) {
-        if matches!(action, Action::Disable) && !self.view.recording {
-            self.backend
-                .silence
-                .store(true, std::sync::atomic::Ordering::Release);
-        }
-        if self.busy_since.is_some()
-            && !matches!(
-                action,
-                Action::Disable | Action::Transport(TransportAction::Stop)
-            )
+        if self.busy_since.is_some() && !matches!(action, Action::Transport(TransportAction::Stop))
         {
             return;
         }
@@ -565,7 +555,7 @@ impl App {
         }
     }
     fn enabled(&self, command: Command) -> bool {
-        let may_interrupt = matches!(command, Command::Disable | Command::Stop)
+        let may_interrupt = command == Command::Stop
             || command == Command::PlayStop && self.play_stop_command() == Command::Stop;
         (self.busy_since.is_none() || may_interrupt) && self.command_available(command, true)
     }
@@ -643,12 +633,6 @@ impl App {
                     && !self.view.failed
             }
             CloseEditor => self.view.editor,
-            Enable => {
-                !self.view.active
-                    && !self.view.project.audio.device.is_empty()
-                    && !self.view.project.audio.midi.is_empty()
-            }
-            Disable => self.view.active,
             Restart => self
                 .view
                 .track()
@@ -852,7 +836,16 @@ impl App {
             OpenRecent | LocateRecent | RemoveRecent | ShowRecovery | RecoverProject
             | DiscardRecovery | RecoveryLater => self.dispatch_startup(command, ctx),
             Settings => {
-                self.settings = self.view.project.audio.clone();
+                // T39: edit the override when the project has one, else the global preferences.
+                self.settings_project = self.view.project.audio.is_some();
+                self.settings = self
+                    .view
+                    .project
+                    .audio
+                    .clone()
+                    .or_else(|| self.view.audio_preferences.clone())
+                    .or_else(|| self.view.audio.clone())
+                    .unwrap_or_default();
                 self.settings_open = true;
                 self.refresh_devices(ctx.clone());
             }
@@ -882,8 +875,6 @@ impl App {
                     self.send(Action::Editor(id, false));
                 }
             }
-            Enable => self.send(Action::Enable),
-            Disable => self.send(Action::Disable),
             Restart => self.confirm = Some(Confirm::Restart),
             Rescan => self.scan(ctx.clone()),
             Refresh => self.refresh_devices(ctx.clone()),
@@ -927,7 +918,10 @@ impl App {
                     self.confirm = Some(Confirm::Reactivate(plugin));
                 }
             }
-            ApplySettings => self.send(Action::Settings(self.settings.clone())),
+            ApplySettings => self.send(Action::Settings {
+                audio: self.settings.clone(),
+                project: self.settings_project,
+            }),
             Play | Record | ArmTrack | RecordMerge | RecordReplace | RecordNewTake | Stop
             | PlayStop | ReturnToStart | ToggleLoop | ToggleClick | ToggleCountIn | TempoMap
             | TransportSettings | KeepStopPosition | ReturnStopPosition => {
@@ -1378,16 +1372,8 @@ impl App {
                 ui.colored_label(colors::SECONDARY, "Unsaved changes");
             }
         };
-        let mut audio_control = |ui: &mut egui::Ui| {
+        let audio_control = |ui: &mut egui::Ui| {
             ui.set_min_height(ui.spacing().interact_size.y);
-            let command = if self.view.active {
-                Command::Disable
-            } else {
-                Command::Enable
-            };
-            if self.button(ui, command) {
-                selected = Some(command);
-            }
             ui.colored_label(
                 if self.view.active {
                     colors::ACCENT
@@ -1397,7 +1383,7 @@ impl App {
                 if self.view.active {
                     "Audio active"
                 } else {
-                    "Audio stopped"
+                    "Audio off"
                 },
             );
             if self.busy_visible {
@@ -1493,7 +1479,7 @@ impl App {
                         ui.horizontal_wrapped(|ui| { for command in [Command::Instrument,Command::Editor,Command::CloseEditor] {if self.button(ui,command) {selected=Some(command);}} });
                         ui.horizontal_wrapped(|ui| { for command in [Command::Restart,Command::Reactivate,Command::Quarantine] {if self.button(ui,command) {selected=Some(command);}} });
                         ui.add_space(12.0);
-                        let audio = &self.view.project.audio;
+                        let audio = self.view.audio.clone().unwrap_or_default();
                         let midi = self.devices.midi.iter().find(|(id,_)| id == &audio.midi).map(|(_,n)| n.as_str()).unwrap_or("MIDI input unavailable / not selected");
                         let target = self.view.armed.and_then(|id| self.view.project.tracks.iter().find(|track| track.id == id));
                         ui.label(format!("MIDI: {midi} / {}", target.map_or("selected track", |track| track.name.as_str())));
@@ -1646,7 +1632,13 @@ impl App {
         let mut open = true;
         let mut action = None;
         egui::Window::new("Audio/MIDI Settings").open(&mut open).default_width(580.0).show(ctx,|ui| {
-            ui.label("Changes stop audio. Enable Audio explicitly after applying.");
+            ui.horizontal(|ui| {
+                ui.label("Applies to");
+                ui.selectable_value(&mut self.settings_project, false, "All projects");
+                ui.selectable_value(&mut self.settings_project, true, "This project");
+            });
+            ui.colored_label(colors::SECONDARY, "All projects saves Clef's audio preferences. This project saves an override in the project file.");
+            ui.label("Applying restarts audio.");
             if self.button(ui,Command::Refresh) { action = Some(Command::Refresh); }
             if self.device_job.is_some() { ui.spinner(); }
             ui.add_space(12.0);
@@ -2209,7 +2201,6 @@ mod tests {
     fn discard_close_exits_and_commands_respect_session_state() {
         let context = egui::Context::default();
         let mut app = App::new(context.clone(), PathBuf::new());
-        assert!(!app.enabled(Command::Enable));
         assert!(!app.enabled(Command::Editor));
         app.view.dirty = true;
         app.transition(Transition::Close, &context);

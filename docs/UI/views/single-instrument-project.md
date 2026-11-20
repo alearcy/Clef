@@ -29,7 +29,8 @@ arrangement, transport, mixer or startup chooser.
 The eframe window opens at 1024 × 640 with a 760 × 480 minimum. Content has
 12-point workspace padding; controls are at least 24 points high. The project
 command row wraps at narrow sizes. Project identity and unsaved status precede
-Enable/Disable Audio. The single panel contains the track name, instrument,
+the audio status label (Audio active / Audio off); there is no Enable or Disable Audio
+control since T39. The single panel contains the track name, instrument,
 editor actions and routing summary. Status and actual callback configuration
 follow the panel. Spacing and background roles separate regions; no region rules.
 
@@ -42,7 +43,7 @@ hook creates no windows or controls and retains winit's existing delegate.
 ## States and Behavior
 
 - Empty: Add Instrument Track. A second track is unavailable.
-- Ready: display plugin name/format and saved MIDI/output selections; audio remains stopped.
+- Ready: display plugin name/format and saved MIDI/output selections; audio runs.
 - Active: Disable Audio and actual sample rate/callback range/transport lead.
 - Busy: disable session actions while an asynchronous load/save/reconfiguration runs.
 - Unavailable: retain plugin identity, opaque state and device choices; explain recovery.
