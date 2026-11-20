@@ -1,7 +1,8 @@
 # T35 — Instrument Slot, Bypass, and Offline Tracks
 
-- **Status** — In Progress. Requirements agreed on 2026-11-20; implementation and automated
-  verification complete. Device/template verification and listening remain.
+- **Status** — Done — 2026-11-20. Requirements agreed on 2026-11-20; implementation, automated
+  verification, and the user device/template and listening pass complete. Closed at the user's
+  request on 2026-11-20.
 - **Priority** — P1.
 - **Task** — [T35](../../TASKS.md)
 - **Roadmap** — Post-T03 backlog.
@@ -80,6 +81,8 @@ flow, per-instrument gain/trim, sidechain routing, AU hosting, and a general plu
   separate context-menu/command Offline state that releases the worker, for templates where
   instrument tracks are brought online gradually.
 - 2026-11-20 — The user chose a four-row capacity: Plugin, up to two effects, and Add effect.
+- 2026-11-20 — The user confirmed the device/template and listening pass and asked to close the
+  task.
 
 ## Implementation and Verification (2026-11-20)
 

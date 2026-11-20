@@ -1,7 +1,8 @@
 # T12 — Insert Effects Hosting
 
-- **Status** — In Progress. Specification and written UI proposal approved on 2026-11-19;
-  implementation and automated verification complete. Listening validation is pending.
+- **Status** — Done — 2026-11-20. Specification and written UI proposal approved on 2026-11-19;
+  implementation, automated verification, and the user listening pass complete. Closed at the
+  user's request on 2026-11-20.
 - **Priority** — P1.
 - **Task** — [T12](../../TASKS.md)
 - **Roadmap** — [Post-T03 backlog](../planning/post-T03-backlog.md)
@@ -103,8 +104,8 @@ effects, and ARA (T29).
   the approved UI proposal and run the existing T02/T03 hosting regressions.
 - Listen with at least one VST3 effect and one CLAP effect, including at least one effect
   with nonzero reported latency. Confirm audible processing, bypass, and restored sound
-  after reopening. Record listening separately from automated and GUI results. The exact
-  plugins remain open until validation.
+  after reopening. Record listening separately from automated and GUI results. The plugins
+  used were the FabFilter Pro-Q 4 VST3 and CLAP builds and the bundled Clef insert fixtures.
 
 ## Decision and Approval Record
 
@@ -118,6 +119,7 @@ effects, and ARA (T29).
 - 2026-11-20 — The user reported that FabFilter Pro-Q 4 VST3 showed no analyzer while its
   CLAP build did. The bridge now relays off-thread `IConnectionPoint` messages from the
   worker audio thread to the controller instead of dropping them.
+- 2026-11-20 — The user confirmed the listening pass and asked to close the task.
 
 ## Implementation and Verification (2026-11-19, updated 2026-11-20)
 
