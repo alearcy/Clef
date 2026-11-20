@@ -7,6 +7,13 @@
 **Roadmap:** [Post-T03 backlog](../planning/post-T03-backlog.md)
 **Depends on:** T11 mixer; include T12 effects if present.
 
+## Sequencing
+
+Sequencing decision 2026-11-20: T13 keeps priority P1 but is deferred to the end of the open
+work, after T23 and before T29, which needs T13's offline render path. T15 now comes first.
+The offline render path stays available to automated tests in the meantime; this changes the
+order, not the scope.
+
 ## Goal
 
 Expose the existing offline render path as a product export: render the session or a range

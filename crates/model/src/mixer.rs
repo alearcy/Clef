@@ -43,6 +43,7 @@ pub enum Control {
     Pan,
     Width,
     Fader,
+    Send,
     Mute,
     Solo,
 }
@@ -53,7 +54,7 @@ impl Control {
             Self::Gain => (-240, 240),
             Self::Pan => (-100, 100),
             Self::Width => (0, 200),
-            Self::Fader => (-601, 60),
+            Self::Fader | Self::Send => (-601, 60),
             Self::Mute | Self::Solo => (0, 1),
         }
     }
@@ -71,6 +72,7 @@ impl Control {
             Self::Pan => "Pan",
             Self::Width => "Width",
             Self::Fader => "Fader",
+            Self::Send => "Send",
             Self::Mute => "Mute",
             Self::Solo => "Solo",
         }
@@ -93,6 +95,7 @@ impl Channel {
             Control::Pan => self.level.pan,
             Control::Width => self.width,
             Control::Fader => self.level.fader,
+            Control::Send => 0,
             Control::Mute => i16::from(self.mute),
             Control::Solo => i16::from(self.solo),
         }
@@ -107,6 +110,7 @@ impl Channel {
             Control::Pan => self.level.pan = value,
             Control::Width => self.width = value,
             Control::Fader => self.level.fader = value,
+            Control::Send => return Err("Send level is not a channel control.".into()),
             Control::Mute => self.mute = value != 0,
             Control::Solo => self.solo = value != 0,
         }
@@ -123,11 +127,22 @@ impl Channel {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Target {
     Track(u64),
+    Bus(u64),
     Master,
 }
 
 impl Target {
     pub fn accepts(self, control: Control) -> bool {
-        matches!(self, Self::Track(_)) || matches!(control, Control::Pan | Control::Fader)
+        match self {
+            Self::Track(_) | Self::Bus(_) => true,
+            Self::Master => matches!(control, Control::Pan | Control::Fader),
+        }
+    }
+
+    pub fn id(self) -> Option<u64> {
+        match self {
+            Self::Track(id) | Self::Bus(id) => Some(id),
+            Self::Master => None,
+        }
     }
 }

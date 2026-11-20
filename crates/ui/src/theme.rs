@@ -19,6 +19,7 @@ pub const ROLL_GUTTER: f32 = 7.0;
 pub const MIX_CHANNEL: f32 = 92.0;
 pub const MIX_GAP: f32 = 1.0;
 pub const MIX_KNOB: f32 = 30.0;
+pub const MIX_SEND_KNOB: f32 = 20.0;
 pub const MIX_FADER: f32 = 38.0;
 pub const MIX_FADER_HEIGHT: f32 = 210.0;
 pub const MIX_CAP: [f32; 2] = [22.0, 40.0];

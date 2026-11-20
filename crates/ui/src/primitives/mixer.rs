@@ -71,6 +71,8 @@ pub(crate) fn strip(ui: &mut Ui, selected: bool, content: impl FnOnce(&mut Ui)) 
             ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
                 let width = MIX_CHANNEL - f32::from(left + right) - 2.0;
                 ui.set_width(width);
+                ui.set_min_width(width);
+                ui.set_max_width(width);
                 ui.spacing_mut().item_spacing = vec2(0.0, MIX_ROW);
                 content(ui);
             });
@@ -148,6 +150,16 @@ pub(crate) struct DragOrigin {
     pointer: Pos2,
 }
 
+#[cfg(test)]
+impl DragOrigin {
+    pub(crate) fn at(value: i16) -> Self {
+        Self {
+            value,
+            pointer: Pos2::ZERO,
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum Adjustment {
     Drag { origin: DragOrigin, value: i16 },
@@ -160,6 +172,7 @@ pub(crate) struct Slider<'a> {
     pub drag_start: Option<DragOrigin>,
     pub name: &'a str,
     pub master: bool,
+    pub compact: bool,
 }
 
 impl Slider<'_> {
@@ -168,7 +181,18 @@ impl Slider<'_> {
         let size = if fader {
             vec2(MIX_FADER, MIX_FADER_HEIGHT)
         } else {
-            vec2(MIX_KNOB, MIX_KNOB)
+            vec2(
+                if self.compact {
+                    crate::theme::MIX_SEND_KNOB
+                } else {
+                    MIX_KNOB
+                },
+                if self.compact {
+                    crate::theme::MIX_SEND_KNOB
+                } else {
+                    MIX_KNOB
+                },
+            )
         };
         let (_, rect) = ui.allocate_space(size);
         let id = ui.id().with(("mixer-control", self.control.label()));
@@ -176,24 +200,6 @@ impl Slider<'_> {
         let enabled = ui.is_enabled();
         let (min, max) = self.control.bounds();
         let name = format!("{} {}", self.name, self.control.label());
-        let displayed = text_value(self.control, self.value);
-        let accessibility_value = match self.control {
-            Control::Gain | Control::Fader => f64::from(self.value) / 10.0,
-            _ => f64::from(self.value),
-        };
-        response.widget_info(|| WidgetInfo::slider(enabled, accessibility_value, &name));
-        if fader {
-            paint_fader(ui, rect, self.value, response.has_focus(), self.master);
-        } else {
-            let progress = f32::from(self.value - min) / f32::from(max - min);
-            let progress = if self.control == Control::Width {
-                ui.ctx()
-                    .animate_value_with_time(id.with("width-fan"), progress, 0.12)
-            } else {
-                progress
-            };
-            paint_knob(ui, rect, self.control, progress, response.has_focus());
-        }
         let origin = self.drag_start.or_else(|| {
             if !response.drag_started() {
                 return None;
@@ -217,24 +223,41 @@ impl Slider<'_> {
                     .clamp(f32::from(min), f32::from(max)) as i16
             }
         };
+        let live = origin
+            .filter(|_| response.dragged() || response.drag_stopped())
+            .map(read_drag);
+        let shown = live.unwrap_or(self.value);
+        let displayed = text_value(self.control, shown);
+        let accessibility_value = match self.control {
+            Control::Gain | Control::Fader => f64::from(shown) / 10.0,
+            _ => f64::from(shown),
+        };
+        response.widget_info(|| WidgetInfo::slider(enabled, accessibility_value, &name));
+        if fader {
+            paint_fader(ui, rect, shown, response.has_focus(), self.master);
+        } else {
+            let progress = f32::from(shown - min) / f32::from(max - min);
+            let progress = if self.control == Control::Width {
+                ui.ctx()
+                    .animate_value_with_time(id.with("width-fan"), progress, 0.12)
+            } else {
+                progress
+            };
+            paint_knob(ui, rect, self.control, progress, response.has_focus());
+        }
         let option = ui.input(|i| i.modifiers.alt);
         let event = if !enabled {
             None
         } else if response.double_clicked() || (option && response.clicked()) {
             Some(Adjustment::Commit(self.control.initial()))
-        } else if response.drag_stopped()
-            && let Some(origin) = origin
-        {
-            let value = response
-                .interact_pointer_pos()
-                .map_or(self.value, |_| read_drag(origin));
-            Some(Adjustment::Commit(value))
+        } else if response.drag_stopped() && origin.is_some() {
+            Some(Adjustment::Commit(live.unwrap_or(self.value)))
         } else if response.dragged()
             && let Some(origin) = origin
         {
             Some(Adjustment::Drag {
                 origin,
-                value: read_drag(origin),
+                value: live.unwrap_or(self.value),
             })
         } else if response.has_focus() {
             let direction = ui.input_mut(|i| {
@@ -245,7 +268,8 @@ impl Slider<'_> {
                 i16::from(up) - i16::from(down)
             });
             (direction != 0).then(|| {
-                let step = if matches!(self.control, Control::Gain | Control::Fader) {
+                let step = if matches!(self.control, Control::Gain | Control::Fader | Control::Send)
+                {
                     5
                 } else {
                     1
@@ -255,15 +279,23 @@ impl Slider<'_> {
         } else {
             None
         };
-        response.on_hover_text(format!("{name}: {displayed}"));
+        if self.compact {
+            if response.hovered() || response.dragged() {
+                response.show_tooltip_text(displayed);
+            }
+        } else {
+            response.on_hover_text(format!("{name}: {displayed}"));
+        }
         event
     }
 }
 
 pub(crate) fn text_value(control: Control, value: i16) -> String {
     match control {
-        Control::Fader if value == Control::Fader.bounds().0 => "−∞ dB".into(),
-        Control::Fader | Control::Gain => format!("{:.1} dB", f32::from(value) / 10.0),
+        Control::Fader | Control::Send if value == Control::Fader.bounds().0 => "−∞ dB".into(),
+        Control::Fader | Control::Gain | Control::Send => {
+            format!("{:.1} dB", f32::from(value) / 10.0)
+        }
         Control::Pan if value == 0 => "C".into(),
         Control::Pan if value < 0 => format!("L {}", -value),
         Control::Pan => format!("R {value}"),
@@ -541,6 +573,7 @@ mod tests {
                         drag_start,
                         name: "Piano",
                         master: false,
+                        compact: false,
                     }
                     .show(ui);
                 },
@@ -582,5 +615,97 @@ mod tests {
             assert_eq!(fader_value(at), db);
         }
         assert_eq!(fader_value(0.0), Control::Fader.bounds().0);
+    }
+
+    fn popup_texts(output: &egui::FullOutput) -> Vec<String> {
+        fn collect(shape: &egui::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(text) => out.push(text.galley.text().to_owned()),
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect(shape, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut texts = Vec::new();
+        for clipped in &output.shapes {
+            collect(&clipped.shape, &mut texts);
+        }
+        texts
+    }
+
+    #[test]
+    fn compact_send_knob_keeps_a_value_only_popup_visible_while_dragging() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let rect = std::cell::Cell::new(Rect::NOTHING);
+        let frame = |ctx: &egui::Context, events, drag_start| {
+            ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(240.0, 160.0))),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    rect.set(Rect::from_min_size(
+                        ui.next_widget_position(),
+                        vec2(MIX_SEND_KNOB, MIX_SEND_KNOB),
+                    ));
+                    Slider {
+                        control: Control::Send,
+                        value: -60,
+                        drag_start,
+                        name: "Strings",
+                        master: false,
+                        compact: true,
+                    }
+                    .show(ui);
+                },
+            )
+        };
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        let _ = frame(&ctx, vec![], None);
+        let point = rect.get().center();
+        let _ = frame(
+            &ctx,
+            vec![egui::Event::PointerMoved(point), button(point, true)],
+            None,
+        );
+        let origin = DragOrigin {
+            value: -60,
+            pointer: point,
+        };
+        let _ = frame(
+            &ctx,
+            vec![egui::Event::PointerMoved(point + vec2(10.0, 0.0))],
+            Some(origin),
+        );
+        let output = frame(
+            &ctx,
+            vec![egui::Event::PointerMoved(point + vec2(10.0, 0.0))],
+            Some(origin),
+        );
+        assert!(
+            popup_texts(&output).iter().any(|label| label == "-2.9 dB"),
+            "send popup did not show only the live value: {:?}",
+            popup_texts(&output)
+        );
+        let output = frame(
+            &ctx,
+            vec![egui::Event::PointerMoved(point + vec2(20.0, 0.0))],
+            Some(origin),
+        );
+        assert!(
+            popup_texts(&output).iter().any(|label| label == "0.3 dB"),
+            "send popup did not keep a live value while dragging: {:?}",
+            popup_texts(&output)
+        );
     }
 }

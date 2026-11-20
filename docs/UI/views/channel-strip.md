@@ -29,6 +29,15 @@ Solo (Mono on master), OUTPUT. Section headings are drawn by `paintSectionHeadin
 separated by spacing only; captions use a 62-pixel column. Insert and send rows keep 4 pixels
 between them, so stacked slots never touch.
 
+## Clef T15
+
+The selected instrument channel adds a Sends section between Inserts and Pan / Width. Each
+send is one line: pre/post tap, destination slot, level knob, bypass. The knob popup shows
+only the live dB value and remains open while the knob is dragged. A Bus channel has Gain,
+Inserts, a read-only Inputs summary, Pan / Width, fader, M / S and a fixed Master output; it
+has no Plugin slot and no sends. Clicking anywhere on a strip selects the channel. See the
+[mixer](mixer.md#clef-t15) for the shared layout.
+
 ## Rules
 - Neutral surface: no stripe, no colour wash; the [selection edge](../components/selection-edge.md)
   only. MIDI tracks label the first slot **Plugin**. M/S appear once.

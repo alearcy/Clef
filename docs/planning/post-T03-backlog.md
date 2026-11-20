@@ -1,6 +1,7 @@
 # Post-T03 Backlog Proposal
 
-**Status:** Backlog order approved 2026-11-17. The T04–T23 entries were registered in
+**Status:** Backlog order approved 2026-11-17 and revised 2026-11-20 (T15 promoted ahead of
+T13; T13 deferred to the end). The T04–T23 entries were registered in
 [TASKS.md](../../TASKS.md); completed rows are removed from that index once their
 specification records the work. Each remaining task stays a planning draft until its own
 interview and specification approval.
@@ -12,9 +13,7 @@ It does not approve implementation scope. Each task below still requires its own
 English specification, and — where it changes the UI — an approved written UI proposal.
 The per-task planning drafts live in `docs/specs/` and are linked from `TASKS.md`.
 
-T03 is still in progress. Its specification does not yet record final acceptance
-evidence, so T03 must be accepted and its specification completed before T04 starts.
-The proposed sequence assumes T03's agreed behavior (one instrument track, one project
+The sequence still assumes T03's agreed behavior (one instrument track, one project
 file, explicit audio enable) remains intact.
 
 ## Priority model
@@ -42,8 +41,7 @@ estimates are deliberately omitted until each task is specified.
 | T10 | P1 | Piano roll and MIDI editing | T06, T08 |
 | T11 | P1 | Mixer and master section | T04 |
 | T12 | P1 | Insert effects hosting | T04, T11 |
-| T13 | P1 | Export and bounce | T11, T12 |
-| T15 | P2 | Buses, sends, groups, and routing | T11, T12 |
+| T15 | P1 | Buses, sends, groups, and routing | T11, T12 |
 | T14 | P1 | Audio tracks and recording | T05, T11; media decision |
 | T16 | P2 | Plugin management and hosting robustness | T03, T12 |
 | T17 | P2 | Device resilience and preferences | T03, T04 |
@@ -53,8 +51,22 @@ estimates are deliberately omitted until each task is specified.
 | T21 | P3 | AU hosting | T12 |
 | T22 | P3 | Native MIDI/audio tools | T06, T10, T11, T28 |
 | T23 | P3 | Packaging and cross-platform groundwork | stable feature set |
+| T13 | P1 | Export and bounce | T11, T12; deferred to the end |
 
 T26–T29 were added on 2026-11-18; see [Additions — 2026-11-18](#additions--2026-11-18).
+
+## Order update — 2026-11-20
+
+The user promoted routing and deferred export. The open work now runs T15, T14, T27, T28,
+T16, T17, T18, T19, T20, T21, T22, T23, then T13, then T29.
+
+- **T15 first**, immediately after T11 and T12, and now **P1**.
+- **T13 moves to the end**, after T23, because the user prefers mixing tools before the
+  deliverable path. It keeps P1: the scope is unchanged, only the order is.
+- **T29 stays after T13**, because ARA editing depends on T13's offline render path.
+- T14 still waits for the media-storage decision; T27 follows T14; T28 follows T15.
+
+This supersedes the 2026-11-19 sequencing note in the T15 specification.
 
 ## Milestone 1 — Composition core (P0)
 
@@ -202,9 +214,11 @@ note chase; how the roll shares edit commands and undo with T09.
 **Verification:** note-edit commands; undo/redo; rounding and snap; save/reopen; keyboard
 and pointer parity; no edits lost when switching clips.
 
-## Milestone 3 — Mixing and production (T11–T14 P1, T15 P2)
+## Milestone 3 — Mixing and production (T11–T15 P1; T13 deferred)
 
-The app can compose. This milestone makes the result mixable and exportable.
+The app can compose. This milestone makes the result mixable and exportable. Sections below
+stay in task-ID order; the current run order is in
+[Order update — 2026-11-20](#order-update--2026-11-20).
 
 ### T11 — Mixer and master section
 
@@ -246,7 +260,8 @@ render path: WAV format/depth/rate, ten-second (or agreed) tail, latency trim, p
 cancel, and overwrite protection. Stems are included only if agreed.
 
 **Why now:** the T02 render path exists but is not reachable from the product. Composition
-has no deliverable without export.
+has no deliverable without export. On 2026-11-20 the user deferred this task to the end of
+the open work; the offline render path stays available to automated tests meanwhile.
 
 **Interview questions:** WAV only or additional formats; stems; sample-rate conversion;
 normalization/limiting (not assumed); range selection; tail policy; filename templates;
@@ -284,7 +299,8 @@ solo/mute semantics across the graph, and cycle rejection.
 
 **Why now:** direct-to-master is enough for the first mixes; buses and sends are the next
 step, not a prerequisite for composition. MIDI instrument tracks can already be grouped and
-sent, so routing follows export (T13) and does not wait for audio tracks (T14).
+sent, so routing does not wait for export (T13, now deferred) or for audio tracks (T14).
+Promoted to P1 and made the next task on 2026-11-20.
 
 **Interview questions:** bus types and counts; send count; sidechain; solo-in-place versus
 PFL/AFL; routing UI; folder tracks; automation of sends and routing (later).
@@ -359,21 +375,18 @@ T03 accepted
    |---> T05 ---> T06 ---> T07
    |               |------> T08 ---> T09
    |                              \-> T10
-   |---> T11 ---> T12 ---> T13 ---> T15
+   |---> T11 ---> T12 ---> T15
    \---> T14 (after T05 + T11 and the media decision)
 
+T13 deferred to the end (2026-11-20): after T23 and before T29.
 T16, T17, T18, T19, T20: interleave where they protect the current milestone.
-T21 after T12; T22 after T10; T23 last.
+T21 after T12; T22 after T10; T23 last of the planned features.
 ```
 
-**Next three:** T04, T05, T06. They form one vertical slice: several instruments, a real
-clock, and recorded MIDI. Do not start T07/T08 before T06 unless T04/T05 expose a problem
-that makes them necessary.
+**Next:** T15. Then T14 once the media-storage decision is taken, then T27. T13 is deferred
+to the end; T16–T20 interleave where they protect the work in progress.
 
-After T06, run T07 and T08 before T09/T10, then start T11/T12 in parallel with the editors
-if capacity allows.
-
-T26 follows T10, T27 follows T14, T28 follows T15, and T29 follows T21; see
+T27 follows T14, T28 follows T15, and T29 follows T13 and T16; see
 [Additions — 2026-11-18](#additions--2026-11-18) for the dependencies.
 
 ## Decisions required before the next specifications
@@ -447,7 +460,7 @@ drafts: the Clef implementation interview and the written UI proposal still gate
 | T26 | P2 | MIDI comping and take lanes | T06, T08, T09, T10 | after T10 |
 | T27 | P2 | Audio comping and take lanes | T14, T26, T08, T09 | after T14 |
 | T28 | P2 | FX rack and virtual cable graph | T12, T15, T08, T04 | after T15 |
-| T29 | P3 | ARA 2 hosting and audio part editing | T14, T13, T16, T08; probe first | after T21 |
+| T29 | P3 | ARA 2 hosting and audio part editing | T14, T13, T16, T08; probe first | after T13 |
 
 Why this order:
 
@@ -465,9 +478,10 @@ macros, modulation, and the rack browser as a later phase after a separate appro
 
 ## Next actions
 
-1. Close T03: record final acceptance evidence in
-   [the T03 specification](../specs/T03-single-instrument-project.md) and update `TASKS.md`.
-2. Decide the media-storage question before T04 freezes project schema v2.
-3. Interview and approve the [T04 specification](../specs/T04-multitrack-session.md).
-4. Only after T04's scope is approved, refine the T05 and T06 drafts; do not treat the
-   planning drafts as approved requirements.
+1. Interview and approve the [T15 specification](../specs/T15-routing.md); the user asked for
+   the reordering on 2026-11-20 but not yet for the T15 interview.
+2. Decide the media-storage question before the [T14 specification](../specs/T14-audio-recording.md)
+   is written.
+3. Keep [T13](../specs/T13-export.md) a planning draft until its turn at the end; refresh it
+   then.
+4. Refine the T27 and T28 drafts only after T14 and T15 respectively are approved.

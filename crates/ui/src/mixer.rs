@@ -1,10 +1,11 @@
 use super::{
-    App, Command, Key, Modifiers, egui,
+    App, Command, Key, Modifiers, colors, egui,
     primitives::{inserts, mixer as controls},
     theme::*,
 };
 use clef_model::mixer::{Channel, Control, Target};
-use clef_session::{Action, InsertAction, Meter, MixChange};
+use clef_model::project::{Send, TrackKind};
+use clef_session::{Action, InsertAction, Meter, MixChange, SendEdit};
 
 #[derive(Default)]
 pub(super) struct MixerUi {
@@ -12,13 +13,49 @@ pub(super) struct MixerUi {
     master_selected: bool,
     focus: Option<Target>,
     gesture: Option<(MixChange, controls::DragOrigin)>,
+    /// A committed mixer change awaiting its acknowledgement, or a released drag waiting
+    /// to be sent while another action is in flight (`deferred`).
     pending: Option<MixChange>,
+    deferred: bool,
     insert_focus: Option<(Target, u64)>,
     instrument_focus: Option<u64>,
     effect_picker: Option<(Target, Option<u64>)>,
     effect_search: String,
     visible_insert_rows: usize,
+    send_gesture: Option<SendGesture>,
+    /// A released send level awaiting its acknowledgement, or waiting to be sent.
+    send_pending: Option<SendCommit>,
+    send_deferred: bool,
+    pub(super) reveal: Option<u64>,
     pub(super) gallery_insert_focus: Option<u64>,
+}
+
+/// A send-level drag: previews go to the session unacknowledged, like fader previews.
+#[derive(Clone, Copy)]
+struct SendGesture {
+    epoch: u64,
+    track: u64,
+    id: u64,
+    origin: controls::DragOrigin,
+    level: i16,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SendCommit {
+    epoch: u64,
+    track: u64,
+    id: u64,
+    level: i16,
+}
+
+const MIX_ROUTING_HEIGHT: f32 = 96.0;
+const MIX_OUTPUT_HEIGHT: f32 = 36.0;
+
+fn fill_height(ui: &mut egui::Ui, target: f32) {
+    let used = ui.min_rect().height();
+    if used < target {
+        ui.allocate_space(egui::vec2(ui.available_width(), target - used));
+    }
 }
 
 enum Event {
@@ -30,24 +67,96 @@ enum Event {
     Insert(Command, Target, Option<u64>),
     Instrument(Command, u64),
     DropInsert(Target, u64, Option<u64>),
+    SendAdd {
+        track: u64,
+        target: u64,
+    },
+    SendNewBus {
+        track: u64,
+    },
+    SendRemove {
+        track: u64,
+        id: u64,
+    },
+    SendPre {
+        track: u64,
+        id: u64,
+        pre: bool,
+    },
+    SendEnabled {
+        track: u64,
+        id: u64,
+        enabled: bool,
+    },
+    SendTarget {
+        track: u64,
+        id: u64,
+        target: u64,
+    },
+    SendAdjust {
+        track: u64,
+        id: u64,
+        adjustment: controls::Adjustment,
+    },
+    Output {
+        track: u64,
+        output: Option<u64>,
+    },
+    NewBus {
+        track: u64,
+    },
+    AddBus,
 }
 
 struct DragInsert(Target, u64);
 
+struct Strip<'a> {
+    target: Target,
+    name: &'a str,
+    channel: Channel,
+    selected: bool,
+    focus: bool,
+    kind: TrackKind,
+    sends: &'a [Send],
+    output: Option<u64>,
+    inputs: usize,
+}
+
 impl MixerUi {
-    pub(super) fn follow_instrument_selection(&mut self) {
+    pub(super) fn follow_instrument_selection(&mut self, selected: Option<u64>) {
         self.master_selected = false;
+        self.reveal = selected;
     }
 
     pub(super) fn commit_pending(&self) -> bool {
-        self.pending.is_some()
+        self.pending.is_some() && !self.deferred
+            || self.send_pending.is_some() && !self.send_deferred
     }
 
     pub(super) fn acknowledge(&mut self, project_changed: bool) {
-        self.pending = None;
+        if !self.deferred {
+            self.pending = None;
+        }
+        if !self.send_deferred {
+            self.send_pending = None;
+        }
         if project_changed {
             *self = Self::default();
         }
+    }
+
+    /// The level shown for a send: the drag value, then a released value awaiting the
+    /// session, then the project's level.
+    fn send_level(&self, track: u64, send: &Send) -> i16 {
+        self.send_gesture
+            .filter(|gesture| gesture.track == track && gesture.id == send.id)
+            .map(|gesture| gesture.level)
+            .or_else(|| {
+                self.send_pending
+                    .filter(|commit| commit.track == track && commit.id == send.id)
+                    .map(|commit| commit.level)
+            })
+            .unwrap_or(send.level)
     }
 
     fn slider(
@@ -74,6 +183,7 @@ impl MixerUi {
             drag_start: drag.map(|(_, origin)| origin),
             name,
             master: target == Target::Master,
+            compact: false,
         }
         .show(ui);
         (
@@ -88,8 +198,23 @@ impl App {
         if self.mixer_ui.master_selected || self.view.project.tracks.is_empty() {
             Some(Target::Master)
         } else {
-            self.view.selected.map(Target::Track)
+            self.view.selected.map(|id| self.target_for(id))
         }
+    }
+
+    fn target_for(&self, id: u64) -> Target {
+        self.view
+            .project
+            .tracks
+            .iter()
+            .find(|track| track.id == id)
+            .map_or(Target::Track(id), |track| {
+                if track.is_bus() {
+                    Target::Bus(id)
+                } else {
+                    Target::Track(id)
+                }
+            })
     }
 
     fn mixer_neighbor(&self, forward: bool) -> Option<Target> {
@@ -98,23 +223,25 @@ impl App {
 
     fn mixer_neighbor_from(&self, target: Target, forward: bool) -> Option<Target> {
         let tracks = &self.view.project.tracks;
-        match target {
-            Target::Master if !forward => tracks.last().map(|track| Target::Track(track.id)),
-            Target::Master => None,
-            Target::Track(id) => {
-                let index = tracks.iter().position(|track| track.id == id)?;
-                if forward {
-                    Some(
-                        tracks
-                            .get(index + 1)
-                            .map_or(Target::Master, |track| Target::Track(track.id)),
-                    )
-                } else {
-                    index
-                        .checked_sub(1)
-                        .map(|index| Target::Track(tracks[index].id))
-                }
-            }
+        if target == Target::Master {
+            return (!forward).then(|| {
+                tracks
+                    .last()
+                    .map_or(Target::Master, |track| self.target_for(track.id))
+            });
+        }
+        let id = target.id()?;
+        let index = tracks.iter().position(|track| track.id == id)?;
+        if forward {
+            Some(
+                tracks
+                    .get(index + 1)
+                    .map_or(Target::Master, |track| self.target_for(track.id)),
+            )
+        } else {
+            index
+                .checked_sub(1)
+                .map(|index| self.target_for(tracks[index].id))
         }
     }
 
@@ -126,7 +253,10 @@ impl App {
                 self.mixer_neighbor(command == Command::MixerNext).is_some()
             }
             Command::MixerMute | Command::MixerSolo => {
-                matches!(self.mixer_selection(), Some(Target::Track(_)))
+                matches!(
+                    self.mixer_selection(),
+                    Some(Target::Track(_) | Target::Bus(_))
+                )
             }
             Command::ResetMixerClip => self
                 .mixer_selection()
@@ -158,8 +288,12 @@ impl App {
     fn focus_mixer(&mut self, target: Target) {
         self.cancel_mix_gesture();
         self.mixer_ui.focus = Some(target);
+        self.select_mixer(target);
+    }
+
+    fn select_mixer(&mut self, target: Target) {
         self.mixer_ui.master_selected = target == Target::Master;
-        if let Target::Track(id) = target
+        if let Some(id) = target.id()
             && self.view.selected != Some(id)
         {
             self.select_track(id);
@@ -169,7 +303,9 @@ impl App {
     fn meter(&self, target: Target) -> Meter {
         match target {
             Target::Master => self.view.master_meter,
-            Target::Track(id) => self.view.track_meters.get(&id).copied().unwrap_or_default(),
+            Target::Track(id) | Target::Bus(id) => {
+                self.view.track_meters.get(&id).copied().unwrap_or_default()
+            }
         }
     }
 
@@ -188,9 +324,30 @@ impl App {
         if self.actions_in_flight > actions {
             self.mixer_ui.pending = Some(change);
         } else {
+            self.mixer_ui.pending = None;
             let _ = self.backend.send.send(Action::PreviewMix(None));
         }
         self.mixer_ui.gesture = None;
+    }
+
+    /// Commit a released fader or knob drag. While another action is in flight the commit
+    /// waits and is sent as soon as the session is idle, so a release is never dropped.
+    fn release_mixer(&mut self, change: MixChange) {
+        self.mixer_ui.gesture = None;
+        self.mixer_ui.pending = Some(change);
+        self.mixer_ui.deferred = true;
+        self.flush_mix_commit();
+    }
+
+    fn flush_mix_commit(&mut self) {
+        let Some(change) = self.mixer_ui.pending.filter(|_| self.mixer_ui.deferred) else {
+            return;
+        };
+        if self.busy_since.is_some() {
+            return;
+        }
+        self.mixer_ui.deferred = false;
+        self.commit_mixer(change);
     }
 
     fn run_mixer_command(&mut self, command: Command, target: Target) {
@@ -214,18 +371,103 @@ impl App {
         if self.mixer_ui.gesture.take().is_some() {
             let _ = self.backend.send.send(Action::PreviewMix(None));
         }
+        if let Some(gesture) = self.mixer_ui.send_gesture.take() {
+            let _ = self.backend.send.send(Action::Send {
+                epoch: gesture.epoch,
+                track: gesture.track,
+                edit: SendEdit::CancelPreview,
+            });
+        }
+    }
+
+    /// Send a released send level. While another action is in flight the commit waits and is
+    /// sent as soon as the session is idle, so a release is never dropped.
+    fn commit_send(&mut self, commit: SendCommit) {
+        self.mixer_ui.send_gesture = None;
+        self.mixer_ui.send_pending = Some(commit);
+        self.mixer_ui.send_deferred = true;
+        self.flush_send_commit();
+    }
+
+    fn flush_send_commit(&mut self) {
+        let Some(commit) = self
+            .mixer_ui
+            .send_pending
+            .filter(|_| self.mixer_ui.send_deferred)
+        else {
+            return;
+        };
+        if self.busy_since.is_some() {
+            return;
+        }
+        let actions = self.actions_in_flight;
+        self.send(Action::Send {
+            epoch: commit.epoch,
+            track: commit.track,
+            edit: SendEdit::CommitLevel {
+                id: commit.id,
+                level: commit.level,
+            },
+        });
+        self.mixer_ui.send_deferred = false;
+        if self.actions_in_flight == actions {
+            // The session is unavailable; drop the preview rather than leave it applied.
+            self.mixer_ui.send_pending = None;
+            let _ = self.backend.send.send(Action::Send {
+                epoch: commit.epoch,
+                track: commit.track,
+                edit: SendEdit::CancelPreview,
+            });
+        }
+    }
+
+    fn adjust_send(&mut self, track: u64, id: u64, adjustment: controls::Adjustment) {
+        let epoch = self.view.project_epoch;
+        match adjustment {
+            controls::Adjustment::Commit(level) => self.commit_send(SendCommit {
+                epoch,
+                track,
+                id,
+                level,
+            }),
+            controls::Adjustment::Drag { origin, value } => {
+                let previous = self
+                    .mixer_ui
+                    .send_gesture
+                    .filter(|gesture| gesture.track == track && gesture.id == id);
+                if previous.is_none() {
+                    // Starting a drag on another send ends any earlier preview.
+                    self.cancel_mix_gesture();
+                }
+                if previous.is_none_or(|gesture| gesture.level != value) {
+                    let _ = self.backend.send.send(Action::Send {
+                        epoch,
+                        track,
+                        edit: SendEdit::PreviewLevel { id, level: value },
+                    });
+                }
+                self.mixer_ui.send_gesture = Some(SendGesture {
+                    epoch,
+                    track,
+                    id,
+                    origin,
+                    level: value,
+                });
+            }
+        }
     }
 
     pub(super) fn mixer_logic(&mut self, ctx: &egui::Context) {
-        if self.mixer_ui.gesture.is_some()
-            && (self.confirm.is_some()
-                || self.file.is_some()
-                || self.busy_since.is_some()
-                || ctx.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape))
-                || !ctx.input(|input| input.focused))
-        {
+        let cancel = self.confirm.is_some()
+            || self.file.is_some()
+            || (self.mixer_ui.gesture.is_some() || self.mixer_ui.send_gesture.is_some())
+                && (ctx.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape))
+                    || !ctx.input(|input| input.focused));
+        if (self.mixer_ui.gesture.is_some() || self.mixer_ui.send_gesture.is_some()) && cancel {
             self.cancel_mix_gesture();
         }
+        self.flush_mix_commit();
+        self.flush_send_commit();
     }
 
     fn mixer_controls_enabled(&self) -> bool {
@@ -248,18 +490,45 @@ impl App {
         let enabled = self.mixer_controls_enabled();
         let selected = self.mixer_selection();
         let mut event = None;
+        let mut selected_strip = None;
+        ui.horizontal(|ui| {
+            ui.strong("Mixer");
+            if ui
+                .add_enabled(enabled, egui::Button::new("+ Bus"))
+                .on_hover_text("Add a bus used as a group or FX return")
+                .clicked()
+            {
+                event = Some(Event::AddBus);
+            }
+        });
         let selection = if enabled {
             self.mixer_ui.focus.take()
         } else {
             None
         };
+        let reveal = self.mixer_ui.reveal.take();
+        let tracks: Vec<_> = self.view.project.tracks.iter().collect();
+        let (instruments, buses): (Vec<_>, Vec<_>) =
+            tracks.into_iter().partition(|track| track.is_instrument());
         egui::ScrollArea::vertical()
             .id_salt("mixer-vertical")
             .auto_shrink([false, true])
             .show(ui, |ui| {
                 ui.horizontal_top(|ui| {
                     ui.spacing_mut().item_spacing.x = MIX_GAP;
-                    let bank_width = (ui.available_width() - MIX_CHANNEL - MIX_GAP).max(1.0);
+                    let available = ui.available_width();
+                    let bus_width = if buses.is_empty() {
+                        0.0
+                    } else {
+                        (buses.len() as f32 * (MIX_CHANNEL + MIX_GAP))
+                            .min((available * 0.4).max(MIX_CHANNEL))
+                    };
+                    let gaps = if buses.is_empty() {
+                        MIX_GAP
+                    } else {
+                        2.0 * MIX_GAP
+                    };
+                    let bank_width = (available - bus_width - MIX_CHANNEL - gaps).max(1.0);
                     ui.allocate_ui_with_layout(
                         egui::vec2(bank_width, 0.0),
                         egui::Layout::top_down(egui::Align::Min),
@@ -267,8 +536,7 @@ impl App {
                             ui.set_max_width(bank_width);
                             ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
                             ui.spacing_mut().scroll.foreground_color = true;
-                            let scroll_bar = if self.view.project.tracks.len() as f32
-                                * (MIX_CHANNEL + MIX_GAP)
+                            let scroll_bar = if instruments.len() as f32 * (MIX_CHANNEL + MIX_GAP)
                                 > bank_width
                             {
                                 egui::scroll_area::ScrollBarVisibility::AlwaysVisible
@@ -283,17 +551,19 @@ impl App {
                                 .show(ui, |ui| {
                                     ui.horizontal_top(|ui| {
                                         ui.spacing_mut().item_spacing.x = MIX_GAP;
-                                        for track in &self.view.project.tracks {
-                                            let target = Target::Track(track.id);
-                                            let (response, result) = self.mixer_strip(
-                                                ui,
-                                                target,
-                                                &track.name,
-                                                track.mix,
-                                                selected == Some(target),
-                                                selection == Some(target),
-                                            );
-                                            if selection == Some(target) {
+                                        for track in &instruments {
+                                            let target = if track.is_bus() {
+                                                Target::Bus(track.id)
+                                            } else {
+                                                Target::Track(track.id)
+                                            };
+                                            let (response, result, clicked) =
+                                                self.mixer_track(ui, track, selected, selection);
+                                            if clicked {
+                                                selected_strip = Some(target);
+                                            }
+                                            if selection == Some(target) || reveal == Some(track.id)
+                                            {
                                                 response.scroll_to_me(Some(egui::Align::Center));
                                             }
                                             event = result.or(event.take());
@@ -302,25 +572,78 @@ impl App {
                                 });
                         },
                     );
+                    if !buses.is_empty() {
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(bus_width, 0.0),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                ui.set_max_width(bus_width);
+                                ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+                                ui.spacing_mut().scroll.foreground_color = true;
+                                let scroll_bar =
+                                    if buses.len() as f32 * (MIX_CHANNEL + MIX_GAP) > bus_width {
+                                        egui::scroll_area::ScrollBarVisibility::AlwaysVisible
+                                    } else {
+                                        egui::scroll_area::ScrollBarVisibility::AlwaysHidden
+                                    };
+                                egui::ScrollArea::horizontal()
+                                    .id_salt("mixer-buses")
+                                    .auto_shrink([false, true])
+                                    .max_width(bus_width)
+                                    .scroll_bar_visibility(scroll_bar)
+                                    .show(ui, |ui| {
+                                        ui.horizontal_top(|ui| {
+                                            ui.spacing_mut().item_spacing.x = MIX_GAP;
+                                            for track in &buses {
+                                                let (response, result, clicked) = self
+                                                    .mixer_track(ui, track, selected, selection);
+                                                if clicked {
+                                                    selected_strip = Some(Target::Bus(track.id));
+                                                }
+                                                if selection == Some(Target::Bus(track.id))
+                                                    || reveal == Some(track.id)
+                                                {
+                                                    response
+                                                        .scroll_to_me(Some(egui::Align::Center));
+                                                }
+                                                event = result.or(event.take());
+                                            }
+                                        });
+                                    });
+                            },
+                        );
+                    }
                     let target = Target::Master;
                     let channel = Channel {
                         level: self.view.project.master,
                         ..Default::default()
                     };
-                    let (_, result) = self.mixer_strip(
+                    let (_, result, clicked) = self.mixer_strip(
                         ui,
-                        target,
-                        "Master",
-                        channel,
-                        selected == Some(target),
-                        selection == Some(target),
+                        Strip {
+                            target,
+                            name: "Master",
+                            channel,
+                            selected: selected == Some(target),
+                            focus: selection == Some(target),
+                            kind: TrackKind::Instrument,
+                            sends: &[],
+                            output: None,
+                            inputs: 0,
+                        },
                     );
+                    if clicked {
+                        selected_strip = Some(target);
+                    }
                     event = result.or(event.take());
                 });
                 if !self.status.is_empty() {
                     controls::small_label(ui, &self.status);
                 }
             });
+        if enabled && let Some(target) = selected_strip {
+            self.select_mixer(target);
+        }
         match event {
             Some(Event::FocusInsert(target, id)) if enabled => {
                 self.mixer_ui.insert_focus = Some((target, id));
@@ -338,6 +661,67 @@ impl App {
             Some(Event::DropInsert(target, id, before)) if enabled => {
                 self.send_insert(target, InsertAction::Move { id, before });
             }
+            Some(Event::SendAdd { track, target }) if enabled => {
+                self.send(Action::Send {
+                    epoch: self.view.project_epoch,
+                    track,
+                    edit: SendEdit::Add { target },
+                });
+            }
+            Some(Event::SendNewBus { track }) if enabled => {
+                self.send(Action::AddBusSend { track });
+            }
+            Some(Event::SendRemove { track, id }) if enabled => {
+                self.send(Action::Send {
+                    epoch: self.view.project_epoch,
+                    track,
+                    edit: SendEdit::Remove { id },
+                });
+            }
+            Some(Event::SendPre { track, id, pre }) if enabled => {
+                self.send(Action::Send {
+                    epoch: self.view.project_epoch,
+                    track,
+                    edit: SendEdit::SetPre { id, pre },
+                });
+            }
+            Some(Event::SendEnabled { track, id, enabled }) if enabled => {
+                self.send(Action::Send {
+                    epoch: self.view.project_epoch,
+                    track,
+                    edit: SendEdit::SetEnabled { id, enabled },
+                });
+            }
+            Some(Event::SendTarget { track, id, target }) if enabled => {
+                self.send(Action::Send {
+                    epoch: self.view.project_epoch,
+                    track,
+                    edit: SendEdit::SetTarget { id, target },
+                });
+            }
+            Some(Event::SendAdjust {
+                track,
+                id,
+                adjustment,
+            }) if enabled => {
+                self.adjust_send(track, id, adjustment);
+                ui.ctx().request_repaint();
+            }
+            Some(Event::Output { track, output }) if enabled => {
+                self.send(Action::SetOutput {
+                    epoch: self.view.project_epoch,
+                    track,
+                    output,
+                });
+            }
+            Some(Event::NewBus { track }) if enabled => {
+                self.send(Action::AddBus {
+                    assign: Some(track),
+                });
+            }
+            Some(Event::AddBus) if enabled => {
+                self.send(Action::AddBus { assign: None });
+            }
             Some(Event::Focus(target)) if enabled => self.focus_mixer(target),
             Some(Event::Command(command, target)) if enabled => {
                 self.run_mixer_command(command, target)
@@ -345,7 +729,7 @@ impl App {
             Some(Event::Adjust(target, control, controls::Adjustment::Commit(value)))
                 if enabled =>
             {
-                self.commit_mixer(self.make_change(target, control, value));
+                self.release_mixer(self.make_change(target, control, value));
             }
             Some(Event::Adjust(target, control, controls::Adjustment::Drag { origin, value }))
                 if enabled =>
@@ -363,7 +747,20 @@ impl App {
             }
             _ => {
                 if !ui.input(|input| input.pointer.primary_down()) {
-                    self.cancel_mix_gesture();
+                    // A send drag released without a commit event (for example while the
+                    // strip was disabled) still commits its last previewed level.
+                    if let Some(gesture) = self.mixer_ui.send_gesture.take() {
+                        self.commit_send(SendCommit {
+                            epoch: gesture.epoch,
+                            track: gesture.track,
+                            id: gesture.id,
+                            level: gesture.level,
+                        });
+                    }
+                    // Likewise a fader or knob drag commits its last previewed value.
+                    if let Some((change, _)) = self.mixer_ui.gesture.take() {
+                        self.release_mixer(change);
+                    }
                 }
             }
         }
@@ -373,15 +770,25 @@ impl App {
     fn mixer_strip(
         &self,
         ui: &mut egui::Ui,
-        target: Target,
-        name: &str,
-        channel: Channel,
-        selected: bool,
-        focus: bool,
-    ) -> (egui::Response, Option<Event>) {
+        strip: Strip,
+    ) -> (egui::Response, Option<Event>, bool) {
+        let Strip {
+            target,
+            name,
+            channel,
+            selected,
+            focus,
+            kind,
+            sends,
+            output,
+            inputs,
+        } = strip;
         let mut event = None;
+        let mut footer_hovered = false;
         let enabled = self.mixer_controls_enabled();
         let master = target == Target::Master;
+        let bus = kind.is_bus();
+        let track_id = target.id();
         let meter = self.meter(target);
         let shortcut = |command| {
             self.bindings
@@ -422,8 +829,33 @@ impl App {
                         event = self.mixer_inserts(ui, target, name).or(event.take());
                         ui.add_space(MIX_GROUP - MIX_ROW);
                         if master {
+                            ui.allocate_space(egui::vec2(0.0, MIX_ROUTING_HEIGHT));
+                            ui.add_space(MIX_GROUP - MIX_ROW);
                             event = knob(ui, Control::Pan).or(event.take());
                         } else {
+                            let routing = ui
+                                .allocate_ui_with_layout(
+                                    egui::vec2(ui.available_width(), MIX_ROUTING_HEIGHT),
+                                    egui::Layout::top_down(egui::Align::Min),
+                                    |ui| {
+                                        ui.set_min_height(MIX_ROUTING_HEIGHT);
+                                        ui.set_max_height(MIX_ROUTING_HEIGHT);
+                                        let routing = if bus {
+                                            controls::small_label(ui, "Inputs");
+                                            controls::small_label(ui, &format!("{inputs} sources"));
+                                            None
+                                        } else if let Some(track_id) = track_id {
+                                            self.mixer_sends(ui, track_id, name, sends)
+                                        } else {
+                                            None
+                                        };
+                                        fill_height(ui, MIX_ROUTING_HEIGHT);
+                                        routing
+                                    },
+                                )
+                                .inner;
+                            event = routing.or(event.take());
+                            ui.add_space(MIX_GROUP - MIX_ROW);
                             ui.columns(2, |columns| {
                                 event = knob(&mut columns[0], Control::Pan).or(event.take());
                                 event = knob(&mut columns[1], Control::Width).or(event.take());
@@ -477,10 +909,63 @@ impl App {
                             });
                         }
                         ui.add_space(MIX_GROUP - MIX_ROW);
-                        ui.vertical_centered(|ui| {
-                            controls::small_label(ui, if master { "Output" } else { "To Master" })
-                        });
-                        let response = controls::footer(ui, name, master, name);
+                        let output = ui
+                            .allocate_ui_with_layout(
+                                egui::vec2(ui.available_width(), 36.0),
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| {
+                                    ui.set_min_height(MIX_OUTPUT_HEIGHT);
+                                    ui.set_max_height(MIX_OUTPUT_HEIGHT);
+                                    let output = if let Some(track_id) =
+                                        track_id.filter(|_| !master && !bus)
+                                    {
+                                        self.output_menu(ui, track_id, output)
+                                    } else if bus {
+                                        controls::small_label(ui, "Output");
+                                        let _ = ui
+                                            .add_sized(
+                                                [ui.available_width(), 18.0],
+                                                egui::Button::new(
+                                                    egui::RichText::new("Master").size(MIX_SMALL),
+                                                )
+                                                .fill(colors::FIELD)
+                                                .stroke(egui::Stroke::new(
+                                                    1.0_f32,
+                                                    colors::DIVIDER,
+                                                )),
+                                            )
+                                            .on_hover_text("Buses output to Master");
+                                        None
+                                    } else {
+                                        controls::small_label(ui, "Output");
+                                        let _ = ui
+                                            .add_sized(
+                                                [ui.available_width(), 18.0],
+                                                egui::Button::new(
+                                                    egui::RichText::new("Device").size(MIX_SMALL),
+                                                )
+                                                .fill(colors::FIELD)
+                                                .stroke(egui::Stroke::new(
+                                                    1.0_f32,
+                                                    colors::DIVIDER,
+                                                )),
+                                            )
+                                            .on_hover_text("Master outputs to the audio device");
+                                        None
+                                    };
+                                    fill_height(ui, MIX_OUTPUT_HEIGHT);
+                                    output
+                                },
+                            )
+                            .inner;
+                        event = output.or(event.take());
+                        let response = controls::footer(
+                            ui,
+                            name,
+                            master || bus,
+                            &format!("{name} — click to select"),
+                        );
+                        footer_hovered = response.contains_pointer();
                         if focus {
                             response.request_focus();
                         }
@@ -507,7 +992,228 @@ impl App {
                 })
             })
             .inner;
-        (frame, event)
+        let pressed = ui.input(|input| input.pointer.primary_pressed());
+        let select = pressed && !footer_hovered && ui.rect_contains_pointer(frame.rect);
+        (frame, event, select)
+    }
+
+    fn mixer_sends(
+        &self,
+        ui: &mut egui::Ui,
+        track: u64,
+        name: &str,
+        sends: &[Send],
+    ) -> Option<Event> {
+        let mut event = None;
+        controls::small_label(ui, "Sends");
+        egui::ScrollArea::vertical()
+            .id_salt("send-list")
+            .max_height(58.0)
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                for send in sends {
+                    ui.push_id(send.id, |ui| {
+                        let row = ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 0.5;
+                            ui.spacing_mut().button_padding.x = 1.0;
+                            let pre = if send.pre { "PRE" } else { "POST" };
+                            let tap = ui
+                                .add_sized(
+                                    [16.0, 16.0],
+                                    egui::Button::new(egui::RichText::new(pre).size(6.5).color(
+                                        if send.pre {
+                                            colors::ACCENT
+                                        } else {
+                                            colors::SECONDARY
+                                        },
+                                    ))
+                                    .small(),
+                                )
+                                .on_hover_text(if send.pre {
+                                    "Pre-fader send; click for post-fader"
+                                } else {
+                                    "Post-fader send; click for pre-fader"
+                                });
+                            if tap.clicked() {
+                                event = Some(Event::SendPre {
+                                    track,
+                                    id: send.id,
+                                    pre: !send.pre,
+                                });
+                            }
+                            let destination = self
+                                .view
+                                .project
+                                .bus(send.target)
+                                .map_or("Missing", |bus| bus.name.as_str());
+                            let destination_button = ui.add_sized(
+                                [28.0, 16.0],
+                                egui::Button::new(egui::RichText::new(destination).size(7.5))
+                                    .truncate()
+                                    .small(),
+                            );
+                            let destination_button =
+                                destination_button.on_hover_text(format!("Send to {destination}"));
+                            egui::Popup::menu(&destination_button).show(|ui| {
+                                for bus in
+                                    self.view.project.tracks.iter().filter(|bus| bus.is_bus())
+                                {
+                                    let used = sends
+                                        .iter()
+                                        .any(|other| other.id != send.id && other.target == bus.id);
+                                    if ui
+                                        .add_enabled(!used, egui::Button::new(&bus.name))
+                                        .clicked()
+                                    {
+                                        event = Some(Event::SendTarget {
+                                            track,
+                                            id: send.id,
+                                            target: bus.id,
+                                        });
+                                        ui.close();
+                                    }
+                                }
+                            });
+                            let drag_start = self
+                                .mixer_ui
+                                .send_gesture
+                                .filter(|gesture| gesture.track == track && gesture.id == send.id)
+                                .map(|gesture| gesture.origin);
+                            let adjustment = controls::Slider {
+                                control: Control::Send,
+                                value: self.mixer_ui.send_level(track, send),
+                                drag_start,
+                                name,
+                                master: false,
+                                compact: true,
+                            }
+                            .show(ui);
+                            if let Some(adjustment) = adjustment {
+                                event = Some(Event::SendAdjust {
+                                    track,
+                                    id: send.id,
+                                    adjustment,
+                                });
+                            }
+                            let bypass = format!(
+                                "{name}, {} Send to {destination}",
+                                if send.enabled { "Bypass" } else { "Enable" }
+                            );
+                            if inserts::bypass(ui, 14.0, 16.0, &bypass, send.enabled, true) {
+                                event = Some(Event::SendEnabled {
+                                    track,
+                                    id: send.id,
+                                    enabled: !send.enabled,
+                                });
+                            }
+                        });
+                        row.response.context_menu(|ui| {
+                            if ui.button("Remove Send").clicked() {
+                                event = Some(Event::SendRemove { track, id: send.id });
+                                ui.close();
+                            }
+                        });
+                    });
+                }
+            });
+        let add = inserts::append_send(ui, name);
+        egui::Popup::menu(&add).show(|ui| {
+            if ui.button("New Bus Send…").clicked() {
+                event = Some(Event::SendNewBus { track });
+                ui.close();
+            }
+            ui.separator();
+            let buses: Vec<_> = self
+                .view
+                .project
+                .tracks
+                .iter()
+                .filter(|track| track.is_bus())
+                .collect();
+            if buses.is_empty() {
+                ui.add_enabled(false, egui::Button::new("No buses yet"));
+            }
+            for bus in buses {
+                let used = sends.iter().any(|send| send.target == bus.id);
+                if ui
+                    .add_enabled(!used, egui::Button::new(&bus.name))
+                    .clicked()
+                {
+                    event = Some(Event::SendAdd {
+                        track,
+                        target: bus.id,
+                    });
+                    ui.close();
+                }
+            }
+        });
+        event
+    }
+
+    fn output_menu(&self, ui: &mut egui::Ui, track: u64, output: Option<u64>) -> Option<Event> {
+        let mut event = None;
+        controls::small_label(ui, "Output");
+        let label = output
+            .and_then(|id| self.view.project.bus(id))
+            .map_or("Master", |bus| bus.name.as_str());
+        ui.menu_button(label, |ui| {
+            if ui.button("Master").clicked() {
+                event = Some(Event::Output {
+                    track,
+                    output: None,
+                });
+                ui.close();
+            }
+            for bus in self
+                .view
+                .project
+                .tracks
+                .iter()
+                .filter(|track| track.is_bus())
+            {
+                if ui.button(&bus.name).clicked() {
+                    event = Some(Event::Output {
+                        track,
+                        output: Some(bus.id),
+                    });
+                    ui.close();
+                }
+            }
+            ui.separator();
+            if ui.button("New Bus…").clicked() {
+                event = Some(Event::NewBus { track });
+                ui.close();
+            }
+        });
+        event
+    }
+
+    fn mixer_track(
+        &self,
+        ui: &mut egui::Ui,
+        track: &clef_model::project::Track,
+        selected: Option<Target>,
+        selection: Option<Target>,
+    ) -> (egui::Response, Option<Event>, bool) {
+        let target = if track.is_bus() {
+            Target::Bus(track.id)
+        } else {
+            Target::Track(track.id)
+        };
+        self.mixer_strip(
+            ui,
+            Strip {
+                target,
+                name: &track.name,
+                channel: track.mix,
+                selected: selected == Some(target),
+                focus: selection == Some(target),
+                kind: track.kind,
+                sends: &track.sends,
+                output: track.output,
+                inputs: self.view.project.has_sources(track.id),
+            },
+        )
     }
 
     pub(super) fn insert_command_available(&self, command: Command) -> bool {
@@ -536,7 +1242,7 @@ impl App {
         self.mixer_ui.instrument_focus.or_else(|| {
             self.mixer_selection().and_then(|target| match target {
                 Target::Track(id) => Some(id),
-                Target::Master => None,
+                Target::Bus(_) | Target::Master => None,
             })
         })
     }
@@ -724,7 +1430,7 @@ impl App {
         let chain = self.view.project.inserts(target)?;
         let track = match target {
             Target::Track(id) => self.view.project.tracks.iter().find(|track| track.id == id),
-            Target::Master => None,
+            Target::Bus(_) | Target::Master => None,
         };
         let mut event = None;
         controls::small_label(ui, "Inserts");
@@ -803,26 +1509,30 @@ impl App {
                                     ui.add_space(inserts::GAP_HEIGHT);
                                 }
                                 let status = self.view.inserts.get(&slot.id);
-                                let (state, description) =
-                                    if status.is_some_and(|status| status.missing) {
-                                        (inserts::State::Missing, "Missing")
-                                    } else if let Some(error) = status
-                                        .map(|status| status.error.as_str())
-                                        .filter(|s| !s.is_empty())
-                                    {
-                                        (inserts::State::Failed, error)
-                                    } else if slot.bypassed {
-                                        (inserts::State::Bypassed, "Bypassed")
-                                    } else {
-                                        (inserts::State::Active, "Open original editor")
-                                    };
+                                let (state, description) = if status
+                                    .is_some_and(|status| status.missing)
+                                {
+                                    (inserts::State::Missing, "Missing".to_owned())
+                                } else if let Some(error) = status
+                                    .map(|status| status.error.as_str())
+                                    .filter(|s| !s.is_empty())
+                                {
+                                    (inserts::State::Failed, error.to_owned())
+                                } else if slot.bypassed {
+                                    (inserts::State::Bypassed, "Bypassed".to_owned())
+                                } else if let Some(late) = status.and_then(|status| status.late) {
+                                    (inserts::State::Late, inserts::late_description(late))
+                                } else {
+                                    (inserts::State::Active, "Open original editor".to_owned())
+                                };
                                 let (response, activate, power) = inserts::slot(
                                     ui,
                                     &slot.plugin.name,
                                     name,
                                     "Effect",
                                     state,
-                                    description,
+                                    &description,
+                                    f32::from(MIX_PADDING[1]),
                                 );
                                 response.dnd_set_drag_payload(DragInsert(target, slot.id));
                                 if response.has_focus()
@@ -889,8 +1599,9 @@ impl App {
                 .iter()
                 .any(|entry| crate::quarantine::same(&entry.plugin, plugin))
         });
-        let missing = plugin.is_some_and(|plugin| !plugin.path.exists());
         let track_view = self.view.tracks.iter().find(|view| view.id == track.id);
+        // The session checks bundle existence on its rescan cadence; frames do no file I/O.
+        let missing = plugin.is_some() && track_view.is_some_and(|view| view.missing);
         let failed = track_view.is_some_and(|view| view.status == "Unavailable");
         let loading = track_view.is_some_and(|view| view.loading);
         let (state, description, ready) = if plugin.is_none() {
@@ -917,8 +1628,15 @@ impl App {
         let display = plugin.map_or("No instrument", |plugin| plugin.name.as_str());
         ui.push_id("instrument-slot", |ui| {
             ui.add_space(inserts::GAP_HEIGHT);
-            let (response, activate, power) =
-                inserts::slot(ui, display, name, "Plugin", state, description);
+            let (response, activate, power) = inserts::slot(
+                ui,
+                display,
+                name,
+                "Plugin",
+                state,
+                description,
+                f32::from(MIX_PADDING[1]),
+            );
             if response.has_focus()
                 && self.mixer_ui.instrument_focus != Some(track.id)
                 && event.is_none()
@@ -1013,7 +1731,10 @@ mod tests {
             take_lanes: Default::default(),
             mix: Default::default(),
             inserts: vec![insert(2, "Tape EQ"), insert(3, "Stereo Delay")],
-            state: Vec::new(),
+            kind: Default::default(),
+            output: None,
+            sends: Vec::new(),
+            state: Default::default(),
         });
         project.next_id = 4;
         app.view.project = project;
@@ -1022,6 +1743,108 @@ mod tests {
         app.mixer_ui.open = true;
         app.catalog.effects = vec![insert(4, "Plate Reverb").plugin];
         app
+    }
+
+    #[test]
+    fn a_fader_drag_survives_another_action_and_its_release_commits_when_idle() {
+        let ctx = egui::Context::default();
+        ctx.begin_pass(egui::RawInput {
+            focused: true,
+            ..Default::default()
+        });
+        let mut app = app_with_two_inserts();
+        let target = Target::Track(1);
+        let origin = controls::DragOrigin::at(0);
+        let preview = app.make_change(target, Control::Fader, -300);
+        app.mixer_ui.gesture = Some((preview, origin));
+
+        // Another action starts during the drag: the drag is kept, not cancelled.
+        app.send(Action::Rename(1, "Violins".into()));
+        assert_eq!(app.actions_in_flight, 1);
+        app.mixer_logic(&ctx);
+        assert!(app.mixer_ui.gesture.is_some());
+        app.actions_in_flight = 0;
+
+        // The release waits while the action is in flight and shows the released value.
+        let released = app.make_change(target, Control::Fader, -250);
+        app.release_mixer(released);
+        assert_eq!(app.actions_in_flight, 0);
+        assert!(!app.mixer_ui.commit_pending());
+        app.mixer_ui.acknowledge(false);
+        assert!(
+            app.mixer_ui
+                .pending
+                .is_some_and(|change| change.value == -250),
+            "an unrelated reply keeps it"
+        );
+
+        // Once the session is idle the commit is sent exactly once.
+        app.busy_since = None;
+        app.mixer_logic(&ctx);
+        assert_eq!(app.actions_in_flight, 1);
+        assert!(app.mixer_ui.commit_pending());
+        app.mixer_logic(&ctx);
+        assert_eq!(app.actions_in_flight, 1);
+        app.mixer_ui.acknowledge(false);
+        assert!(app.mixer_ui.pending.is_none());
+
+        // Escape still cancels a drag.
+        app.actions_in_flight = 0;
+        app.busy_since = None;
+        app.mixer_ui.gesture = Some((preview, origin));
+        app.cancel_mix_gesture();
+        assert!(app.mixer_ui.gesture.is_none());
+        assert_eq!(app.actions_in_flight, 0);
+    }
+
+    #[test]
+    fn send_drags_preview_without_busy_state_and_the_release_always_commits() {
+        let ctx = egui::Context::default();
+        let mut app = app_with_two_inserts();
+        let send = Send {
+            id: 9,
+            target: 8,
+            level: -600,
+            pre: false,
+            enabled: true,
+        };
+        app.view.project.tracks[0].sends.push(send.clone());
+        let drag = |value| controls::Adjustment::Drag {
+            origin: controls::DragOrigin::at(-600),
+            value,
+        };
+        for value in [-500, -400, -400, -300] {
+            app.adjust_send(1, send.id, drag(value));
+            assert_eq!(app.actions_in_flight, 0);
+            assert!(app.busy_since.is_none() && app.mixer_controls_enabled());
+        }
+        assert_eq!(app.mixer_ui.send_level(1, &send), -300);
+
+        // Another action is in flight when the drag is released: the commit waits for it.
+        app.busy_since = Some(std::time::Instant::now());
+        app.adjust_send(1, send.id, controls::Adjustment::Commit(-250));
+        assert_eq!(app.actions_in_flight, 0);
+        assert_eq!(app.mixer_ui.send_level(1, &send), -250);
+        app.mixer_logic(&ctx);
+        assert_eq!(app.actions_in_flight, 0);
+        app.mixer_ui.acknowledge(false);
+        assert_eq!(app.mixer_ui.send_level(1, &send), -250);
+        app.busy_since = None;
+        app.mixer_logic(&ctx);
+        assert_eq!(app.actions_in_flight, 1);
+        assert!(app.mixer_ui.commit_pending());
+        assert_eq!(app.mixer_ui.send_level(1, &send), -250);
+        app.mixer_ui.acknowledge(false);
+        assert_eq!(app.mixer_ui.send_level(1, &send), send.level);
+
+        // Escape cancels a drag; the session receives an unacknowledged cancel.
+        app.actions_in_flight = 0;
+        app.busy_since = None;
+        app.adjust_send(1, send.id, drag(-200));
+        app.cancel_mix_gesture();
+        assert!(app.mixer_ui.send_gesture.is_none());
+        assert_eq!(app.mixer_ui.send_level(1, &send), send.level);
+        assert_eq!(app.actions_in_flight, 0);
     }
 
     #[test]

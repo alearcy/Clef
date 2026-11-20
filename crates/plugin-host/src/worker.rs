@@ -17,10 +17,17 @@ use std::{
     time::Duration,
 };
 
+/// Fault and timing controls shared by the deterministic fixture's main and audio sides.
+#[derive(Default)]
+struct Fixture {
+    fault: AtomicU8,
+    delay_micros: AtomicU32,
+}
+
 enum Audio {
     Vst(VstAudio),
     Clap(Box<ClapAudio>),
-    Fixture(Arc<AtomicU8>),
+    Fixture(Arc<Fixture>),
 }
 
 impl Audio {
@@ -50,8 +57,12 @@ impl Audio {
         match self {
             Self::Vst(audio) => audio.process(position, events, frames, input),
             Self::Clap(audio) => audio.process(position, events, frames, input),
-            Self::Fixture(fault) => {
-                match fault.load(Ordering::Acquire) {
+            Self::Fixture(fixture) => {
+                let delay = fixture.delay_micros.load(Ordering::Acquire);
+                if delay != 0 {
+                    std::thread::sleep(Duration::from_micros(delay.into()));
+                }
+                match fixture.fault.load(Ordering::Acquire) {
                     1 => std::process::exit(91),
                     2 => loop {
                         std::thread::park();
@@ -79,7 +90,7 @@ impl Audio {
 enum Backend {
     Vst(VstMain),
     Clap(Box<ClapMain>),
-    Fixture(Arc<AtomicU8>),
+    Fixture(Arc<Fixture>),
 }
 
 struct MainPlugin {
@@ -106,7 +117,7 @@ impl MainPlugin {
     ) -> Result<Self> {
         let (backend, name) = if path == Path::new("@fixture") {
             (
-                Backend::Fixture(Arc::new(AtomicU8::new(0))),
+                Backend::Fixture(Arc::default()),
                 "Clef deterministic process fixture".to_owned(),
             )
         } else if path.extension().is_some_and(|s| s == "vst3") {
@@ -187,7 +198,7 @@ impl MainPlugin {
                 let audio = match &mut self.backend {
                     Backend::Vst(plugin) => Audio::Vst(plugin.activate(offline)?),
                     Backend::Clap(main) => Audio::Clap(Box::new(main.activate(offline)?)),
-                    Backend::Fixture(fault) => Audio::Fixture(Arc::clone(fault)),
+                    Backend::Fixture(fixture) => Audio::Fixture(Arc::clone(fixture)),
                 };
                 *self.audio.lock().map_err(|_| "audio lock poisoned")? = Some(audio);
                 self.restart.store(false, Ordering::Release);
@@ -199,7 +210,17 @@ impl MainPlugin {
                 _ => return Err("fixture edits are restricted to the internal fixture".into()),
             },
             Request::FixtureFault { hang } => match &self.backend {
-                Backend::Fixture(fault) => fault.store(if hang { 2 } else { 1 }, Ordering::Release),
+                Backend::Fixture(fixture) => fixture
+                    .fault
+                    .store(if hang { 2 } else { 1 }, Ordering::Release),
+                _ => return Err("fault injection is restricted to the internal fixture".into()),
+            },
+            Request::FixtureDelay { micros } => match &self.backend {
+                Backend::Fixture(fixture) => fixture.delay_micros.store(micros, Ordering::Release),
+                _ => return Err("fault injection is restricted to the internal fixture".into()),
+            },
+            Request::FixtureRestart => match &self.backend {
+                Backend::Fixture(_) => self.restart.store(true, Ordering::Release),
                 _ => return Err("fault injection is restricted to the internal fixture".into()),
             },
             Request::Save => {
@@ -472,6 +493,7 @@ pub fn run(
                             events,
                             frames,
                             input,
+                            sequence,
                         } => {
                             let started = std::time::Instant::now();
                             let result: Result<Vec<Frame>> = (|| {
@@ -487,6 +509,8 @@ pub fn run(
                                     .ok_or("plugin is stopped")?
                                     .process(position, &events, frames, &input)
                             })();
+                            // The host matches replies to requests by sequence and
+                            // discards a reply that arrives after its block deadline.
                             match result {
                                 Ok(frames) => Reply {
                                     frames,
@@ -497,9 +521,13 @@ pub fn run(
                                         as u64,
                                     latency: latency.load(Ordering::Acquire),
                                     restart: restart.swap(false, Ordering::AcqRel),
+                                    sequence,
                                     ..Reply::empty()
                                 },
-                                Err(error) => Reply::failed(error),
+                                Err(error) => Reply {
+                                    sequence,
+                                    ..Reply::failed(error)
+                                },
                             }
                         }
                         Request::SuspendAudio => match audio.lock() {

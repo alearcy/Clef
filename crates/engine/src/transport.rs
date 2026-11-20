@@ -40,6 +40,11 @@ pub struct SampleSpan {
 }
 
 impl SampleMap {
+    /// True when both maps place every tick at the same sample.
+    pub(crate) fn same_mapping(&self, other: &Self) -> bool {
+        self.rate == other.rate && self.segments[..self.len] == other.segments[..other.len]
+    }
+
     pub fn new(timeline: &Timeline, rate: u32) -> Result<Self> {
         timeline.validate()?;
         if !(8000..=384_000).contains(&rate) {

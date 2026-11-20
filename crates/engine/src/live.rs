@@ -1,3 +1,4 @@
+use crate::restart::InstrumentAudio;
 use crate::{
     graph::Plan,
     protocol::{BLOCK, Frame, MAX_EVENTS, Midi, RATE, Result},
@@ -13,7 +14,7 @@ use std::{
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     },
     thread::JoinHandle,
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 const QUEUE_BLOCKS: usize = 4;
@@ -184,7 +185,7 @@ pub struct Live {
     stream: Stream,
     midi: Option<MidiInputConnection<()>>,
     stop: Arc<AtomicBool>,
-    thread: Option<JoinHandle<AudioConnection>>,
+    thread: Option<JoinHandle<Option<AudioConnection>>>,
     pub counters: Arc<Counters>,
 }
 
@@ -295,7 +296,7 @@ impl Live {
         )?;
         instrument.start(false)?;
         let control = instrument.control_connection();
-        let mut audio = instrument.take_audio()?;
+        let mut audio = InstrumentAudio::new(instrument.take_audio()?);
         let stats = Arc::clone(&counters);
         let stopping = Arc::clone(&stop);
         let initial_latency = instrument.latency;
@@ -317,10 +318,26 @@ impl Live {
             let result: Result<()> = (|| {
                 crate::threading::audio_priority(true)?;
                 while !stopping.load(Ordering::Acquire) {
+                    // A restart runs on a helper (T37 L2); the callback is silent meanwhile.
+                    if let Some(restarted) = audio.poll() {
+                        latency = restarted?;
+                        plan.reset()?;
+                        pending = None;
+                        while midi_rx.pop().is_ok() {}
+                        elapsed = stats.played.load(Ordering::Acquire).div_ceil(BLOCK as u64)
+                            * BLOCK as u64;
+                        stats.plugin_latency.store(latency, Ordering::Release);
+                        stats.reconfigurations.fetch_add(1, Ordering::Relaxed);
+                        continue;
+                    }
+                    if audio.ready().is_none() {
+                        std::thread::sleep(crate::multitrack::idle_wait(rate));
+                        continue;
+                    }
                     if producer.slots() == 0 {
                         let waiting = Instant::now();
                         while producer.slots() == 0 && !stopping.load(Ordering::Acquire) {
-                            std::thread::sleep(Duration::from_micros(100));
+                            std::thread::sleep(crate::multitrack::idle_wait(rate));
                         }
                         stats
                             .max_queue_wait_us
@@ -364,7 +381,10 @@ impl Live {
                         events.sort_by_key(|event| event.offset);
                     }
                     let rpc_started = Instant::now();
-                    let reply = audio.process(sequence::START + elapsed, &events, BLOCK)?;
+                    let Some(connection) = audio.ready() else {
+                        continue;
+                    };
+                    let reply = connection.process(sequence::START + elapsed, &events, BLOCK)?;
                     stats
                         .max_rpc_us
                         .fetch_max(rpc_started.elapsed().as_micros() as u64, Ordering::Relaxed);
@@ -381,19 +401,12 @@ impl Live {
                         stats.reconfiguring.store(true, Ordering::Release);
                         generation += 1;
                         stats.generation.store(generation, Ordering::Release);
-                        audio.process(
+                        connection.process(
                             sequence::START + elapsed,
                             &sequence::panic_events(),
                             BLOCK,
                         )?;
-                        latency = audio.reconfigure(&control)?;
-                        plan.reset()?;
-                        pending = None;
-                        while midi_rx.pop().is_ok() {}
-                        elapsed = stats.played.load(Ordering::Acquire).div_ceil(BLOCK as u64)
-                            * BLOCK as u64;
-                        stats.plugin_latency.store(latency, Ordering::Release);
-                        stats.reconfigurations.fetch_add(1, Ordering::Relaxed);
+                        audio.begin_restart(&control);
                         continue;
                     }
                     let mut frames = [[0.0; 2]; BLOCK];
@@ -414,11 +427,14 @@ impl Live {
                 eprintln!(
                     "Live worker failed: {error}. Output becomes silent; use recreate explicitly."
                 );
-                return audio;
+                return audio.into_inner();
             }
-            let _ = audio.process(sequence::START + elapsed, &sequence::panic_events(), BLOCK);
-            let _ = audio.suspend();
-            audio
+            if let Some(connection) = audio.ready() {
+                let _ =
+                    connection.process(sequence::START + elapsed, &sequence::panic_events(), BLOCK);
+                let _ = connection.suspend();
+            }
+            audio.into_inner()
         });
         let mut live = Self {
             stream,
@@ -446,8 +462,10 @@ impl Live {
         self.stop.store(true, Ordering::Release);
         self.midi.take();
         let _ = self.stream.pause();
-        if let Some(thread) = self.thread.take() {
-            instrument.return_audio(thread.join().map_err(|_| "live broker panicked")?);
+        if let Some(thread) = self.thread.take()
+            && let Some(audio) = thread.join().map_err(|_| "live broker panicked")?
+        {
+            instrument.return_audio(audio);
         }
         instrument.stop()
     }

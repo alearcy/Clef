@@ -1,10 +1,10 @@
 use clef_model::{
     Plugin, Result,
     midi::{Clip, Event, Mode, Section, Take},
-    project::{Project, Track, TrackMode},
+    project::{Project, Send as TrackSend, Track, TrackMode},
     timeline::Tempo,
 };
-use std::collections::VecDeque;
+use std::{collections::VecDeque, sync::Arc};
 
 const MAX_ENTRIES: usize = 100;
 const MAX_BYTES: usize = 64 * 1024 * 1024;
@@ -123,9 +123,21 @@ pub(super) struct TrackSlot {
     pub clips: Vec<Clip>,
 }
 
+pub(super) struct SourceRoute {
+    pub track: u64,
+    pub before: Option<u64>,
+    pub after: Option<u64>,
+}
+
+pub(super) struct SourceSend {
+    pub track: u64,
+    pub before: Vec<TrackSend>,
+    pub after: Vec<TrackSend>,
+}
+
 pub(super) struct InstrumentState {
     pub plugin: Option<Plugin>,
-    pub state: Vec<u8>,
+    pub state: Arc<[u8]>,
 }
 
 impl From<&Track> for InstrumentState {
@@ -153,6 +165,21 @@ pub(super) enum Edit {
     Track {
         slot: Box<TrackSlot>,
         added: bool,
+    },
+    Bus {
+        slot: Box<TrackSlot>,
+        source: Option<SourceRoute>,
+        send: Option<SourceSend>,
+    },
+    Output {
+        track: u64,
+        before: Option<u64>,
+        after: Option<u64>,
+    },
+    Sends {
+        track: u64,
+        before: Vec<TrackSend>,
+        after: Vec<TrackSend>,
     },
     InstrumentBypass {
         id: u64,
@@ -192,11 +219,7 @@ pub(super) enum Edit {
         after: InstrumentState,
         editor: bool,
     },
-    Midi {
-        id: u64,
-        before: Vec<Clip>,
-        after: Vec<Clip>,
-    },
+    Midi(ClipChange),
     Clips {
         label: &'static str,
         tracks: Vec<ClipChange>,
@@ -211,10 +234,68 @@ pub(super) enum Edit {
     },
 }
 
+/// The changed run of one track's clip list. Clips before `prefix` and the last `suffix`
+/// clips are unchanged and are not stored, so a one-clip edit costs one clip in history.
 pub(super) struct ClipChange {
-    pub id: u64,
-    pub before: Vec<Clip>,
-    pub after: Vec<Clip>,
+    id: u64,
+    prefix: usize,
+    suffix: usize,
+    before: Vec<Clip>,
+    after: Vec<Clip>,
+}
+
+impl ClipChange {
+    /// The difference between two clip lists of `id`, or `None` when they are equal.
+    pub(super) fn new(id: u64, before: &[Clip], after: &[Clip]) -> Option<Self> {
+        let prefix = before
+            .iter()
+            .zip(after)
+            .take_while(|(before, after)| before == after)
+            .count();
+        if prefix == before.len() && prefix == after.len() {
+            return None;
+        }
+        let suffix = before[prefix..]
+            .iter()
+            .rev()
+            .zip(after[prefix..].iter().rev())
+            .take_while(|(before, after)| before == after)
+            .count();
+        Some(Self {
+            id,
+            prefix,
+            suffix,
+            before: before[prefix..before.len() - suffix].to_vec(),
+            after: after[prefix..after.len() - suffix].to_vec(),
+        })
+    }
+
+    fn bytes(&self) -> usize {
+        clip_bytes(&self.before) + clip_bytes(&self.after)
+    }
+
+    fn apply(&self, project: &mut Project, forward: bool) -> Result<()> {
+        if !project.tracks.iter().any(|track| track.id == self.id) {
+            return Err("History track is unavailable.".into());
+        }
+        let (expected, clips) = if forward {
+            (&self.before, &self.after)
+        } else {
+            (&self.after, &self.before)
+        };
+        let current = project.midi.clips(self.id);
+        let end = self.prefix + expected.len();
+        if current.len() != end + self.suffix || current[self.prefix..end] != expected[..] {
+            return Err("The arrangement changed since this history entry.".into());
+        }
+        let tracks = &mut std::sync::Arc::make_mut(&mut project.midi).tracks;
+        let list = tracks.entry(self.id).or_default();
+        list.splice(self.prefix..end, clips.iter().cloned());
+        if list.is_empty() {
+            tracks.remove(&self.id);
+        }
+        Ok(())
+    }
 }
 
 fn plugin_bytes(plugin: Option<&Plugin>) -> usize {
@@ -260,6 +341,17 @@ impl Edit {
             Self::Inserts { label, .. } => label,
             Self::Track { added: true, .. } => "Add Track",
             Self::Track { added: false, .. } => "Remove Track",
+            Self::Bus { send: Some(_), .. } => "New Bus Send",
+            Self::Bus {
+                source: Some(_), ..
+            } => "Route to New Bus",
+            Self::Bus {
+                source: None,
+                send: None,
+                ..
+            } => "Add Bus",
+            Self::Output { .. } => "Change Output",
+            Self::Sends { .. } => "Edit Sends",
             Self::InstrumentBypass { .. } => "Toggle Instrument Bypass",
             Self::InstrumentOffline { .. } => "Toggle Instrument Offline",
             Self::TakeToNewTrack { .. } => "Take to New Track",
@@ -271,7 +363,7 @@ impl Edit {
             Self::Instrument { editor: true, .. } => "Edit Instrument State",
             Self::Instrument { before, .. } if before.plugin.is_none() => "Assign Instrument",
             Self::Instrument { .. } => "Replace Instrument",
-            Self::Midi { .. } => "Record MIDI",
+            Self::Midi(_) => "Record MIDI",
             Self::Clips { label, .. } => label,
             Self::Tempo { .. } => "Edit Tempo and Meter",
             Self::Loop { .. } => "Edit Loop Range",
@@ -285,25 +377,37 @@ impl Edit {
                 Self::Track { slot, .. } | Self::TakeToNewTrack { slot } => {
                     size_of::<TrackSlot>()
                         + slot.track.name.capacity()
-                        + slot.track.state.capacity()
+                        + slot.track.state.len()
                         + plugin_bytes(slot.track.plugin.as_ref())
                         + insert_bytes(&slot.track.inserts)
                         + clip_bytes(&slot.clips)
                 }
+                Self::Bus { slot, send, .. } => {
+                    size_of::<TrackSlot>()
+                        + slot.track.name.capacity()
+                        + slot.track.state.len()
+                        + plugin_bytes(slot.track.plugin.as_ref())
+                        + insert_bytes(&slot.track.inserts)
+                        + clip_bytes(&slot.clips)
+                        + send.as_ref().map_or(0, |send| {
+                            (send.before.capacity() + send.after.capacity())
+                                * size_of::<TrackSend>()
+                        })
+                }
+                Self::Sends { before, after, .. } => {
+                    (before.capacity() + after.capacity()) * size_of::<TrackSend>()
+                }
                 Self::Rename { before, after, .. } => before.capacity() + after.capacity(),
                 Self::Instrument { before, after, .. } => {
-                    before.state.capacity()
-                        + after.state.capacity()
+                    before.state.len()
+                        + after.state.len()
                         + plugin_bytes(before.plugin.as_ref())
                         + plugin_bytes(after.plugin.as_ref())
                 }
-                Self::Midi { before, after, .. } => clip_bytes(before) + clip_bytes(after),
+                Self::Midi(change) => change.bytes(),
                 Self::Clips { tracks, .. } => {
                     tracks.capacity() * size_of::<ClipChange>()
-                        + tracks
-                            .iter()
-                            .map(|change| clip_bytes(&change.before) + clip_bytes(&change.after))
-                            .sum::<usize>()
+                        + tracks.iter().map(ClipChange::bytes).sum::<usize>()
                 }
                 Self::Tempo { before, after } => {
                     (before.capacity() + after.capacity()) * size_of::<Tempo>()
@@ -314,6 +418,7 @@ impl Edit {
                 | Self::TrackMode { .. }
                 | Self::InstrumentBypass { .. }
                 | Self::InstrumentOffline { .. }
+                | Self::Output { .. }
                 | Self::Mix { .. } => 0,
             }
     }
@@ -329,9 +434,12 @@ impl Edit {
 
     pub(super) fn matches_state(&self, state: &[u8], forward: bool) -> bool {
         match self {
-            Self::Track { slot, .. } | Self::TakeToNewTrack { slot } => state == slot.track.state,
+            Self::Track { slot, .. } | Self::TakeToNewTrack { slot } | Self::Bus { slot, .. } => {
+                state == &*slot.track.state
+            }
             Self::Instrument { before, after, .. } => {
-                state == if forward { &before.state } else { &after.state }
+                let expected = if forward { &before.state } else { &after.state };
+                state == &expected[..]
             }
             _ => true,
         }
@@ -383,6 +491,58 @@ impl Edit {
                         .tracks
                         .remove(&slot.track.id);
                 }
+            }
+            Self::Bus { slot, source, send } => {
+                if forward {
+                    project
+                        .tracks
+                        .insert(slot.index.min(project.tracks.len()), slot.track.clone());
+                    if let Some(source) = source
+                        && let Some(track) = project
+                            .tracks
+                            .iter_mut()
+                            .find(|track| track.id == source.track)
+                    {
+                        track.output = source.after;
+                    }
+                } else {
+                    let index = track_index(project, slot.track.id)?;
+                    project.tracks.remove(index);
+                    if let Some(source) = source
+                        && let Some(track) = project
+                            .tracks
+                            .iter_mut()
+                            .find(|track| track.id == source.track)
+                    {
+                        track.output = source.before;
+                    }
+                }
+                if let Some(send) = send {
+                    let index = track_index(project, send.track)?;
+                    project.tracks[index].sends.clone_from(if forward {
+                        &send.after
+                    } else {
+                        &send.before
+                    });
+                }
+            }
+            Self::Output {
+                track,
+                before,
+                after,
+            } => {
+                let index = track_index(project, *track)?;
+                project.tracks[index].output = if forward { *after } else { *before };
+            }
+            Self::Sends {
+                track,
+                before,
+                after,
+            } => {
+                let index = track_index(project, *track)?;
+                project.tracks[index]
+                    .sends
+                    .clone_from(if forward { after } else { before });
             }
             Self::TakeToNewTrack { slot } => {
                 if forward {
@@ -452,35 +612,12 @@ impl Edit {
                 let index = track_index(project, *id)?;
                 let state = if forward { after } else { before };
                 project.tracks[index].plugin.clone_from(&state.plugin);
-                project.tracks[index].state.clone_from(&state.state);
+                project.tracks[index].state = state.state.clone();
             }
-            Self::Midi { id, before, after } => {
-                track_index(project, *id)?;
-                let clips = if forward { after } else { before };
-                let tracks = &mut std::sync::Arc::make_mut(&mut project.midi).tracks;
-                if clips.is_empty() {
-                    tracks.remove(id);
-                } else {
-                    tracks.insert(*id, clips.clone());
-                }
-            }
+            Self::Midi(change) => change.apply(project, forward)?,
             Self::Clips { tracks, .. } => {
-                for ClipChange { id, before, after } in tracks {
-                    track_index(project, *id)?;
-                    let (expected, clips) = if forward {
-                        (before, after)
-                    } else {
-                        (after, before)
-                    };
-                    if project.midi.clips(*id) != expected.as_slice() {
-                        return Err("The arrangement changed since this history entry.".into());
-                    }
-                    let arrangements = &mut std::sync::Arc::make_mut(&mut project.midi).tracks;
-                    if clips.is_empty() {
-                        arrangements.remove(id);
-                    } else {
-                        arrangements.insert(*id, clips.clone());
-                    }
+                for change in tracks {
+                    change.apply(project, forward)?;
                 }
             }
             Self::Tempo { before, after } => {
@@ -520,11 +657,11 @@ mod tests {
             id: 1,
             before: InstrumentState {
                 plugin: None,
-                state: Vec::new(),
+                state: Arc::default(),
             },
             after: InstrumentState {
                 plugin: None,
-                state: Vec::with_capacity(capacity),
+                state: vec![0; capacity].into(),
             },
             editor: false,
         };
@@ -537,5 +674,96 @@ mod tests {
         assert!(history.view(true).labels.is_empty());
         assert_eq!(history.bytes, 0);
         assert!(history.dirty());
+    }
+
+    #[test]
+    fn a_one_note_clip_edit_stores_only_the_changed_clip_and_round_trips() {
+        use clef_model::midi::{Arrangement, Message};
+        let note = |tick| Event {
+            tick,
+            order: tick as u32,
+            message: Message::Note {
+                channel: 0,
+                key: 60,
+                velocity: 90,
+                end: tick + 1,
+                release: 0,
+                release_order: 0,
+            },
+        };
+        let mut arrangement = Arrangement::default();
+        for clip in 0..16_u64 {
+            let start = clip * 10_000;
+            arrangement
+                .record(
+                    1,
+                    Mode::Merge,
+                    [start, start + 4_000],
+                    vec![(start..start + 4_000).step_by(2).map(note).collect()],
+                    false,
+                )
+                .unwrap();
+        }
+        let before = arrangement.clips(1).to_vec();
+        assert_eq!(before.len(), 16);
+        let mut after = before.clone();
+        after[7].takes[0].events[3].message = Message::Note {
+            channel: 0,
+            key: 64,
+            velocity: 90,
+            end: after[7].takes[0].events[3].tick + 1,
+            release: 0,
+            release_order: 0,
+        };
+        assert!(ClipChange::new(1, &before, &before).is_none());
+        let change = ClipChange::new(1, &before, &after).unwrap();
+        let one_clip = clip_bytes(&before[7..8].to_vec());
+        assert_eq!(change.bytes(), 2 * one_clip);
+        let edit = Edit::Clips {
+            label: "Edit Notes",
+            tracks: vec![change],
+        };
+        assert!(edit.bytes() < 3 * one_clip + 1024);
+        assert!(edit.bytes() * 4 < clip_bytes(&before));
+
+        let mut project = Project::default();
+        project.tracks.push(Track {
+            id: 1,
+            name: "Piano".into(),
+            plugin: None,
+            instrument_bypassed: false,
+            instrument_offline: false,
+            record_mode: TrackMode::Global,
+            mix: Default::default(),
+            inserts: Vec::new(),
+            take_lanes: Default::default(),
+            kind: Default::default(),
+            output: None,
+            sends: Vec::new(),
+            state: Arc::default(),
+        });
+        project.midi = Arc::new(arrangement);
+        edit.apply(&mut project, true).unwrap();
+        assert_eq!(project.midi.clips(1), after.as_slice());
+        assert!(edit.apply(&mut project, true).is_err());
+        edit.apply(&mut project, false).unwrap();
+        assert_eq!(project.midi.clips(1), before.as_slice());
+
+        // Removing and inserting clips across tracks keeps the same results.
+        let removed = ClipChange::new(1, &before, &before[..15]).unwrap();
+        let emptied = ClipChange::new(1, &before[..1], &[]).unwrap();
+        assert_eq!(removed.bytes(), one_clip_bytes(&before[15]));
+        Edit::Midi(removed).apply(&mut project, true).unwrap();
+        assert_eq!(project.midi.clips(1), &before[..15]);
+        let mut single = project.clone();
+        Arc::make_mut(&mut single.midi)
+            .tracks
+            .insert(1, before[..1].to_vec());
+        Edit::Midi(emptied).apply(&mut single, true).unwrap();
+        assert!(!single.midi.tracks.contains_key(&1));
+    }
+
+    fn one_clip_bytes(clip: &Clip) -> usize {
+        clip_bytes(&vec![clip.clone()])
     }
 }

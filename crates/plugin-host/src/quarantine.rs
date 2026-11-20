@@ -86,8 +86,16 @@ pub fn update_kind(
         .truncate(false)
         .mode(0o600)
         .open(path.with_extension("lock"))?;
-    lock.try_lock()
-        .map_err(|e| format!("quarantine registry busy: {e}"))?;
+    // A child spawned by another thread briefly shares this descriptor between fork
+    // and exec, so retry for a bounded time instead of failing on the first contention.
+    let mut attempts = 0;
+    while let Err(error) = lock.try_lock() {
+        attempts += 1;
+        if attempts == 100 {
+            return Err(format!("quarantine registry busy: {error}").into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
     let mut entries = read(path)?;
     entries.retain(|entry| !same(&entry.plugin, plugin));
     if let Some(reason) = reason {

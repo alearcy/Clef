@@ -592,7 +592,13 @@ impl App {
                 }
             }
             MoveClipsUp | MoveClipsDown => {
-                let tracks = &self.view.project.tracks;
+                let tracks: Vec<_> = self
+                    .view
+                    .project
+                    .tracks
+                    .iter()
+                    .filter(|track| track.is_instrument())
+                    .collect();
                 let step = if command == MoveClipsUp { -1 } else { 1 };
                 let destinations = selected
                     .into_iter()
@@ -717,7 +723,10 @@ mod tests {
                     mix: Default::default(),
                     inserts: Vec::new(),
                     take_lanes: Default::default(),
-                    state: vec![],
+                    kind: Default::default(),
+                    output: None,
+                    sends: Vec::new(),
+                    state: Default::default(),
                 })
                 .collect();
             Self {
@@ -925,7 +934,10 @@ mod tests {
                 visible: true,
                 lanes: Vec::new(),
             },
-            state: Vec::new(),
+            kind: Default::default(),
+            output: None,
+            sends: Vec::new(),
+            state: Default::default(),
         };
         let context = egui::Context::default();
         context.enable_accesskit();
@@ -1081,7 +1093,10 @@ mod tests {
                 visible: true,
                 lanes: Vec::new(),
             },
-            state: Vec::new(),
+            kind: Default::default(),
+            output: None,
+            sends: Vec::new(),
+            state: Default::default(),
         };
         let context = egui::Context::default();
         let mut editor = ArrangementUi::default();
@@ -1189,7 +1204,10 @@ mod tests {
                 visible: true,
                 lanes: Vec::new(),
             },
-            state: Vec::new(),
+            kind: Default::default(),
+            output: None,
+            sends: Vec::new(),
+            state: Default::default(),
         };
         let context = egui::Context::default();
         let mut editor = ArrangementUi::default();
@@ -1312,7 +1330,10 @@ mod tests {
                 visible: true,
                 lanes: Vec::new(),
             },
-            state: Vec::new(),
+            kind: Default::default(),
+            output: None,
+            sends: Vec::new(),
+            state: Default::default(),
         };
         let context = egui::Context::default();
         let mut editor = ArrangementUi::default();

@@ -8,6 +8,7 @@ mod mixer;
 pub mod multitrack;
 pub mod recording;
 pub mod render;
+mod restart;
 pub mod sequence;
 pub mod transport;
 mod wav;

@@ -28,6 +28,13 @@ cannot be moved or removed, and adds the `Empty` (No instrument) and `Offline` s
 - Missing: `field` fill, `disabled` label, disabled power; the tooltip says *Missing*.
 - Failed: `field` fill, `danger` label and 1.5-point `danger` edge, disabled power; the
   tooltip carries the cause.
+- Late (T37, effect slots): the Active look (`peacock` fill, `text` label, live power) with
+  a 1.5-point `danger` edge. Shown while more than 10 % of the effect's blocks in the last
+  window of about 2 s missed their deadline; it clears after a window at or below 10 %. The
+  tooltip and accessible name add "Late: N % of blocks in the last 2 s. Reduce the plugin's
+  load (for example oversampling)." Late is a warning, not a failure: the effect keeps
+  running and is never quarantined. Missing, Failed and Bypassed take precedence.
+  Snapshot: [t12-late](../snapshots/egui/t12-late-1024.png).
 - Empty: `field` fill, disabled "No instrument" label; opens the instrument picker.
 - Offline: `field` fill and disabled label; the worker is released and the context menu
   offers Bring Instrument Online.

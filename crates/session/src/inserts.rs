@@ -18,6 +18,8 @@ pub enum InsertAction {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct InsertView {
     pub error: String,
+    /// Percent of late blocks while the running effect is Late (T37 L1); never a failure.
+    pub late: Option<u8>,
     pub missing: bool,
     pub editor: bool,
     pub loss_version: Option<u64>,
@@ -37,7 +39,14 @@ fn chains(project: &Project) -> impl Iterator<Item = (Target, &[Insert])> {
     project
         .tracks
         .iter()
-        .map(|track| (Target::Track(track.id), track.inserts.as_slice()))
+        .map(|track| {
+            let target = if track.is_bus() {
+                Target::Bus(track.id)
+            } else {
+                Target::Track(track.id)
+            };
+            (target, track.inserts.as_slice())
+        })
         .chain([(Target::Master, project.master_inserts.as_slice())])
 }
 
@@ -180,7 +189,7 @@ impl Session {
         for (target, chain) in chains(project) {
             keep.extend(chain.iter().map(|slot| slot.id));
             let offline = match target {
-                Target::Master => false,
+                Target::Master | Target::Bus(_) => false,
                 Target::Track(id) => project
                     .tracks
                     .iter()
@@ -188,7 +197,7 @@ impl Session {
                     .is_some_and(|track| track.instrument_offline),
             };
             let was_offline = match target {
-                Target::Master => false,
+                Target::Master | Target::Bus(_) => false,
                 Target::Track(id) => self
                     .view
                     .project
@@ -253,7 +262,11 @@ impl Session {
         }
         if let Some(engine) = &mut self.engine {
             for track in &self.view.project.tracks {
-                let target = Target::Track(track.id);
+                let target = if track.is_bus() {
+                    Target::Bus(track.id)
+                } else {
+                    Target::Track(track.id)
+                };
                 if project.inserts(target).is_none() && !track.inserts.is_empty() {
                     engine.set_insert_chain(target, None);
                 }
@@ -440,11 +453,16 @@ impl Session {
     }
 
     pub(super) fn refresh_insert_views(&mut self) {
+        let missing: HashSet<u64> = chains(&self.view.project)
+            .flat_map(|(_, chain)| chain)
+            .filter(|insert| !self.paths.exists(&insert.plugin.path))
+            .map(|insert| insert.id)
+            .collect();
         self.view.inserts = chains(&self.view.project)
             .flat_map(|(_, chain)| chain)
             .map(|insert| {
                 let runtime = self.insert_workers.get(&insert.id);
-                let missing = !insert.plugin.path.exists();
+                let missing = missing.contains(&insert.id);
                 let error = runtime
                     .map(|r| r.error.clone())
                     .filter(|s| !s.is_empty())
@@ -453,10 +471,15 @@ impl Session {
                             .then(|| "Effect is quarantined.".into())
                     })
                     .unwrap_or_default();
+                let late = runtime
+                    .and_then(|r| r.active.as_ref())
+                    .and_then(|effect| effect.late_percent())
+                    .filter(|_| error.is_empty() && !missing);
                 (
                     insert.id,
                     InsertView {
                         error,
+                        late,
                         missing,
                         editor: runtime.is_some_and(|r| r.editor),
                         loss_version: runtime.and_then(|r| r.loss_version),

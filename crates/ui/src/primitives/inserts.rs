@@ -9,16 +9,26 @@ use eframe::egui::{
 
 pub const SLOT_HEIGHT: f32 = 20.0;
 pub const GAP_HEIGHT: f32 = 5.0;
-const POWER_WIDTH: f32 = 16.0;
+const POWER_WIDTH: f32 = 14.0;
 const INSERT_LINE: f32 = 3.0;
 
 pub enum State {
     Active,
+    /// Active, but too many blocks missed their deadline recently (T37 L1).
+    Late,
     Bypassed,
     Missing,
     Failed,
     Empty,
     Offline,
+}
+
+/// Tooltip and accessible description of a Late effect slot.
+pub fn late_description(percent: u8) -> String {
+    format!(
+        "Late: {percent} % of blocks in the last 2 s. \
+         Reduce the plugin's load (for example oversampling)."
+    )
 }
 
 pub fn gap(ui: &mut Ui, label: &str, focus: bool) -> Response {
@@ -40,6 +50,8 @@ pub fn gap(ui: &mut Ui, label: &str, focus: bool) -> Response {
     response
 }
 
+/// `edge_inset` is the parent's trailing padding after this row. The power glyph is
+/// centred between the slot and the parent's outer edge, including that inset.
 pub fn slot(
     ui: &mut Ui,
     name: &str,
@@ -47,9 +59,15 @@ pub fn slot(
     role: &str,
     state: State,
     description: &str,
+    edge_inset: f32,
 ) -> (Response, bool, bool) {
     let (fill, ink, stroke) = match state {
         State::Active => (colors::PEACOCK, colors::TEXT, Stroke::NONE),
+        State::Late => (
+            colors::PEACOCK,
+            colors::TEXT,
+            Stroke::new(1.5_f32, colors::DANGER),
+        ),
         State::Bypassed => (colors::PEACOCK, colors::DISABLED, Stroke::NONE),
         State::Missing => (colors::FIELD, colors::DISABLED, Stroke::NONE),
         State::Failed => (
@@ -59,10 +77,11 @@ pub fn slot(
         ),
         State::Empty | State::Offline => (colors::FIELD, colors::DISABLED, Stroke::NONE),
     };
-    let ready = matches!(state, State::Active | State::Bypassed);
-    let lit = matches!(state, State::Active);
+    let ready = matches!(state, State::Active | State::Late | State::Bypassed);
+    let lit = matches!(state, State::Active | State::Late);
     ui.horizontal(|ui| {
-        let width = (ui.available_width() - POWER_WIDTH - ui.spacing().item_spacing.x).max(1.0);
+        let gap_before = edge_inset;
+        let width = (ui.available_width() - POWER_WIDTH - gap_before).max(1.0);
         let (rect, response) =
             ui.allocate_exact_size(egui::vec2(width, SLOT_HEIGHT), Sense::click_and_drag());
         response.widget_info(|| {
@@ -104,6 +123,7 @@ pub fn slot(
                     input.consume_key(Modifiers::NONE, Key::Enter)
                         || input.consume_key(Modifiers::NONE, Key::Space)
                 });
+        ui.add_space(gap_before);
         let power = power_button(ui, channel, role, name, lit, ready);
         (response, activate, power)
     })
@@ -118,13 +138,19 @@ fn power_button(
     lit: bool,
     ready: bool,
 ) -> bool {
-    let (rect, response) = ui.allocate_exact_size(vec2(POWER_WIDTH, SLOT_HEIGHT), Sense::click());
-    let enabled = ready && ui.is_enabled();
     let label = format!(
         "{channel}, {} {role} {name}",
         if lit { "Bypass" } else { "Enable" }
     );
-    response.widget_info(|| WidgetInfo::selected(WidgetType::Button, enabled, lit, &label));
+    bypass(ui, POWER_WIDTH, SLOT_HEIGHT, &label, lit, ready)
+}
+
+/// Draw the shared bypass glyph. The caller supplies the accessible label and the
+/// target size, so insert slots and compact send rows use the same control.
+pub fn bypass(ui: &mut Ui, width: f32, height: f32, label: &str, lit: bool, ready: bool) -> bool {
+    let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::click());
+    let enabled = ready && ui.is_enabled();
+    response.widget_info(|| WidgetInfo::selected(WidgetType::Button, enabled, lit, label));
     let color = if !enabled {
         colors::DISABLED
     } else if response.hovered() {
@@ -166,14 +192,28 @@ fn power_button(
 }
 
 pub fn append(ui: &mut Ui, channel: &str) -> Response {
-    let response = ui.add_sized(
-        [ui.available_width(), SLOT_HEIGHT],
-        Button::new(RichText::new("Add effect…").size(MIX_SMALL))
-            .truncate()
-            .fill(colors::FIELD)
-            .stroke(Stroke::new(1.0_f32, colors::DIVIDER)),
-    );
-    let label = format!("{channel}, Add audio effect…");
+    append_text(ui, channel, "Add effect…", "Add audio effect…")
+}
+
+pub fn append_send(ui: &mut Ui, channel: &str) -> Response {
+    append_text(ui, channel, "Add send…", "Add send…")
+}
+
+fn append_text(ui: &mut Ui, channel: &str, text: &str, action: &str) -> Response {
+    let response = ui
+        .scope(|ui| {
+            ui.spacing_mut().interact_size.y = SLOT_HEIGHT;
+            ui.spacing_mut().button_padding.y = 0.0;
+            ui.add_sized(
+                [ui.available_width(), SLOT_HEIGHT],
+                Button::new(RichText::new(text).size(MIX_SMALL))
+                    .truncate()
+                    .fill(colors::FIELD)
+                    .stroke(Stroke::new(1.0_f32, colors::DIVIDER)),
+            )
+        })
+        .inner;
+    let label = format!("{channel}, {action}");
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), &label));
     response.on_hover_text(label)
 }

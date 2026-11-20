@@ -26,6 +26,7 @@
 #include <string>
 #include <thread>
 #include <pthread/qos.h>
+#include <unordered_map>
 #include <vector>
 
 using namespace Steinberg;
@@ -88,12 +89,53 @@ template<class T, size_t N> struct Queue {
     void clear_stopped() { read.store(write.load(std::memory_order_acquire), std::memory_order_release); }
 };
 struct Edit { ParamID id; double value; };
+
+// Main-thread edits that have not entered the audio queue, coalesced to the latest value per
+// parameter. Every pending edit is newer than every queued edit: once an edit is pending, later
+// edits are appended here until the main thread moves the backlog into the queue.
+struct PendingEdits {
+    std::vector<Edit> values;
+    std::unordered_map<ParamID, size_t> index;
+    bool empty() const { return values.empty(); }
+    void put(Edit edit) {
+        auto [slot, inserted] = index.try_emplace(edit.id, values.size());
+        if (inserted) values.push_back(edit); else values[slot->second].value = edit.value;
+    }
+    void clear() { values.clear(); index.clear(); }
+};
+
 struct Signals {
     std::thread::id main = std::this_thread::get_id();
     Queue<Edit, 4096> edits, feedback;
     std::atomic<uint32_t> restart {0};
     std::atomic<uint64_t> resize {0};
     std::atomic<bool> overflow {false};
+    // Main thread only. True while the component is active and the audio thread may drain
+    // `edits`; otherwise the main thread owns both ends of the queue.
+    bool active = false;
+    PendingEdits pending;
+
+    // Move the backlog into the audio queue in order while it has room (main thread).
+    void forward_pending() {
+        if (pending.empty()) return;
+        size_t moved = 0;
+        while (moved < pending.values.size() && edits.push(pending.values[moved])) ++moved;
+        if (moved == pending.values.size()) { pending.clear(); return; }
+        pending.values.erase(pending.values.begin(), pending.values.begin() + std::ptrdiff_t(moved));
+        pending.index.clear();
+        for (size_t i = 0; i < pending.values.size(); ++i) pending.index[pending.values[i].id] = i;
+    }
+    // While inactive the audio thread never pops, so the main thread may drain the queue. Queued
+    // edits are older than pending ones and must not overwrite them.
+    void collect_stopped() {
+        Edit edit;
+        if (!edits.pop(edit)) return;
+        PendingEdits merged;
+        merged.put(edit);
+        while (edits.pop(edit)) merged.put(edit);
+        for (auto& newer : pending.values) merged.put(newer);
+        pending = std::move(merged);
+    }
 };
 
 class Handler final : public U::Implements<U::Directly<IComponentHandler, IPlugFrame>> {
@@ -105,10 +147,12 @@ public:
     tresult PLUGIN_API performEdit(ParamID id, ParamValue value) override {
         if (std::this_thread::get_id() != signals.main || !std::isfinite(value) || value < 0 || value > 1)
             return kInvalidArgument;
-        if (!signals.edits.push({id, value})) {
-            signals.overflow.store(true, std::memory_order_release);
-            return kOutOfMemory;
-        }
+        // Never drop an edit: when stopped, or when the audio queue is full or has a backlog
+        // ahead of it, keep the latest value per parameter for later delivery.
+        try {
+            if (!signals.active || !signals.pending.empty() || !signals.edits.push({id, value}))
+                signals.pending.put({id, value});
+        } catch (...) { return kOutOfMemory; }
         return kResultOk;
     }
     tresult PLUGIN_API restartComponent(int32 flags) override {
@@ -405,6 +449,7 @@ struct Bridge {
         require(rate >= 8000 && rate <= 384000, "invalid sample rate");
         sample_rate = rate;
         main_thread(); require(!processing.load(std::memory_order_acquire), "suspend VST3 audio before activation");
+        signals.active = false;
         if (active) { require(success(component->setActive(false)), "VST3 deactivation failed"); active = false; }
         mode = offline ? kOffline : kRealtime;
         ProcessSetup setup {mode, kSample32, int32(block), sample_rate};
@@ -413,6 +458,61 @@ struct Bridge {
         if (latency > 480000) throw std::runtime_error("VST3 latency exceeds prototype capacity: " + std::to_string(latency));
         require(success(component->setActive(true)), "VST3 activation failed"); active = true;
         signals.restart.store(0, std::memory_order_release);
+        // Edits made while stopped reach the processor in its first blocks.
+        signals.active = true;
+        signals.forward_pending();
+    }
+    void deactivate() {
+        main_thread(); require(!processing.load(std::memory_order_acquire), "suspend VST3 audio before deactivation");
+        signals.active = false;
+        if (active) { require(success(component->setActive(false)), "VST3 deactivation failed"); active = false; }
+    }
+    // Apply edits made while stopped to the inactive component so getState includes them. This
+    // is the SDK's validated parameter flush: active, processing, zero samples and no buses.
+    void flush_stopped_edits() {
+        main_thread(); require(!active && !processing.load(std::memory_order_acquire), "VST3 flush while processing");
+        signals.collect_stopped();
+        if (signals.pending.empty()) return;
+        ProcessSetup setup {mode, kSample32, int32(block), sample_rate};
+        require(success(processor->setupProcessing(setup)), "VST3 setupProcessing failed");
+        require(success(component->setActive(true)), "VST3 activation for parameter flush failed");
+        auto result = processor->setProcessing(true);
+        bool started = success(result) || result == kNotImplemented;
+        tresult processed = kResultFalse;
+        try {
+            require(started, "VST3 startProcessing for parameter flush failed");
+            ProcessData flush {};
+            flush.processMode = mode; flush.symbolicSampleSize = kSample32; flush.numSamples = 0;
+            flush.numInputs = 0; flush.numOutputs = 0; flush.inputs = nullptr; flush.outputs = nullptr;
+            flush.inputEvents = &events; flush.inputParameterChanges = &input_params;
+            flush.outputParameterChanges = &output_params;
+            context = {}; context.sampleRate = sample_rate; flush.processContext = &context;
+            // ParameterChanges holds at most 4096 parameters per call.
+            for (size_t first = 0; first < signals.pending.values.size(); first += 4096) {
+                events.clear(); input_params.clearQueue(); output_params.clearQueue();
+                auto last = std::min(signals.pending.values.size(), first + 4096);
+                for (size_t i = first; i < last; ++i)
+                    parameter(signals.pending.values[i].id, signals.pending.values[i].value, 0);
+                processed = processor->process(flush);
+                if (!success(processed)) break;
+                for (int32 i = 0; controller && i < output_params.getParameterCount(); ++i) {
+                    auto* queue = output_params.getParameterData(i); int32 offset; double value;
+                    auto n = queue->getPointCount();
+                    if (n > 0 && success(queue->getPoint(n - 1, offset, value)))
+                        controller->setParamNormalized(queue->getParameterId(), value);
+                }
+            }
+        } catch (...) {
+            if (started) processor->setProcessing(false);
+            component->setActive(false);
+            events.clear(); input_params.clearQueue(); output_params.clearQueue();
+            throw;
+        }
+        processor->setProcessing(false);
+        events.clear(); input_params.clearQueue(); output_params.clearQueue();
+        require(success(component->setActive(false)), "VST3 deactivation after parameter flush failed");
+        require(success(processed), "VST3 parameter flush failed");
+        signals.pending.clear();
     }
     void release_notes(int channel, int32 offset) {
         for (int pitch = 0; pitch < 128; ++pitch) {
@@ -534,6 +634,7 @@ struct Bridge {
     }
     void save() {
         main_thread(); require(!active, "deactivate VST3 before saving state");
+        flush_stopped_edits();
         StateStream comp, ctrl;
         require(success(component->getState(&comp)), "VST3 component getState failed");
         auto result = single_component || !controller ? kNotImplemented : controller->getState(&ctrl);
@@ -561,7 +662,7 @@ struct Bridge {
             component_bytes = bytes + 28;
             if (ctrl_size != UINT32_MAX) controller_bytes = component_bytes + component_size;
         }
-        signals.edits.clear_stopped(); signals.feedback.clear_stopped();
+        signals.edits.clear_stopped(); signals.feedback.clear_stopped(); signals.pending.clear();
         StateStream comp(component_bytes, component_size);
         require(success(component->setState(&comp)), "VST3 component setState failed");
         if (controller && !single_component) {
@@ -635,10 +736,7 @@ const char* clef_vst_name(void* p) noexcept { return p ? static_cast<Bridge*>(p)
 int clef_vst_activate(void* p, int offline, double rate, uint32_t* latency) noexcept { return guarded([&] {
     auto& b = bridge(p); b.activate(offline != 0, rate); require(latency, "null latency output"); *latency = b.latency;
 }); }
-int clef_vst_deactivate(void* p) noexcept { return guarded([&] {
-    auto& b = bridge(p); b.main_thread(); require(!b.processing.load(std::memory_order_acquire), "suspend VST3 audio before deactivation");
-    if (b.active) { require(success(b.component->setActive(false)), "VST3 deactivation failed"); b.active = false; }
-}); }
+int clef_vst_deactivate(void* p) noexcept { return guarded([&] { bridge(p).deactivate(); }); }
 int clef_vst_process(void* p, uint64_t position, const Midi* events, size_t count, size_t frames, const float* input, float* output) noexcept { return guarded([&] {
     require(output && (count == 0 || events), "null VST3 audio argument"); bridge(p).process(position, events, count, frames, input, output);
 }); }
@@ -666,7 +764,10 @@ int clef_vst_resize(void* p, int32_t* w, int32_t* h) noexcept { return guarded([
 int clef_vst_poll(void* p, uint32_t* flags, int32_t* w, int32_t* h) noexcept { return guarded([&] {
     auto& b = bridge(p); b.main_thread(); require(flags && w && h, "null VST3 poll argument");
     b.dispatch_messages();
+    // Only processor-to-editor feedback can overflow; editor edits are kept in `pending`.
     require(!b.signals.overflow.exchange(false), "VST3 parameter handoff overflow");
+    if (b.signals.active) b.signals.forward_pending();
+    else b.signals.collect_stopped();
     Edit edit; while (b.signals.feedback.pop(edit))
         if (b.controller) require(success(b.controller->setParamNormalized(edit.id, edit.value)), "VST3 controller feedback failed");
     *flags = b.signals.restart.exchange(0, std::memory_order_acq_rel);

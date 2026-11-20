@@ -246,6 +246,8 @@ keep their own cursors; Control over a part's edge band shows Clef's stretch cur
   Never hide frequent editing behind deep menu trees.
 - Numeric parameters are [value sliders](components/fader.md#value-slider): drag, ⇧-drag fine, double-click the value to type it, double-click the travel to reset. Never a bare input field for a number (decision, 2026-11-13).
 - Native text fields keep native editing (selection, clipboard, IME).
+- Static labels are not mouse-selectable and never show a text cursor; only editable text fields
+  accept a caret and selection.
 - OS window chrome, native file dialogs and plugin-owned editors are never restyled.
 
 ## Commands

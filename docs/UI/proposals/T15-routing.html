@@ -1,0 +1,923 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>T15 — Routing, bus e send</title>
+<style>
+  :root {
+    --background: #101A1C;
+    --panel: #172326;
+    --canvas: #111C1F;
+    --field: #1F2F32;
+    --text: #E3E8E5;
+    --secondary: #A4B5AE;
+    --disabled: #74847D;
+    --accent: #78B5AA;
+    --peacock: #336A64;
+    --oxblood: #882820;
+    --danger: #C7847C;
+    --solo: #D8B23C;
+    --divider: #2B3B3D;
+    --grid: #243236;
+    --barline: #3A4D50;
+    --control-edge: #3A4D50;
+    --cap: #CCD3D1;
+    --cap-light: #EDF1EF;
+    --cap-dark: #8C9994;
+    --mono: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: #0b1214; color: var(--text); overflow-x: hidden; }
+  body { font-family: var(--sans); -webkit-font-smoothing: antialiased; }
+  button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+  .stage { max-width: 1280px; margin: 0 auto; padding: 28px 18px 56px; }
+  .doc-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 18px; flex-wrap: wrap; }
+  .eyebrow { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--accent); margin-bottom: 6px; }
+  h1 { font-size: 24px; line-height: 1.15; margin: 0 0 8px; font-weight: 700; letter-spacing: -.01em; }
+  .lede { margin: 0; max-width: 720px; font-size: 13px; line-height: 1.55; color: var(--secondary); }
+  .lede b { color: var(--text); font-weight: 600; }
+  .view-switch { display: inline-flex; gap: 1px; background: var(--panel); border: 1px solid var(--divider); border-radius: 3px; padding: 1px; }
+  .view-switch button { height: 26px; padding: 0 11px; border-radius: 2px; font-size: 11px; color: var(--secondary); white-space: nowrap; }
+  .view-switch button:hover { color: var(--text); background: var(--field); }
+  .view-switch button.active { background: var(--peacock); color: var(--text); }
+
+  /* ---- application chrome ---------------------------------------------- */
+  .app { background: var(--background); border: 1px solid var(--divider); border-radius: 6px; padding: 12px; }
+  .topbar { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+  .btn { height: 24px; display: inline-flex; align-items: center; gap: 5px; padding: 0 8px; border-radius: 2px; background: var(--field); color: var(--text); font-size: 11px; white-space: nowrap; border: 1px solid transparent; }
+  .btn:hover { border-color: var(--control-edge); }
+  .btn.ghost { background: transparent; color: var(--secondary); }
+  .btn.ghost:hover { background: var(--field); color: var(--text); }
+  .btn .chev { color: var(--secondary); font-size: 9px; }
+  .project-line { display: flex; align-items: baseline; gap: 12px; margin-top: 12px; flex-wrap: wrap; }
+  .project-line h2 { font-size: 17px; margin: 0; font-weight: 600; letter-spacing: -.01em; }
+  .audio { font-size: 11px; color: var(--secondary); display: inline-flex; align-items: center; gap: 7px; }
+  .audio .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--disabled); }
+  .audio.on .dot { background: var(--accent); }
+
+  .transport { margin-top: 12px; height: 38px; display: flex; align-items: center; gap: 3px; padding: 0 7px; background: var(--panel); border-radius: 3px; overflow-x: auto; }
+  .transport .tbtn { width: 28px; height: 26px; display: grid; place-items: center; border-radius: 2px; color: var(--text); flex: 0 0 auto; }
+  .transport .tbtn:hover { background: var(--field); }
+  .transport .tbtn.play { color: var(--accent); }
+  .transport .tbtn.rec { color: var(--danger); }
+  .transport .sep { width: 1px; height: 18px; background: var(--divider); margin: 0 5px; flex: 0 0 auto; }
+  .transport .value { font-size: 11px; color: var(--text); padding: 0 5px; white-space: nowrap; }
+  .transport .value.dim { color: var(--secondary); }
+  .transport .value.mono { font-family: var(--mono); font-size: 10.5px; }
+
+  /* ---- mixer ----------------------------------------------------------- */
+  .mixer-head { display: flex; align-items: center; gap: 10px; margin: 16px 0 8px; flex-wrap: wrap; }
+  .mixer-head .title { font-size: 12px; font-weight: 600; }
+  .mixer-head .count { font-size: 10px; color: var(--secondary); }
+  .mixer-head .grow { flex: 1; }
+  .mixer-note { font-size: 10px; color: var(--secondary); min-height: 14px; }
+  .mixer-note b { color: var(--accent); font-weight: 600; }
+
+  .mixer { display: flex; align-items: flex-start; gap: 8px; min-height: 560px; }
+  .bank { display: flex; gap: 1px; align-items: flex-start; overflow: visible; padding-bottom: 4px; flex: 1; }
+  .bank-gap { flex: 1 1 auto; min-width: 8px; }
+  .bank::-webkit-scrollbar { height: 5px; }
+  .bank::-webkit-scrollbar-thumb { background: var(--divider); border-radius: 3px; }
+  .master-dock { flex: 0 0 92px; margin-left: auto; }
+
+  .strip { position: relative; width: 92px; flex: 0 0 92px; background: var(--panel); padding: 8px 5px 6px; display: flex; flex-direction: column; gap: 6px; }
+  .strip.selected { box-shadow: inset 0 0 0 1px var(--accent); }
+  .strip.bus { background: var(--panel); }
+  .strip .caption { font-size: 10px; line-height: 12px; color: var(--secondary); display: flex; align-items: center; justify-content: space-between; gap: 4px; }
+  .strip .caption .tiny { font-size: 8.5px; color: var(--disabled); letter-spacing: .04em; }
+  .knob { width: 30px; height: 30px; border-radius: 50%; margin: 1px auto 0; position: relative; background: radial-gradient(circle at 36% 28%, var(--cap-light), var(--cap) 42%, var(--cap-dark) 100%); box-shadow: 0 1px 2px rgba(0,0,0,.55), inset 0 0 0 1px rgba(0,0,0,.28); }
+  .knob::after { content: ""; position: absolute; left: 50%; top: 2px; width: 2px; height: 11px; border-radius: 2px; background: #344144; transform-origin: 50% 13px; transform: translateX(-50%) rotate(var(--angle, -30deg)); }
+  .knob.small { width: 19px; height: 19px; }
+  .knob.small::after { height: 7px; transform-origin: 50% 9.5px; }
+  .readout { font-size: 10px; color: var(--text); text-align: center; font-variant-numeric: tabular-nums; }
+  .readout.dim { color: var(--secondary); }
+  .readout .unit { color: var(--secondary); font-size: 9px; }
+
+  .slots { display: flex; flex-direction: column; gap: 2px; min-height: 82px; }
+  .slot { height: 19px; display: flex; align-items: center; gap: 3px; padding: 0 3px 0 5px; border-radius: 2px; background: var(--field); font-size: 9.5px; min-width: 0; }
+  .slot .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .slot .power { color: var(--accent); flex: 0 0 auto; display: grid; place-items: center; width: 12px; height: 12px; }
+  .slot.bypassed .name { color: var(--disabled); }
+  .slot.bypassed .power { color: var(--secondary); }
+  .add-row { height: 19px; display: flex; align-items: center; padding: 0 5px; border-radius: 2px; background: transparent; color: var(--secondary); font-size: 9.5px; border: 1px dashed transparent; }
+  .add-row:hover { background: var(--field); color: var(--text); border-color: var(--divider); }
+  .add-slot { width: 100%; height: 19px; display: flex; align-items: center; padding: 0 5px; border-radius: 2px; background: var(--field); color: var(--secondary); font-size: 9px; border: 1px solid var(--divider); }
+  .add-slot:hover { color: var(--text); border-color: var(--control-edge); }
+
+  .sends { display: flex; flex-direction: column; gap: 2px; }
+  .send-list { display: flex; flex-direction: column; gap: 2px; height: 64px; overflow-y: auto; }
+  .send-list::-webkit-scrollbar { width: 3px; }
+  .send-list::-webkit-scrollbar-thumb { background: var(--divider); border-radius: 2px; }
+  .send { display: flex; align-items: center; gap: 1px; height: 20px; padding: 0 2px; background: var(--field); border-radius: 2px; flex: 0 0 auto; }
+  .send-slot { flex: 1; min-width: 0; height: 16px; padding: 0 1px; border-radius: 1px; text-align: left; font-size: 8.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .send-slot:hover { background: var(--canvas); }
+  .knob-wrap { position: relative; flex: 0 0 auto; display: grid; place-items: center; }
+  .send .knob.small { width: 16px; height: 16px; margin: 0; border: 0; padding: 0; }
+  .send .knob.small::after { height: 6px; transform-origin: 50% 8px; }
+  .send .send-power { flex: 0 0 11px; width: 11px; height: 11px; display: grid; place-items: center; color: var(--accent); }
+  .send .send-power:hover { color: var(--cap-light); }
+  .db-pop { position: fixed; display: none; padding: 2px 5px; border: 1px solid var(--divider); border-radius: 2px; background: var(--panel); color: var(--text); font-size: 9px; font-variant-numeric: tabular-nums; white-space: nowrap; z-index: 100; pointer-events: none; }
+  .send.bypassed .send-slot { color: var(--disabled); }
+  .send.bypassed .tap { opacity: .45; }
+  .send.bypassed .knob-wrap { opacity: .45; }
+  .send.bypassed .send-power { color: var(--secondary); }
+  .empty-sends { height: 100%; display: grid; place-items: center; font-size: 9px; color: var(--disabled); }
+  .send-add { height: 20px; }
+  .tap { width: 11px; height: 12px; flex: 0 0 auto; color: var(--secondary); display: grid; place-items: center; padding: 0; }
+  .tap.pre { color: var(--accent); }
+  .tap svg { display: block; }
+  .tap .post-path { display: none; }
+  .tap.post .pre-path { display: none; }
+  .tap.post .post-path { display: block; }
+  .bus-inputs { background: transparent; padding: 3px 0; height: 86px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+  .bus-inputs .who { font-size: 9px; line-height: 11px; color: var(--secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  .pan-row { display: flex; justify-content: space-between; gap: 2px; }
+  .pan-cell { width: 34px; }
+  .pan-cell .caption { justify-content: center; }
+  .pan-cell .knob { width: 26px; height: 26px; }
+  .pan-cell .knob::after { height: 9px; transform-origin: 50% 11px; }
+  .pan-cell .readout { font-size: 9.5px; }
+
+  .fader-block { display: grid; grid-template-columns: 34px 20px 10px; gap: 3px; justify-content: center; height: 152px; margin-top: 2px; }
+  .fader { position: relative; }
+  .fader .groove { position: absolute; left: 50%; top: 0; width: 6px; height: 100%; transform: translateX(-50%); background: var(--canvas); border: 1px solid var(--divider); border-radius: 3px; box-shadow: inset 0 1px 3px rgba(0,0,0,.65); }
+  .fader .cap { position: absolute; left: 50%; top: var(--pos, 46%); width: 26px; height: 12px; transform: translate(-50%, -50%); border-radius: 2px; background: linear-gradient(180deg, var(--cap-light), var(--cap) 52%, var(--cap-dark)); box-shadow: 0 1px 2px rgba(0,0,0,.65); }
+  .fader .cap::after { content: ""; position: absolute; left: 4px; right: 4px; top: 5px; height: 1px; background: rgba(21,34,37,.65); }
+  .strip.bus .fader .cap { border-top: 1px solid var(--peacock); }
+  .strip.master .fader .cap { border-top: 1px solid var(--accent); }
+  .scale { position: relative; font-size: 8px; color: var(--secondary); font-variant-numeric: tabular-nums; }
+  .scale span { position: absolute; right: 0; transform: translateY(-50%); }
+  .scale .tick { position: absolute; left: 0; width: 4px; height: 1px; background: var(--barline); transform: translateY(-50%); }
+  .meter { display: flex; gap: 2px; align-items: flex-end; padding: 1px 0; }
+  .meter .bar { position: relative; width: 4px; height: 100%; background: var(--canvas); border: 1px solid var(--divider); border-radius: 1px; overflow: hidden; }
+  .meter .fill { position: absolute; left: 0; right: 0; bottom: 0; height: var(--level, 0%); background: linear-gradient(to top, #3f8468 0 72%, #b9a94a 86%, #c7847c 100%); }
+  .meter .fill::after { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 1px; background: var(--cap-light); opacity: .7; }
+  .strip:not(.audible) .meter .fill { opacity: .18; }
+  .fader-readout { font-size: 10px; text-align: center; font-variant-numeric: tabular-nums; }
+
+  .lamps { display: flex; gap: 3px; justify-content: center; }
+  .lamp { width: 20px; height: 19px; border-radius: 2px; background: var(--field); color: var(--secondary); font-size: 10px; font-weight: 700; display: grid; place-items: center; border: 1px solid transparent; }
+  .lamp:hover { border-color: var(--control-edge); }
+  .lamp.mute.lit { background: var(--oxblood); color: var(--text); }
+  .lamp.solo.lit { background: var(--solo); color: #211d0b; }
+  .lamp.mono { width: 43px; font-size: 9px; letter-spacing: .04em; color: var(--disabled); }
+
+  .output { display: flex; flex-direction: column; gap: 2px; position: relative; }
+  .output .caption { justify-content: space-between; }
+  .output-btn { height: 20px; background: var(--field); border-radius: 2px; display: flex; align-items: center; justify-content: space-between; gap: 3px; padding: 0 5px; font-size: 10px; min-width: 0; }
+  .output-btn:hover { border: 1px solid var(--control-edge); }
+  .output-btn .route { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .output-btn .chev { color: var(--secondary); font-size: 8px; }
+  .strip.bus .output-btn .route { color: var(--secondary); }
+
+  .namebox { height: 24px; display: flex; align-items: center; justify-content: center; gap: 4px; border-radius: 2px; background: rgba(var(--track-rgb, 164,181,174), .18); font-size: 11px; font-weight: 500; margin-top: 1px; min-width: 0; }
+  .namebox .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 70px; }
+  .namebox .role { font-size: 8px; letter-spacing: .08em; color: var(--secondary); text-transform: uppercase; }
+  .strip.bus .namebox { background: rgba(51,106,100,.22); box-shadow: inset 0 0 0 1px rgba(120,181,170,.28); }
+  .strip.master .namebox { background: rgba(120,181,170,.16); box-shadow: inset 0 0 0 1px rgba(120,181,170,.35); }
+
+  .output-menu { position: absolute; z-index: 30; left: 50%; bottom: 26px; transform: translateX(-50%); width: 158px; background: var(--field); border: 1px solid var(--divider); border-radius: 2px; padding: 4px 0; display: none; }
+  .output-menu.open { display: block; }
+  .menu-row { height: 25px; display: flex; align-items: center; gap: 6px; padding: 0 8px; font-size: 11px; white-space: nowrap; }
+  .menu-row:hover { background: var(--peacock); }
+  .menu-row .tick { width: 10px; color: var(--accent); font-size: 10px; }
+  .menu-row .short { margin-left: auto; font-size: 9px; color: var(--secondary); }
+  .menu-row.new { color: var(--accent); }
+  .menu-sep { height: 1px; background: var(--divider); margin: 4px 0; }
+  .menu-caption { font-size: 9px; letter-spacing: .08em; text-transform: uppercase; color: var(--secondary); padding: 4px 8px 3px; }
+
+  .statusline { margin-top: 8px; height: 22px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid var(--divider); padding-top: 6px; font-size: 10px; color: var(--secondary); flex-wrap: wrap; }
+  .statusline .right { display: flex; gap: 12px; }
+  .statusline b { color: var(--text); font-weight: 600; }
+
+  /* solo view */
+  .app[data-state="solo"] .strip[data-audible="false"] { opacity: .42; }
+  .app[data-state="solo"] .strip[data-audible="true"] .namebox { box-shadow: inset 0 0 0 1px var(--solo); }
+
+  /* ---- notes ----------------------------------------------------------- */
+  .notes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 18px; }
+  .card { background: var(--panel); border: 1px solid var(--divider); border-radius: 4px; padding: 12px 14px; }
+  .card h3 { margin: 0 0 6px; font-size: 12px; font-weight: 600; }
+  .card p { margin: 0; font-size: 11px; line-height: 1.5; color: var(--secondary); }
+  .card p + p { margin-top: 6px; }
+  .card .k { color: var(--text); }
+  .card .accent { color: var(--accent); }
+  .card .warn { color: var(--solo); }
+  .diagram-wrap { margin-top: 12px; background: var(--panel); border: 1px solid var(--divider); border-radius: 4px; padding: 14px; overflow-x: auto; }
+  .diagram-wrap .caption { font-size: 10px; color: var(--secondary); margin-bottom: 8px; letter-spacing: .04em; text-transform: uppercase; }
+  .diagram { display: block; min-width: 660px; width: 100%; height: auto; }
+  .out-of-scope { margin-top: 12px; font-size: 10.5px; color: var(--disabled); line-height: 1.5; }
+  .out-of-scope b { color: var(--secondary); font-weight: 600; }
+
+  @media (max-width: 980px) {
+    .notes { grid-template-columns: 1fr; }
+    .doc-head { align-items: flex-start; flex-direction: column; }
+  }
+  @media (max-width: 720px) {
+    .stage { padding: 18px 10px 40px; }
+    h1 { font-size: 20px; }
+    .app { padding: 8px; }
+    .mixer { gap: 4px; }
+    .bank { overflow-x: auto; overflow-y: hidden; }
+    .master-dock { flex: 0 0 92px; }
+    .master-dock .strip { width: 92px; }
+    .doc-head .view-switch { width: 100%; }
+    .view-switch button { flex: 1; padding: 0 6px; }
+  }
+  @media (max-width: 430px) {
+    .view-switch { display: grid; grid-template-columns: 1fr; }
+    .app { overflow: hidden; }
+    .topbar .btn:nth-child(n+6) { display: none; }
+    .transport .value.dim { display: none; }
+    .mixer-head .count { display: none; }
+    .bank { flex: 0 0 auto; width: calc(100vw - 132px); }
+    .master-dock { flex: 0 0 88px; }
+    .master-dock .strip { width: 88px; }
+    .strip { width: 88px; flex-basis: 88px; }
+    .output-menu { width: 146px; }
+  }
+</style>
+</head>
+<body>
+<div class="stage">
+  <header class="doc-head">
+    <div>
+      <div class="eyebrow">T15 · Buses, sends, routing</div>
+      <h1>Il routing entra nel mixer</h1>
+      <p class="lede">Proposta visiva per <b>bus</b>, <b>send pre/post-fader</b> e <b>output</b> per canale. Un solo tipo di bus, usato anche come ritorno FX; grafo a un livello verso Master; nessun numero fisso di send. Il mixer resta la superficie di mix: ogni strip mostra da dove arriva e dove va il segnale.</p>
+    </div>
+    <div class="view-switch" role="tablist" aria-label="Stati della proposta">
+      <button type="button" data-view="mix" class="active" role="tab" aria-selected="true">Mixer</button>
+      <button type="button" data-view="menu" role="tab" aria-selected="false">Menu Output</button>
+      <button type="button" data-view="solo" role="tab" aria-selected="false">Solo su Drum Bus</button>
+    </div>
+  </header>
+
+  <section class="app" id="app" data-state="mix" aria-label="Proposta del mixer con bus e send">
+    <div class="topbar">
+      <button class="btn" type="button">New Project</button>
+      <button class="btn" type="button">Open Project…</button>
+      <button class="btn" type="button">Save</button>
+      <button class="btn" type="button">Save As…</button>
+      <button class="btn ghost" type="button">Edit</button>
+      <button class="btn ghost" type="button">Sequencer</button>
+      <button class="btn ghost" type="button">Settings</button>
+      <button class="btn ghost" type="button">Commands</button>
+    </div>
+    <div class="project-line">
+      <h2>Night Walk</h2>
+      <span class="audio on"><span class="dot"></span>Audio active</span>
+    </div>
+
+    <div class="transport" aria-label="Transport">
+      <button class="tbtn" type="button" title="Return to start" aria-label="Return to start">⏮</button>
+      <button class="tbtn play" type="button" title="Play" aria-label="Play">▶</button>
+      <button class="tbtn" type="button" title="Stop" aria-label="Stop">■</button>
+      <button class="tbtn rec" type="button" title="Record" aria-label="Record">●</button>
+      <span class="sep"></span>
+      <span class="value">REC Merge <span class="chev">▾</span></span>
+      <span class="sep"></span>
+      <button class="tbtn" type="button" title="Loop" aria-label="Loop">↻</button>
+      <button class="tbtn" type="button" title="Click" aria-label="Click">♩</button>
+      <span class="value dim">1 Bar</span>
+      <span class="value dim">120 BPM</span>
+      <span class="value dim">4/4</span>
+      <span class="value mono">1.02.0240</span>
+      <button class="btn ghost" type="button">Transport…</button>
+    </div>
+
+    <div class="mixer-head">
+      <span class="title">Mixer</span>
+      <button class="btn ghost" type="button">+ Bus</button>
+      <span class="grow"></span>
+      <span class="count">3 instrument tracks · 3 buses · 3 sends</span>
+    </div>
+    <div class="mixer-note" id="note">Clicca <b>Output</b> su una strip per cambiare destinazione, il <b>tap</b> per passare pre/post, <b>S</b> per il solo.</div>
+
+    <div class="mixer">
+      <div class="bank" role="group" aria-label="Canali">
+        <!-- Strings -->
+        <div class="strip selected" data-name="strings" data-audible="true" style="--track-rgb:46,125,110">
+          <div class="caption">Gain <span class="tiny">0.0 dB</span></div>
+          <div class="knob" style="--angle:-28deg" aria-hidden="true"></div>
+          <div class="readout">0.0 <span class="unit">dB</span></div>
+
+          <div class="caption">Inserts</div>
+          <div class="slots">
+            <div class="slot"><span class="name">Tape EQ</span><span class="power" aria-hidden="true"><svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M6 1.5v4.2"/><path d="M3.4 2.9a4 4 0 1 0 5.2 0"/></svg></span></div>
+            <button class="add-row" type="button">Add effect…</button>
+          </div>
+
+          <div class="caption">Sends <span class="tiny">2</span></div>
+          <div class="sends">
+            <div class="send-list">
+              <div class="send" data-dest="reverb">
+                <button class="tap pre" type="button" title="Pre-fader: dopo insert e trim, prima del fader" aria-label="Send verso Reverb, pre-fader. Clicca per passare a post-fader.">
+                  <svg width="11" height="12" viewBox="0 0 12 14" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 1v12"/><path class="pre-path" d="M2 4.5h6.5l2-2"/><path class="post-path" d="M2 9.5h6.5l2 2"/></svg>
+                </button>
+                <button class="send-slot" type="button" title="Reverb" aria-label="Destinazione send: Reverb">Reverb</button>
+                <div class="knob-wrap">
+                  <button class="knob small" type="button" style="--angle:-12deg" data-db="−6.0 dB" aria-label="Livello send Reverb: −6.0 dB. Apri il valore."></button>
+                </div>
+                <button class="send-power" type="button" title="Send on" aria-label="Send verso Reverb attiva"><svg width="9" height="9" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 1.5v4.2"/><path d="M3.4 2.9a4 4 0 1 0 5.2 0"/></svg></button>
+              </div>
+              <div class="send" data-dest="delay">
+                <button class="tap post" type="button" title="Post-fader: dopo width, pan e fader" aria-label="Send verso Delay, post-fader. Clicca per passare a pre-fader.">
+                  <svg width="11" height="12" viewBox="0 0 12 14" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 1v12"/><path class="pre-path" d="M2 4.5h6.5l2-2"/><path class="post-path" d="M2 9.5h6.5l2 2"/></svg>
+                </button>
+                <button class="send-slot" type="button" title="Delay" aria-label="Destinazione send: Delay">Delay</button>
+                <div class="knob-wrap">
+                  <button class="knob small" type="button" style="--angle:8deg" data-db="−12.0 dB" aria-label="Livello send Delay: −12.0 dB. Apri il valore."></button>
+                </div>
+                <button class="send-power" type="button" title="Send on" aria-label="Send verso Delay attiva"><svg width="9" height="9" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 1.5v4.2"/><path d="M3.4 2.9a4 4 0 1 0 5.2 0"/></svg></button>
+              </div>
+            </div>
+            <button class="add-slot" type="button">Add send…</button>
+          </div>
+
+          <div class="pan-row">
+            <div class="pan-cell"><div class="caption">Pan</div><div class="knob" style="--angle:-32deg" aria-hidden="true"></div><div class="readout">C</div></div>
+            <div class="pan-cell"><div class="caption">Width</div><div class="knob" style="--angle:0deg" aria-hidden="true"></div><div class="readout">100%</div></div>
+          </div>
+
+          <div class="fader-block">
+            <div class="fader"><div class="groove"></div><div class="cap" style="--pos:46%"></div></div>
+            <div class="scale" aria-hidden="true">
+              <span style="top:4%">+6</span><span style="top:24%">0</span><span style="top:40%">−6</span><span style="top:56%">−12</span><span style="top:74%">−24</span><span style="top:90%">−48</span>
+            </div>
+            <div class="meter" aria-hidden="true"><div class="bar"><div class="fill" style="--level:64%"></div></div><div class="bar"><div class="fill" style="--level:59%"></div></div></div>
+          </div>
+          <div class="fader-readout">0.0 dB</div>
+
+          <div class="lamps">
+            <button class="lamp mute" type="button" aria-label="Mute Strings" aria-pressed="false">M</button>
+            <button class="lamp solo" type="button" aria-label="Solo Strings" aria-pressed="false">S</button>
+          </div>
+
+          <div class="output">
+            <div class="caption"><span>Output</span></div>
+            <button class="output-btn" type="button" data-output="strings" aria-label="Output di Strings: Master. Apri il menu."><span class="route">Master</span><span class="chev">▾</span></button>
+            <div class="output-menu" role="menu" aria-label="Output di Strings">
+              <div class="menu-caption">Destinazione</div>
+              <button class="menu-row" type="button" role="menuitem"><span class="tick">✓</span>Master</button>
+              <button class="menu-row" type="button" role="menuitem"><span class="tick"></span>Reverb</button>
+              <button class="menu-row" type="button" role="menuitem"><span class="tick"></span>Delay</button>
+              <button class="menu-row" type="button" role="menuitem"><span class="tick"></span>Drum Bus</button>
+              <div class="menu-sep"></div>
+              <button class="menu-row new" type="button" role="menuitem"><span class="tick">+</span>New Bus…</button>
+            </div>
+          </div>
+          <div class="namebox"><span class="label">Strings</span></div>
+        </div>
+
+        <!-- Piano -->
+        <div class="strip" data-name="piano" data-audible="false" style="--track-rgb:74,107,168">
+          <div class="caption">Gain <span class="tiny">−2.0 dB</span></div>
+          <div class="knob" style="--angle:-14deg" aria-hidden="true"></div>
+          <div class="readout">−2.0 <span class="unit">dB</span></div>
+
+          <div class="caption">Inserts</div>
+          <div class="slots">
+            <div class="slot"><span class="name">Zebra2</span><span class="power" aria-hidden="true"><svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M6 1.5v4.2"/><path d="M3.4 2.9a4 4 0 1 0 5.2 0"/></svg></span></div>
+            <button class="add-row" type="button">Add effect…</button>
+          </div>
+
+          <div class="caption">Sends <span class="tiny">0</span></div>
+          <div class="sends">
+            <div class="send-list"><div class="empty-sends">No sends</div></div>
+            <button class="add-slot" type="button">Add send…</button>
+          </div>
+
+          <div class="pan-row">
+            <div class="pan-cell"><div class="caption">Pan</div><div class="knob" style="--angle:18deg" aria-hidden="true"></div><div class="readout">R 18</div></div>
+            <div class="pan-cell"><div class="caption">Width</div><div class="knob" style="--angle:0deg" aria-hidden="true"></div><div class="readout">100%</div></div>
+          </div>
+
+          <div class="fader-block">
+            <div class="fader"><div class="groove"></div><div class="cap" style="--pos:52%"></div></div>
+            <div class="scale" aria-hidden="true">
+              <span style="top:4%">+6</span><span style="top:24%">0</span><span style="top:40%">−6</span><span style="top:56%">−12</span><span style="top:74%">−24</span><span style="top:90%">−48</span>
+            </div>
+            <div class="meter" aria-hidden="true"><div class="bar"><div class="fill" style="--level:42%"></div></div><div class="bar"><div class="fill" style="--level:38%"></div></div></div>
+          </div>
+          <div class="fader-readout">−2.0 dB</div>
+
+          <div class="lamps">
+            <button class="lamp mute" type="button" aria-label="Mute Piano" aria-pressed="false">M</button>
+            <button class="lamp solo" type="button" aria-label="Solo Piano" aria-pressed="false">S</button>
+          </div>
+
+          <div class="output">
+            <div class="caption"><span>Output</span></div>
+            <button class="output-btn" type="button" data-output="piano" aria-label="Output di Piano: Master. Apri il menu."><span class="route">Master</span><span class="chev">▾</span></button>
+            <div class="output-menu" role="menu" aria-label="Output di Piano">
+              <div class="menu-caption">Destinazione</div>
+              <button class="menu-row" type="button" role="menuitem"><span class="tick">✓</span>Master</button>
+              <button class="menu-row" type="button" role="menuitem"><span class="tick"></span>Reverb</button>
+              <button class="menu-row" type="button" role="menuitem"><span class="tick"></span>Delay</button>
+              <button class="menu-row" type="button" role="menuitem"><span class="tick"></span>Drum Bus</button>
+              <div class="menu-sep"></div>
+              <button class="menu-row new" type="button" role="menuitem"><span class="tick">+</span>New Bus…</button>
+            </div>
+          </div>
+          <div class="namebox"><span class="label">Piano</span></div>
+        </div>
+
+        <!-- Drums -->
+        <div class="strip" data-name="drums" data-audible="false" style="--track-rgb:168,112,58">
+          <div class="caption">Gain <span class="tiny">0.0 dB</span></div>
+          <div class="knob" style="--angle:-30deg" aria-hidden="true"></div>
+          <div class="readout">0.0 <span class="unit">dB</span></div>
+
+          <div class="caption">Inserts</div>
+          <div class="slots">
+            <div class="slot"><span class="name">Kick</span><span class="power" aria-hidden="true"><svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M6 1.5v4.2"/><path d="M3.4 2.9a4 4 0 1 0 5.2 0"/></svg></span></div>
+            <div class="slot bypassed"><span class="name">Snare</span><span class="power" aria-hidden="true"><svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M6 1.5v4.2"/><path d="M3.4 2.9a4 4 0 1 0 5.2 0"/></svg></span></div>
+            <button class="add-row" type="button">Add effect…</button>
+          </div>
+
+          <div class="caption">Sends <span class="tiny">1</span></div>
+          <div class="sends">
+            <div class="send-list">
+              <div class="send" data-dest="reverb">
+                <button class="tap pre" type="button" title="Pre-fader: dopo insert e trim, prima del fader" aria-label="Send verso Reverb, pre-fader. Clicca per passare a post-fader.">
+                  <svg width="11" height="12" viewBox="0 0 12 14" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 1v12"/><path class="pre-path" d="M2 4.5h6.5l2-2"/><path class="post-path" d="M2 9.5h6.5l2 2"/></svg>
+                </button>
+                <button class="send-slot" type="button" title="Reverb" aria-label="Destinazione send: Reverb">Reverb</button>
+                <div class="knob-wrap">
+                  <button class="knob small" type="button" style="--angle:-4deg" data-db="−3.0 dB" aria-label="Livello send Reverb: −3.0 dB. Apri il valore."></button>
+                </div>
+                <button class="send-power" type="button" title="Send on" aria-label="Send verso Reverb attiva"><svg width="9" height="9" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 1.5v4.2"/><path d="M3.4 2.9a4 4 0 1 0 5.2 0"/></svg></button>
+              </div>
+            </div>
+            <button class="add-slot" type="button">Add send…</button>
+          </div>
+
+          <div class="pan-row">
+            <div class="pan-cell"><div class="caption">Pan</div><div class="knob" style="--angle:-26deg" aria-hidden="true"></div><div class="readout">L 26</div></div>
+            <div class="pan-cell"><div class="caption">Width</div><div class="knob" style="--angle:12deg" aria-hidden="true"></div><div class="readout">120%</div></div>
+          </div>
+
+          <div class="fader-block">
+            <div class="fader"><div class="groove"></div><div class="cap" style="--pos:44%"></div></div>
+            <div class="scale" aria-hidden="true">
+              <span style="top:4%">+6</span><span style="top:24%">0</span><span style="top:40%">−6</span><span style="top:56%">−12</span><span style="top:74%">−24</span><span style="top:90%">−48</span>
+            </div>
+            <div class="meter" aria-hidden="true"><div class="bar"><div class="fill" style="--level:58%"></div></div><div class="bar"><div class="fill" style="--level:53%"></div></div></div>
+          </div>
+          <div class="fader-readout">0.0 dB</div>
+
+          <div class="lamps">
+            <button class="lamp mute" type="button" aria-label="Mute Drums" aria-pressed="false">M</button>
+            <button class="lamp solo" type="button" aria-label="Solo Drums" aria-pressed="false">S</button>
+          </div>
+
+          <div class="output">
+            <div class="caption"><span>Output</span></div>
+            <button class="output-btn" type="button" data-output="drums" aria-label="Output di Drums: Drum Bus. Apri il menu."><span class="route">Drum Bus</span><span class="chev">▾</span></button>
+            <div class="output-menu" role="menu" aria-label="Output di Drums">
+              <div class="menu-caption">Destinazione</div>
+              <button class="menu-row" type="button" role="menuitem"><span class="tick"></span>Master</button>
+              <button class="menu-row" type="button" role="menuitem"><span class="tick"></span>Reverb</button>
+              <button class="menu-row" type="button" role="menuitem"><span class="tick"></span>Delay</button>
+              <button class="menu-row" type="button" role="menuitem"><span class="tick">✓</span>Drum Bus</button>
+              <div class="menu-sep"></div>
+              <button class="menu-row new" type="button" role="menuitem"><span class="tick">+</span>New Bus…</button>
+            </div>
+          </div>
+          <div class="namebox"><span class="label">Drums</span></div>
+        </div>
+
+        <div class="bank-gap" aria-hidden="true"></div>
+
+        <!-- Reverb bus -->
+        <div class="strip bus" data-name="reverb" data-audible="false" style="--track-rgb:51,106,100">
+          <div class="caption">Gain <span class="tiny">0.0 dB</span></div>
+          <div class="knob" style="--angle:-28deg" aria-hidden="true"></div>
+          <div class="readout">0.0 <span class="unit">dB</span></div>
+
+          <div class="caption">Inserts</div>
+          <div class="slots">
+            <div class="slot"><span class="name">Valhalla</span><span class="power" aria-hidden="true"><svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M6 1.5v4.2"/><path d="M3.4 2.9a4 4 0 1 0 5.2 0"/></svg></span></div>
+            <button class="add-row" type="button">Add effect…</button>
+          </div>
+
+          <div class="caption">Inputs <span class="tiny">2</span></div>
+          <div class="bus-inputs">
+            <div class="who">Strings <span style="color:var(--disabled)">send</span></div>
+            <div class="who">Drums <span style="color:var(--disabled)">send</span></div>
+          </div>
+
+          <div class="pan-row">
+            <div class="pan-cell"><div class="caption">Pan</div><div class="knob" style="--angle:0deg" aria-hidden="true"></div><div class="readout">C</div></div>
+            <div class="pan-cell"><div class="caption">Width</div><div class="knob" style="--angle:0deg" aria-hidden="true"></div><div class="readout">100%</div></div>
+          </div>
+
+          <div class="fader-block">
+            <div class="fader"><div class="groove"></div><div class="cap" style="--pos:38%"></div></div>
+            <div class="scale" aria-hidden="true">
+              <span style="top:4%">+6</span><span style="top:24%">0</span><span style="top:40%">−6</span><span style="top:56%">−12</span><span style="top:74%">−24</span><span style="top:90%">−48</span>
+            </div>
+            <div class="meter" aria-hidden="true"><div class="bar"><div class="fill" style="--level:48%"></div></div><div class="bar"><div class="fill" style="--level:44%"></div></div></div>
+          </div>
+          <div class="fader-readout">−4.0 dB</div>
+
+          <div class="lamps">
+            <button class="lamp mute" type="button" aria-label="Mute Reverb" aria-pressed="false">M</button>
+            <button class="lamp solo" type="button" aria-label="Solo Reverb" aria-pressed="false">S</button>
+          </div>
+
+          <div class="output">
+            <div class="caption"><span>Output</span></div>
+            <button class="output-btn" type="button" data-output="reverb" aria-label="Output di Reverb: Master. Apri il menu."><span class="route">Master</span><span class="chev">▾</span></button>
+            <div class="output-menu" role="menu" aria-label="Output di Reverb">
+              <div class="menu-caption">Destinazione</div>
+              <button class="menu-row" type="button" role="menuitem"><span class="tick">✓</span>Master</button>
+              <div class="menu-sep"></div>
+              <button class="menu-row new" type="button" role="menuitem"><span class="tick">+</span>New Bus…</button>
+            </div>
+          </div>
+          <div class="namebox"><span class="role">Bus</span><span class="label">Reverb</span></div>
+        </div>
+
+        <!-- Delay bus -->
+        <div class="strip bus" data-name="delay" data-audible="false" style="--track-rgb:51,106,100">
+          <div class="caption">Gain <span class="tiny">−2.0 dB</span></div>
+          <div class="knob" style="--angle:-14deg" aria-hidden="true"></div>
+          <div class="readout">−2.0 <span class="unit">dB</span></div>
+
+          <div class="caption">Inserts</div>
+          <div class="slots">
+            <div class="slot"><span class="name">Echo</span><span class="power" aria-hidden="true"><svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M6 1.5v4.2"/><path d="M3.4 2.9a4 4 0 1 0 5.2 0"/></svg></span></div>
+            <button class="add-row" type="button">Add effect…</button>
+          </div>
+
+          <div class="caption">Inputs <span class="tiny">1</span></div>
+          <div class="bus-inputs">
+            <div class="who">Strings <span style="color:var(--disabled)">send</span></div>
+            <div class="who" style="color:var(--disabled)">—</div>
+          </div>
+
+          <div class="pan-row">
+            <div class="pan-cell"><div class="caption">Pan</div><div class="knob" style="--angle:12deg" aria-hidden="true"></div><div class="readout">R 12</div></div>
+            <div class="pan-cell"><div class="caption">Width</div><div class="knob" style="--angle:0deg" aria-hidden="true"></div><div class="readout">100%</div></div>
+          </div>
+
+          <div class="fader-block">
+            <div class="fader"><div class="groove"></div><div class="cap" style="--pos:42%"></div></div>
+            <div class="scale" aria-hidden="true">
+              <span style="top:4%">+6</span><span style="top:24%">0</span><span style="top:40%">−6</span><span style="top:56%">−12</span><span style="top:74%">−24</span><span style="top:90%">−48</span>
+            </div>
+            <div class="meter" aria-hidden="true"><div class="bar"><div class="fill" style="--level:36%"></div></div><div class="bar"><div class="fill" style="--level:33%"></div></div></div>
+          </div>
+          <div class="fader-readout">−6.0 dB</div>
+
+          <div class="lamps">
+            <button class="lamp mute" type="button" aria-label="Mute Delay" aria-pressed="false">M</button>
+            <button class="lamp solo" type="button" aria-label="Solo Delay" aria-pressed="false">S</button>
+          </div>
+
+          <div class="output">
+            <div class="caption"><span>Output</span></div>
+            <button class="output-btn" type="button" data-output="delay" aria-label="Output di Delay: Master. Apri il menu."><span class="route">Master</span><span class="chev">▾</span></button>
+            <div class="output-menu" role="menu" aria-label="Output di Delay">
+              <div class="menu-caption">Destinazione</div>
+              <button class="menu-row" type="button" role="menuitem"><span class="tick">✓</span>Master</button>
+              <div class="menu-sep"></div>
+              <button class="menu-row new" type="button" role="menuitem"><span class="tick">+</span>New Bus…</button>
+            </div>
+          </div>
+          <div class="namebox"><span class="role">Bus</span><span class="label">Delay</span></div>
+        </div>
+
+        <!-- Drum bus -->
+        <div class="strip bus" data-name="drumbus" data-audible="false" style="--track-rgb:51,106,100">
+          <div class="caption">Gain <span class="tiny">0.0 dB</span></div>
+          <div class="knob" style="--angle:-28deg" aria-hidden="true"></div>
+          <div class="readout">0.0 <span class="unit">dB</span></div>
+
+          <div class="caption">Inserts</div>
+          <div class="slots">
+            <div class="slot"><span class="name">Bus Glue</span><span class="power" aria-hidden="true"><svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M6 1.5v4.2"/><path d="M3.4 2.9a4 4 0 1 0 5.2 0"/></svg></span></div>
+            <button class="add-row" type="button">Add effect…</button>
+          </div>
+
+          <div class="caption">Inputs <span class="tiny">1</span></div>
+          <div class="bus-inputs">
+            <div class="who">Drums <span style="color:var(--disabled)">out</span></div>
+            <div class="who" style="color:var(--disabled)">—</div>
+          </div>
+
+          <div class="pan-row">
+            <div class="pan-cell"><div class="caption">Pan</div><div class="knob" style="--angle:0deg" aria-hidden="true"></div><div class="readout">C</div></div>
+            <div class="pan-cell"><div class="caption">Width</div><div class="knob" style="--angle:0deg" aria-hidden="true"></div><div class="readout">100%</div></div>
+          </div>
+
+          <div class="fader-block">
+            <div class="fader"><div class="groove"></div><div class="cap" style="--pos:48%"></div></div>
+            <div class="scale" aria-hidden="true">
+              <span style="top:4%">+6</span><span style="top:24%">0</span><span style="top:40%">−6</span><span style="top:56%">−12</span><span style="top:74%">−24</span><span style="top:90%">−48</span>
+            </div>
+            <div class="meter" aria-hidden="true"><div class="bar"><div class="fill" style="--level:52%"></div></div><div class="bar"><div class="fill" style="--level:47%"></div></div></div>
+          </div>
+          <div class="fader-readout">0.0 dB</div>
+
+          <div class="lamps">
+            <button class="lamp mute" type="button" aria-label="Mute Drum Bus" aria-pressed="false">M</button>
+            <button class="lamp solo" type="button" aria-label="Solo Drum Bus" aria-pressed="false">S</button>
+          </div>
+
+          <div class="output">
+            <div class="caption"><span>Output</span></div>
+            <button class="output-btn" type="button" data-output="drumbus" aria-label="Output di Drum Bus: Master. Apri il menu."><span class="route">Master</span><span class="chev">▾</span></button>
+            <div class="output-menu" role="menu" aria-label="Output di Drum Bus">
+              <div class="menu-caption">Destinazione</div>
+              <button class="menu-row" type="button" role="menuitem"><span class="tick">✓</span>Master</button>
+              <div class="menu-sep"></div>
+              <button class="menu-row new" type="button" role="menuitem"><span class="tick">+</span>New Bus…</button>
+            </div>
+          </div>
+          <div class="namebox"><span class="role">Bus</span><span class="label">Drum Bus</span></div>
+        </div>
+      </div>
+
+      <div class="master-dock">
+        <div class="strip master" data-name="master" data-audible="true" style="--track-rgb:120,181,170">
+          <div class="caption">Inserts</div>
+          <div class="slots">
+            <div class="slot"><span class="name">Limiter</span><span class="power" aria-hidden="true"><svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M6 1.5v4.2"/><path d="M3.4 2.9a4 4 0 1 0 5.2 0"/></svg></span></div>
+            <button class="add-row" type="button">Add effect…</button>
+          </div>
+
+          <div style="height:171px"></div>
+
+          <div class="pan-row">
+            <div class="pan-cell" style="width:100%"><div class="caption">Pan</div><div class="knob" style="--angle:0deg" aria-hidden="true"></div><div class="readout">C</div></div>
+          </div>
+
+          <div class="fader-block">
+            <div class="fader"><div class="groove"></div><div class="cap" style="--pos:46%"></div></div>
+            <div class="scale" aria-hidden="true">
+              <span style="top:4%">+6</span><span style="top:24%">0</span><span style="top:40%">−6</span><span style="top:56%">−12</span><span style="top:74%">−24</span><span style="top:90%">−48</span>
+            </div>
+            <div class="meter" aria-hidden="true"><div class="bar"><div class="fill" style="--level:68%"></div></div><div class="bar"><div class="fill" style="--level:65%"></div></div></div>
+          </div>
+          <div class="fader-readout">0.0 dB</div>
+
+          <div class="lamps">
+            <button class="lamp mono" type="button" aria-label="Mono master" aria-pressed="false">MONO</button>
+          </div>
+
+          <div class="output">
+            <div class="caption"><span>Output</span></div>
+            <button class="output-btn" type="button" aria-label="Output di Master: dispositivo audio"><span class="route">Device</span><span class="chev">▾</span></button>
+          </div>
+          <div class="namebox"><span class="role">Master</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="statusline">
+      <span>Sample rate <b>48 kHz</b> · buffer <b>128</b> · PDC <b>1 024</b> samples</span>
+      <span class="right"><span>Solo: <b id="solo-label">—</b></span><span>Selection: <b>Strings</b></span></span>
+    </div>
+  </section>
+
+  <section class="notes" aria-label="Note di progetto">
+    <div class="card">
+      <h3>Output per canale</h3>
+      <p>Ogni traccia strumento sceglie <span class="k">Master</span> o un <span class="k">bus</span>. I bus vanno solo a Master: un livello, niente annidamenti. Il menu è la stessa lista per tutte le strip e crea un bus al volo con <span class="accent">New Bus…</span>.</p>
+      <p>Un bus con sorgenti non si elimina: prima si riassegnano le tracce. Il routing valido non viene mai perso.</p>
+    </div>
+    <div class="card">
+      <h3>Send</h3>
+      <p>Ogni send sta su <span class="k">una sola riga</span>: tap pre/post, slot di destinazione, knob di livello, bypass. Il valore in <span class="k">dB</span> compare in un popup sul knob, così la riga resta bassa e se ne vedono di più.</p>
+      <p>Nessun numero fisso di send; una sola send per bus. La sezione riserva tre righe su tutte le strip, così Pan, fader e meter restano allineati; oltre le tre righe si scorre.</p>
+    </div>
+    <div class="card">
+      <h3>Solo a monte</h3>
+      <p>Solo su <span class="k">Drum Bus</span> rende udibile <span class="k">Drums</span>, che lo alimenta in output, anche se non è in solo. La send di Drums tiene udibile anche <span class="k">Reverb</span>: i ritorni FX alimentati da una traccia in solo restano udibili. Bus e tracce esclusi si attenuano, non spariscono dalla vista.</p>
+      <p><span class="warn">Mute vince sul solo</span>: un canale mutato non è udibile e non propaga il solo.</p>
+    </div>
+  </section>
+
+  <div class="diagram-wrap">
+    <div class="caption">Segnale — output solidi, send tratteggiati</div>
+    <svg class="diagram" viewBox="0 0 700 180" role="img" aria-label="Schema di routing: Strings manda a Master e con due send a Reverb e Delay; Drums va a Drum Bus e con una send a Reverb; Piano, Reverb, Delay e Drum Bus vanno a Master.">
+      <defs>
+        <marker id="arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="#A4B5AE"/></marker>
+        <marker id="arrowA" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="#78B5AA"/></marker>
+      </defs>
+      <!-- nodes -->
+      <g font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif" font-size="11">
+        <rect x="10" y="14" width="90" height="26" rx="2" fill="#1F2F32" stroke="#2B3B3D"/><text x="24" y="31" fill="#E3E8E5">Strings</text>
+        <rect x="10" y="74" width="90" height="26" rx="2" fill="#1F2F32" stroke="#2B3B3D"/><text x="24" y="91" fill="#E3E8E5">Piano</text>
+        <rect x="10" y="134" width="90" height="26" rx="2" fill="#1F2F32" stroke="#2B3B3D"/><text x="24" y="151" fill="#E3E8E5">Drums</text>
+
+        <rect x="250" y="14" width="96" height="26" rx="2" fill="#1F2F32" stroke="#78B5AA"/><text x="263" y="31" fill="#E3E8E5">Reverb</text><text x="312" y="31" fill="#A4B5AE" font-size="8">BUS</text>
+        <rect x="250" y="74" width="96" height="26" rx="2" fill="#1F2F32" stroke="#78B5AA"/><text x="263" y="91" fill="#E3E8E5">Delay</text><text x="300" y="91" fill="#A4B5AE" font-size="8">BUS</text>
+        <rect x="250" y="134" width="96" height="26" rx="2" fill="#1F2F32" stroke="#78B5AA"/><text x="263" y="151" fill="#E3E8E5">Drum Bus</text><text x="316" y="151" fill="#A4B5AE" font-size="8">BUS</text>
+
+        <rect x="560" y="74" width="96" height="26" rx="2" fill="#1F2F32" stroke="#78B5AA"/><text x="576" y="91" fill="#E3E8E5">Master</text><text x="626" y="91" fill="#A4B5AE" font-size="8">OUT</text>
+      </g>
+      <!-- output edges -->
+      <g fill="none" stroke="#5E7473" stroke-width="1.4" marker-end="url(#arrow)">
+        <path d="M100 27 H170 V8 H490 V74 H560"/>
+        <path d="M100 87 H180 V58 H500 V87 H560"/>
+        <path d="M100 147 H250"/>
+        <path d="M346 27 H520 V74 H560"/>
+        <path d="M346 87 H560"/>
+        <path d="M346 147 H530 V100 H560"/>
+      </g>
+      <!-- sends -->
+      <g fill="none" stroke="#78B5AA" stroke-width="1.4" stroke-dasharray="4 4" marker-end="url(#arrowA)">
+        <path d="M100 36 H160 V27 H250"/>
+        <path d="M100 46 H190 V87 H250"/>
+        <path d="M100 144 H210 V54 H240 V27 H250"/>
+      </g>
+      <g font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif" font-size="9" fill="#A4B5AE">
+        <text x="150" y="22">send pre</text>
+        <text x="158" y="82">send post</text>
+        <text x="214" y="128">send pre</text>
+        <text x="420" y="18">output</text>
+      </g>
+    </svg>
+  </div>
+
+  <p class="out-of-scope"><b>Fuori scope in questa proposta:</b> bus annidati, folder track, sidechain, automazione di send e routing, matrice di routing completa. La proposta è provvisoria fino ad approvazione; non è implementazione.</p>
+</div>
+
+<div class="db-pop" id="db-pop" role="tooltip"></div>
+
+<script>
+  (function () {
+    const app = document.getElementById('app');
+    const note = document.getElementById('note');
+    const soloLabel = document.getElementById('solo-label');
+    const viewButtons = Array.from(document.querySelectorAll('.view-switch [data-view]'));
+    const dbPop = document.getElementById('db-pop');
+    let dbOwner = null;
+
+    function placeDb(knob) {
+      const text = knob.dataset.db;
+      if (!text) return;
+      dbPop.textContent = text;
+      dbPop.style.display = 'block';
+      const rect = knob.getBoundingClientRect();
+      const width = dbPop.offsetWidth;
+      dbPop.style.left = Math.max(6, rect.left + rect.width / 2 - width / 2) + 'px';
+      dbPop.style.top = Math.max(6, rect.top - 22) + 'px';
+      dbOwner = knob;
+    }
+
+    function hideDb() {
+      dbPop.style.display = 'none';
+      dbOwner = null;
+    }
+
+    function closeMenus(except) {
+      document.querySelectorAll('.output-menu.open').forEach(function (menu) {
+        if (menu !== except) menu.classList.remove('open');
+      });
+    }
+
+    function setView(view) {
+      app.dataset.state = view;
+      viewButtons.forEach(function (button) {
+        const active = button.dataset.view === view;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-selected', String(active));
+      });
+      closeMenus();
+      document.querySelectorAll('.lamp.solo').forEach(function (lamp) {
+        lamp.classList.remove('lit');
+        lamp.setAttribute('aria-pressed', 'false');
+      });
+      document.querySelectorAll('.strip').forEach(function (strip) { strip.dataset.audible = 'true'; });
+      if (view === 'menu') {
+        const target = document.querySelector('[data-output="piano"]');
+        const menu = target && target.parentElement.querySelector('.output-menu');
+        if (menu) menu.classList.add('open');
+        note.innerHTML = 'Menu <b>Output</b> di Piano: Master è la destinazione corrente. La stessa lista compare su ogni strip; <b>New Bus…</b> crea e assegna in un passo.';
+      } else if (view === 'solo') {
+        document.querySelectorAll('.lamp.solo').forEach(function (lamp) {
+          lamp.classList.remove('lit');
+          lamp.setAttribute('aria-pressed', 'false');
+        });
+        document.querySelectorAll('.strip').forEach(function (strip) {
+          const name = strip.dataset.name;
+          const audible = name === 'drums' || name === 'drumbus' || name === 'reverb' || name === 'master';
+          strip.dataset.audible = String(audible);
+        });
+        const drumBusSolo = document.querySelector('[data-name="drumbus"] .lamp.solo');
+        if (drumBusSolo) {
+          drumBusSolo.classList.add('lit');
+          drumBusSolo.setAttribute('aria-pressed', 'true');
+        }
+        soloLabel.textContent = 'Drum Bus';
+        note.innerHTML = '<b>Solo su Drum Bus</b>: Drums lo alimenta in output ed è udibile; la sua send tiene udibile Reverb. Strings, Piano e Delay sono esclusi.';
+      } else {
+        document.querySelectorAll('.strip').forEach(function (strip) {
+          strip.dataset.audible = 'true';
+        });
+        document.querySelectorAll('.lamp.solo').forEach(function (lamp) {
+          lamp.classList.remove('lit');
+          lamp.setAttribute('aria-pressed', 'false');
+        });
+        soloLabel.textContent = '—';
+        note.innerHTML = 'Clicca <b>Output</b> su una strip per cambiare destinazione, il <b>tap</b> per passare pre/post, <b>S</b> per il solo.';
+      }
+    }
+
+    viewButtons.forEach(function (button) {
+      button.addEventListener('click', function (event) {
+        event.stopPropagation();
+        setView(button.dataset.view);
+      });
+    });
+
+    document.querySelectorAll('[data-output]').forEach(function (button) {
+      button.addEventListener('click', function (event) {
+        event.stopPropagation();
+        const menu = button.parentElement.querySelector('.output-menu');
+        const willOpen = !menu.classList.contains('open');
+        setView('mix');
+        if (willOpen) menu.classList.add('open');
+        note.innerHTML = 'Scegli la destinazione: <b>Master</b> o un bus. Il routing invalido viene rifiutato senza perdere quello corrente.';
+      });
+    });
+
+    document.querySelectorAll('.output-menu').forEach(function (menu) {
+      menu.addEventListener('click', function (event) {
+        const row = event.target.closest('.menu-row');
+        if (!row) return;
+        event.stopPropagation();
+        const button = menu.parentElement.querySelector('.output-btn .route');
+        if (button) button.textContent = row.textContent.trim().replace(/^✓?\s*/, '').replace('New Bus…', 'Bus 3');
+        closeMenus();
+      });
+    });
+
+    document.querySelectorAll('.tap').forEach(function (tap) {
+      tap.addEventListener('click', function (event) {
+        event.stopPropagation();
+        const pre = tap.classList.toggle('pre');
+        tap.classList.toggle('post', !pre);
+        tap.setAttribute('aria-label', (pre ? 'Pre-fader' : 'Post-fader') + '. Clicca per passare a ' + (pre ? 'post' : 'pre') + '-fader.');
+      });
+    });
+
+    document.querySelectorAll('.knob.small').forEach(function (knob) {
+      knob.setAttribute('aria-expanded', 'false');
+      knob.addEventListener('mouseenter', function () { placeDb(knob); });
+      knob.addEventListener('mouseleave', function () { if (dbOwner === knob) hideDb(); });
+      knob.addEventListener('focus', function () { placeDb(knob); });
+      knob.addEventListener('blur', function () { if (dbOwner === knob) hideDb(); });
+      knob.addEventListener('click', function (event) {
+        event.stopPropagation();
+        const open = dbOwner === knob && dbPop.style.display === 'block';
+        if (open) {
+          hideDb();
+          knob.setAttribute('aria-expanded', 'false');
+        } else {
+          placeDb(knob);
+          knob.setAttribute('aria-expanded', 'true');
+        }
+      });
+    });
+
+    document.querySelectorAll('.send-power').forEach(function (power) {
+      power.addEventListener('click', function (event) {
+        event.stopPropagation();
+        const on = !power.classList.toggle('off');
+        power.style.color = on ? 'var(--accent)' : 'var(--secondary)';
+        power.closest('.send').classList.toggle('bypassed', !on);
+        power.setAttribute('aria-label', on ? 'Send attiva' : 'Send disattivata');
+      });
+    });
+
+    document.querySelectorAll('.lamp.mute, .lamp.solo').forEach(function (lamp) {
+      lamp.addEventListener('click', function (event) {
+        event.stopPropagation();
+        const lit = lamp.classList.toggle('lit');
+        lamp.setAttribute('aria-pressed', String(lit));
+        if (lamp.classList.contains('solo')) {
+          const strip = lamp.closest('.strip');
+          soloLabel.textContent = lit ? (strip.querySelector('.namebox .label') || {}).textContent || '—' : '—';
+        }
+      });
+    });
+
+    document.addEventListener('click', function () { closeMenus(); hideDb(); });
+    window.addEventListener('scroll', hideDb, true);
+    window.addEventListener('resize', hideDb);
+    document.addEventListener('keydown', function (event) {
+      if (event.key === 'Escape') { closeMenus(); setView('mix'); }
+    });
+  })();
+</script>
+</body>
+</html>

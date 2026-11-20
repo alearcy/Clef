@@ -35,6 +35,9 @@ pub enum Request {
         frames: usize,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         input: Vec<Frame>,
+        /// Echoed in the reply so a late reply can be recognized and discarded.
+        #[serde(default)]
+        sequence: u64,
     },
     Stop,
     SuspendAudio,
@@ -48,6 +51,12 @@ pub enum Request {
     FixtureFault {
         hang: bool,
     },
+    /// Delay every following fixture process block by this many microseconds.
+    FixtureDelay {
+        micros: u32,
+    },
+    /// Make the fixture request a processing restart in its next reply.
+    FixtureRestart,
     Restore {
         state: Vec<u8>,
     },
@@ -64,6 +73,9 @@ pub struct Reply {
     pub restart: bool,
     #[serde(default)]
     pub processing_nanos: u64,
+    /// The `Process` request sequence this reply answers; zero for other replies.
+    #[serde(default)]
+    pub sequence: u64,
 }
 
 impl Reply {
@@ -76,6 +88,7 @@ impl Reply {
             state: Vec::new(),
             restart: false,
             processing_nanos: 0,
+            sequence: 0,
         }
     }
 

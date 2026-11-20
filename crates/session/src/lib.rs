@@ -10,7 +10,10 @@ use clef_engine::{
 use clef_model::{
     Plugin, Result,
     midi::{Arrangement, ClipEdit, ClipEditResult, ClipId, CompEdit, Mode},
-    project::{self, ArrangementView, AudioSettings, Project, TakeLanes, Track, TrackMode},
+    project::{
+        self, ArrangementView, AudioSettings, Project, Send as TrackSend, TakeLanes, Track,
+        TrackKind, TrackMode,
+    },
     timeline::{MAX_TICK, StopMode, Tempo},
 };
 #[cfg(test)]
@@ -37,11 +40,76 @@ mod mixer;
 pub use mixer::{Meter, MixChange};
 mod recovery;
 pub use edit_history::HistoryView;
-use edit_history::{ClipChange, Edit, History, InstrumentState, TrackSlot};
+use edit_history::{
+    ClipChange, Edit, History, InstrumentState, SourceRoute, SourceSend, TrackSlot,
+};
 use recovery::{Journal, RecentChange, Store};
 pub use recovery::{RecentProject, RecentStatus, RecoveryEntry};
 
 const AUTOSAVE_INTERVAL: Duration = Duration::from_secs(60);
+/// Device and plugin-path rescans share this cadence.
+const RESCAN_INTERVAL: Duration = Duration::from_secs(2);
+/// Per-block engine counters are republished at most this often, so an idle session does not
+/// wake the UI on every poll.
+const VOLATILE_INTERVAL: Duration = Duration::from_secs(1);
+
+#[derive(Default)]
+struct Volatile {
+    refreshed: Option<Instant>,
+    tracks: HashMap<u64, String>,
+}
+impl Volatile {
+    /// Whether volatile diagnostics may be read again; marks them read when they may.
+    fn due(&mut self, now: Instant) -> bool {
+        let due = self
+            .refreshed
+            .is_none_or(|at| now.saturating_duration_since(at) >= VOLATILE_INTERVAL);
+        if due {
+            self.refreshed = Some(now);
+        }
+        due
+    }
+    /// The diagnostics of `id`, read now if due or not yet known, and otherwise retained.
+    fn track(&mut self, due: bool, id: u64, read: impl FnOnce() -> String) -> String {
+        match self.tracks.entry(id) {
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                if due {
+                    entry.insert(read());
+                }
+                entry.get().clone()
+            }
+            std::collections::hash_map::Entry::Vacant(entry) => entry.insert(read()).clone(),
+        }
+    }
+}
+
+/// Plugin bundle existence, checked once per path and rechecked on the rescan cadence so
+/// refreshes and UI frames make no filesystem calls.
+#[derive(Default)]
+struct Paths {
+    checked: Option<Instant>,
+    exists: HashMap<PathBuf, bool>,
+}
+impl Paths {
+    fn exists(&mut self, path: &std::path::Path) -> bool {
+        if let Some(&exists) = self.exists.get(path) {
+            return exists;
+        }
+        let exists = path.exists();
+        self.exists.insert(path.to_owned(), exists);
+        exists
+    }
+    fn rescan<'a>(&mut self, now: Instant, paths: impl Iterator<Item = &'a std::path::Path>) {
+        if self
+            .checked
+            .is_some_and(|at| now.saturating_duration_since(at) < RESCAN_INTERVAL)
+        {
+            return;
+        }
+        self.checked = Some(now);
+        self.exists = paths.map(|path| (path.to_owned(), path.exists())).collect();
+    }
+}
 
 pub enum Action {
     Shutdown,
@@ -62,6 +130,8 @@ pub enum Action {
     New,
     Open(PathBuf),
     DiscardBeforeClose,
+    /// Write a changed arrangement view of a clean, saved project before the app closes.
+    SaveViewBeforeClose,
     Recover(String),
     DiscardRecovery(String),
     RemoveRecent(PathBuf),
@@ -73,6 +143,22 @@ pub enum Action {
         use_retained: Vec<(u64, u64)>,
     },
     AddTrack(Option<(u64, String)>),
+    AddBus {
+        assign: Option<u64>,
+    },
+    AddBusSend {
+        track: u64,
+    },
+    SetOutput {
+        epoch: u64,
+        track: u64,
+        output: Option<u64>,
+    },
+    Send {
+        epoch: u64,
+        track: u64,
+        edit: SendEdit,
+    },
     SelectTrack(u64, Option<(u64, String)>),
     RemoveTrack(u64),
     MoveTrack(u64, isize),
@@ -117,6 +203,47 @@ pub enum Action {
     Transport(TransportAction),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SendEdit {
+    Add {
+        target: u64,
+    },
+    Remove {
+        id: u64,
+    },
+    SetTarget {
+        id: u64,
+        target: u64,
+    },
+    SetPre {
+        id: u64,
+        pre: bool,
+    },
+    SetEnabled {
+        id: u64,
+        enabled: bool,
+    },
+    /// Transient drag value: reaches the engine, not the project or history, and is not
+    /// acknowledged to the UI.
+    PreviewLevel {
+        id: u64,
+        level: i16,
+    },
+    /// Ends a preview without an edit, for example when the drag is cancelled.
+    CancelPreview,
+    CommitLevel {
+        id: u64,
+        level: i16,
+    },
+}
+
+impl SendEdit {
+    /// Whether the edit is a transient preview that the session does not acknowledge.
+    pub fn is_preview(self) -> bool {
+        matches!(self, Self::PreviewLevel { .. } | Self::CancelPreview)
+    }
+}
+
 #[derive(Clone, Copy)]
 pub enum TransportAction {
     Play,
@@ -138,6 +265,8 @@ pub enum TransportAction {
 pub struct TrackView {
     pub id: u64,
     pub status: String,
+    /// The instrument plugin bundle is missing, from the session's cached path check.
+    pub missing: bool,
     pub diagnostics: String,
     pub loading: bool,
     pub lost: bool,
@@ -161,6 +290,9 @@ pub struct Snapshot {
     pub recents: Vec<RecentProject>,
     pub recoveries: Vec<RecoveryEntry>,
     pub dirty: bool,
+    /// The saved project's arrangement view (scroll, zoom, snap) changed since it was last
+    /// written; it is saved silently when leaving the project (T37 L4).
+    pub view_unsaved: bool,
     pub edit_history: HistoryView,
     pub loaded: bool,
     pub active: bool,
@@ -257,7 +389,10 @@ impl Snapshot {
                         mix: t.mix,
                         inserts: without_state(&t.inserts),
                         take_lanes: t.take_lanes.clone(),
-                        state: Vec::new(),
+                        kind: t.kind,
+                        output: t.output,
+                        sends: t.sends.clone(),
+                        state: Arc::default(),
                     })
                     .collect(),
             },
@@ -276,6 +411,7 @@ impl Snapshot {
             recents: self.recents.clone(),
             recoveries: self.recoveries.clone(),
             dirty: self.dirty,
+            view_unsaved: self.view_unsaved,
             edit_history: self.edit_history.clone(),
             loaded: self.loaded,
             active: self.active,
@@ -328,7 +464,7 @@ struct Runtime {
 }
 struct Loaded {
     instrument: Instrument,
-    initial: Vec<u8>,
+    initial: Arc<[u8]>,
     prepared: bool,
 }
 struct LoadJob {
@@ -349,6 +485,7 @@ struct Capture {
     input: Vec<Captured>,
     window: Option<Projection>,
     preview_key: Option<(u64, usize)>,
+    preview: Option<recording::LivePreview>,
     interruption: Option<String>,
     stopping: bool,
 }
@@ -376,7 +513,21 @@ pub struct Session {
     checkpoint_take: bool,
     edits: History,
     mixer: mixer::Mixer,
+    send_preview: Option<SendPreview>,
     other_changes: bool,
+    /// The arrangement view as last written to or read from the project file.
+    saved_view: clef_model::project::ArrangementView,
+    volatile: Volatile,
+    paths: Paths,
+}
+
+/// A transient send-level drag value applied to the engine but not to the project.
+#[derive(Clone, Copy)]
+struct SendPreview {
+    epoch: u64,
+    track: u64,
+    id: u64,
+    level: i16,
 }
 impl Session {
     pub fn new(executable: PathBuf) -> Self {
@@ -424,7 +575,11 @@ impl Session {
             checkpoint_take: false,
             edits: History::default(),
             mixer: mixer::Mixer::default(),
+            send_preview: None,
             other_changes: false,
+            saved_view: Default::default(),
+            volatile: Volatile::default(),
+            paths: Paths::default(),
         }
     }
 
@@ -548,6 +703,7 @@ impl Session {
         self.file_stamp = stamp;
         self.view.selected = project.tracks.first().map(|t| t.id);
         self.view.armed = None;
+        self.saved_view = project.arrangement_view;
         self.view.project = project;
         self.view.transport = TransportView::default();
         self.view.read_only = path.as_deref().is_some_and(recovery::read_only);
@@ -556,8 +712,48 @@ impl Session {
         self.view.dirty = false;
         self.edits.reset();
         self.other_changes = false;
+        self.send_preview = None;
         self.view.project_open = true;
         self.view.project_epoch = self.view.project_epoch.wrapping_add(1);
+    }
+
+    fn view_unsaved(&self) -> bool {
+        self.view.project_open
+            && !self.view.read_only
+            && self.view.path.is_some()
+            && self.view.project.arrangement_view != self.saved_view
+    }
+
+    /// When leaving a clean, saved project whose only change is the arrangement view, write
+    /// it without prompting. The file then differs only by that view. A failure loses only
+    /// the view and never blocks leaving the project (T37 L4).
+    fn save_view_before_leaving(&mut self) {
+        if self.view.dirty || self.view.recording || !self.view_unsaved() {
+            return;
+        }
+        let Some(path) = self.view.path.clone() else {
+            return;
+        };
+        let result = (|| -> Result<FileStamp> {
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)?;
+            file.try_lock()
+                .map_err(|e| format!("project busy in another session: {e}"))?;
+            if self.file_stamp.as_ref() != Some(&FileStamp::read(&path)?) {
+                return Err("project changed outside this session".into());
+            }
+            self.view.project.save(&path, true)?;
+            FileStamp::read(&path)
+        })();
+        match result {
+            Ok(stamp) => {
+                self.file_stamp = Some(stamp);
+                self.saved_view = self.view.project.arrangement_view;
+            }
+            Err(error) => eprintln!("Arrangement view not saved: {error}"),
+        }
     }
 
     fn mark_other_change(&mut self) {
@@ -583,7 +779,7 @@ impl Session {
             && self.runtimes.values().all(|runtime| !runtime.loading)
     }
 
-    fn capture_track_state(&mut self, id: u64) -> Result<Vec<u8>> {
+    fn capture_track_state(&mut self, id: u64) -> Result<Arc<[u8]>> {
         let Some(runtime) = self.runtimes.get_mut(&id) else {
             return Ok(self.track(id)?.state.clone());
         };
@@ -597,9 +793,9 @@ impl Session {
             engine.detach(broker, instrument)?;
             let state = instrument.save();
             runtime.broker = Some(engine.attach(id, instrument)?);
-            state
+            state.map(Into::into)
         } else {
-            instrument.save()
+            instrument.save().map(Into::into)
         }
     }
 
@@ -651,7 +847,7 @@ impl Session {
                     .find(|track| track.id == id)
                     .ok_or("History track is unavailable.")?;
                 let (edit, _) = self.edits.step(cursor, target).expect("history step");
-                if !edit.matches_state(captured.as_deref().unwrap_or(&previous.state), forward) {
+                if !edit.matches_state(captured.as_deref().unwrap_or(&*previous.state), forward) {
                     return Err("The instrument state changed since this history entry. Its current state was preserved.".into());
                 }
                 release.push(id);
@@ -662,20 +858,32 @@ impl Session {
         }
         candidate.validate()?;
         self.capture_removed_inserts(&candidate)?;
-        if let Some(engine) = self.engine.as_mut() {
-            if candidate.timeline != self.view.project.timeline {
-                engine
-                    .transport
-                    .settings(Prepared::new(&candidate.timeline, engine.rate)?)?;
+        let timing = match &self.engine {
+            Some(engine) if candidate.timeline != self.view.project.timeline => {
+                Some(Prepared::new(&candidate.timeline, engine.rate)?)
             }
-            if candidate.midi != self.view.project.midi
-                || candidate.timeline.changes != self.view.project.timeline.changes
-            {
-                engine.set_arrangement(&candidate.midi, &candidate.timeline)?;
-            }
-        }
+            _ => None,
+        };
+        // Prepare the insert chains first: the engine sees no part of the jump unless every
+        // affected chain is ready.
         self.reconcile_inserts(&candidate, false)?;
+        let retimed = timing.is_some();
+        if let Err(error) = self.publish_history_playback(&candidate, timing) {
+            // Only the arrangement can fail after new timing was queued; restore both halves.
+            let previous = self.view.project.clone();
+            if let Some(engine) = self.engine.as_mut()
+                && retimed
+                && let Ok(timing) = Prepared::new(&previous.timeline, engine.rate)
+            {
+                let _ = engine.transport.settings(timing);
+            }
+            if let Err(rollback) = self.reconcile_inserts(&previous, true) {
+                self.view.message = format!("Effect chains could not be restored: {rollback}");
+            }
+            return Err(error);
+        }
         self.sync_instrument_bypasses(&candidate);
+        self.send_preview = None;
         for id in release {
             self.release_track_worker(id);
         }
@@ -709,6 +917,24 @@ impl Session {
                 format!("Saved revision restored, but recovery could not be removed: {error}");
         }
         self.view.message = "Edit history position changed.".into();
+        Ok(())
+    }
+    fn publish_history_playback(
+        &mut self,
+        candidate: &Project,
+        timing: Option<Prepared>,
+    ) -> Result<()> {
+        let Some(engine) = self.engine.as_mut() else {
+            return Ok(());
+        };
+        if let Some(timing) = timing {
+            engine.transport.settings(timing)?;
+        }
+        if candidate.midi != self.view.project.midi
+            || candidate.timeline.changes != self.view.project.timeline.changes
+        {
+            engine.set_arrangement(&candidate.midi, &candidate.timeline)?;
+        }
         Ok(())
     }
     fn blocked(&self, plugin: &Plugin) -> bool {
@@ -861,14 +1087,15 @@ impl Session {
                 .iter_mut()
                 .find(|track| track.id == id)
                 .ok_or("editor track unavailable")?;
-            track.state.clone_from(&after);
+            let after: Arc<[u8]> = after.into();
+            track.state = after.clone();
             let plugin = track.plugin.clone();
-            if before != after {
+            if *before != *after {
                 self.record_edit(Edit::Instrument {
                     id,
                     before: InstrumentState {
                         plugin: plugin.clone(),
-                        state: before,
+                        state: before.into(),
                     },
                     after: InstrumentState {
                         plugin,
@@ -923,7 +1150,7 @@ impl Session {
             return Ok(());
         }
         let state = if replacement.is_some() {
-            Vec::new()
+            Arc::default()
         } else {
             self.track(id)?.state.clone()
         };
@@ -955,11 +1182,15 @@ impl Session {
                     &identity.path,
                     &identity.id,
                     rate,
-                    if state.is_empty() { None } else { Some(&state) },
+                    if state.is_empty() {
+                        None
+                    } else {
+                        Some(&*state)
+                    },
                     &cancelled,
                 )?;
                 let initial = if state.is_empty() {
-                    instrument.save()?
+                    instrument.save()?.into()
                 } else {
                     state
                 };
@@ -1010,7 +1241,7 @@ impl Session {
                 && let Some(instrument) = runtime.instrument.as_mut()
             {
                 instrument.stop()?;
-                track.state = instrument.save()?;
+                track.state = instrument.save()?.into();
                 if let Some(retained) = self
                     .view
                     .project
@@ -1148,6 +1379,7 @@ impl Session {
             }
             Action::Shutdown => {}
             Action::New => {
+                self.save_view_before_leaving();
                 self.retire_journal()?;
                 self.install_project(Project::default(), None, None);
                 self.view.message = "New project. Add an instrument track to begin.".into();
@@ -1174,6 +1406,7 @@ impl Session {
                         recent.status = recovery::probe(&path);
                     }
                 })?;
+                self.save_view_before_leaving();
                 self.retire_journal()?;
                 self.note_recent(&path);
                 self.install_project(project, Some(path), Some(stamp));
@@ -1184,6 +1417,7 @@ impl Session {
             Action::DiscardBeforeClose => {
                 self.retire_journal()?;
             }
+            Action::SaveViewBeforeClose => self.save_view_before_leaving(),
             Action::Recover(id) => {
                 let store = self
                     .history
@@ -1252,6 +1486,7 @@ impl Session {
                     return Err("project changed during capture; use Save As".into());
                 }
                 candidate.save(&path, replace)?;
+                self.saved_view = candidate.arrangement_view;
                 self.view.project = candidate;
                 self.file_stamp = Some(FileStamp::read(&path)?);
                 self.note_recent(&path);
@@ -1286,7 +1521,16 @@ impl Session {
                 self.select(None)?;
                 let track = Track {
                     id,
-                    name: format!("Instrument {}", self.view.project.tracks.len() + 1),
+                    name: format!(
+                        "Instrument {}",
+                        self.view
+                            .project
+                            .tracks
+                            .iter()
+                            .filter(|track| track.is_instrument())
+                            .count()
+                            + 1
+                    ),
                     plugin: None,
                     instrument_bypassed: false,
                     instrument_offline: false,
@@ -1294,7 +1538,10 @@ impl Session {
                     mix: Default::default(),
                     inserts: Vec::new(),
                     take_lanes: clef_model::project::TakeLanes::default(),
-                    state: Vec::new(),
+                    kind: clef_model::project::TrackKind::Instrument,
+                    output: None,
+                    sends: Vec::new(),
+                    state: Arc::default(),
                 };
                 let index = self.view.project.tracks.len();
                 self.view.project.tracks.push(track.clone());
@@ -1312,6 +1559,14 @@ impl Session {
                     engine.clock.select(id);
                 }
             }
+            Action::AddBus { assign } => self.add_bus(assign, None)?,
+            Action::AddBusSend { track } => self.add_bus(None, Some(track))?,
+            Action::SetOutput {
+                epoch,
+                track,
+                output,
+            } => self.set_output(epoch, track, output)?,
+            Action::Send { epoch, track, edit } => self.edit_send(epoch, track, edit)?,
             Action::SelectTrack(id, rename) => {
                 self.track(id)?;
                 if let Some((old, name)) = rename {
@@ -1330,6 +1585,15 @@ impl Session {
                     .iter()
                     .position(|t| t.id == id)
                     .ok_or("track no longer exists")?;
+                if self.view.project.tracks[index].is_bus() {
+                    let sources = self.view.project.has_sources(id);
+                    if sources > 0 {
+                        return Err(format!(
+                            "Bus still has {sources} sources. Reassign them before removing it."
+                        )
+                        .into());
+                    }
+                }
                 if self.runtimes.get(&id).is_some_and(|runtime| runtime.editor) {
                     self.set_track_editor(id, false)?;
                 }
@@ -1418,10 +1682,8 @@ impl Session {
                 if !self.view.project_open {
                     return Err("Open a project before changing its arrangement view.".into());
                 }
-                if self.view.project.arrangement_view != view {
-                    self.view.project.arrangement_view = view;
-                    self.mark_other_change();
-                }
+                // View-only: saved with the next save or autosave, but never a reason for one.
+                self.view.project.arrangement_view = view;
             }
             Action::TrackView { track, lanes } => {
                 lanes.validate()?;
@@ -1527,6 +1789,8 @@ impl Session {
                     self.view.transport.tick,
                 )?;
                 self.engine = Some(engine);
+                self.volatile = Volatile::default();
+                self.view.actual.clear();
                 self.sync_instrument_bypasses(&self.view.project);
                 if let Err(error) = self.reconcile_inserts(&self.view.project.clone(), true) {
                     let _ = self.stop();
@@ -1624,15 +1888,7 @@ impl Session {
             }
         };
         let tracks = track_ids()
-            .filter_map(|id| {
-                let before = previous.clips(id);
-                let after = candidate.clips(id);
-                (before != after).then(|| ClipChange {
-                    id,
-                    before: before.to_vec(),
-                    after: after.to_vec(),
-                })
-            })
+            .filter_map(|id| ClipChange::new(id, previous.clips(id), candidate.clips(id)))
             .collect();
         if let Some(engine) = &self.engine {
             engine.set_arrangement(&candidate, &self.view.project.timeline)?;
@@ -1680,15 +1936,7 @@ impl Session {
             }
         };
         let tracks = track_ids()
-            .filter_map(|id| {
-                let before = previous.clips(id);
-                let after = candidate.clips(id);
-                (before != after).then(|| ClipChange {
-                    id,
-                    before: before.to_vec(),
-                    after: after.to_vec(),
-                })
-            })
+            .filter_map(|id| ClipChange::new(id, previous.clips(id), candidate.clips(id)))
             .collect();
         if let Some(engine) = &self.engine {
             engine.set_arrangement(&candidate, &self.view.project.timeline)?;
@@ -1769,7 +2017,10 @@ impl Session {
             mix: Default::default(),
             inserts: Vec::new(),
             take_lanes: TakeLanes::default(),
-            state: Vec::new(),
+            kind: clef_model::project::TrackKind::Instrument,
+            output: None,
+            sends: Vec::new(),
+            state: Arc::default(),
         };
         candidate.tracks.insert(owner + 1, new_track.clone());
         candidate.next_id = next;
@@ -1923,6 +2174,7 @@ impl Session {
             input: Vec::with_capacity(recording::MAX_CAPTURE_MESSAGES),
             window: None,
             preview_key: None,
+            preview: None,
             interruption: None,
             stopping: false,
         });
@@ -1976,13 +2228,15 @@ impl Session {
             )?;
             if recovered {
                 engine.set_arrangement(&candidate, &self.view.project.timeline)?;
-                let edit = Edit::Midi {
-                    id: capture.target,
-                    before: self.view.project.midi.clips(capture.target).to_vec(),
-                    after: candidate.clips(capture.target).to_vec(),
-                };
+                let edit = ClipChange::new(
+                    capture.target,
+                    self.view.project.midi.clips(capture.target),
+                    candidate.clips(capture.target),
+                );
                 self.view.project.midi = Arc::new(candidate);
-                retained_in_history = self.record_edit(edit);
+                if let Some(edit) = edit {
+                    retained_in_history = self.record_edit(Edit::Midi(edit));
+                }
                 self.checkpoint_take = true;
             }
         }
@@ -2020,6 +2274,7 @@ impl Session {
         {
             capture.input.sort_by_key(|event| event.at);
             capture.preview_key = None;
+            capture.preview = None;
         }
         let timeline = &self.view.project.timeline;
         if capture.window.is_none() {
@@ -2045,11 +2300,13 @@ impl Session {
             let due = capture.input.partition_point(|event| event.at <= now);
             if capture.preview_key != Some((pass, due)) {
                 capture.preview_key = Some((pass, due));
-                self.view.recording_notes = Some(Arc::new(recording::note_preview(
+                let preview = match &mut capture.preview {
+                    Some(preview) if preview.projection() == window => preview,
+                    slot => slot.insert(recording::LivePreview::new(window, capture.baseline)),
+                };
+                self.view.recording_notes = Some(Arc::new(preview.update(
                     &capture.map,
-                    window,
                     pass,
-                    capture.baseline,
                     &capture.input[..due],
                 )));
             }
@@ -2220,6 +2477,302 @@ impl Session {
             }
         }
     }
+    fn add_bus(&mut self, assign: Option<u64>, send: Option<u64>) -> Result<()> {
+        if !self.view.project_open {
+            return Err("Open a project before adding a bus.".into());
+        }
+        if self.view.project.tracks.len() >= crate::project::MAX_TRACKS {
+            return Err("project track safety limit reached".into());
+        }
+        let id = self.view.project.next_id;
+        let send_id = id.checked_add(1).ok_or("track ID exhausted")?;
+        let next = if send.is_some() {
+            send_id.checked_add(1).ok_or("track ID exhausted")?
+        } else {
+            send_id
+        };
+        let count = self
+            .view
+            .project
+            .tracks
+            .iter()
+            .filter(|track| track.is_bus())
+            .count()
+            + 1;
+        let bus = Track {
+            id,
+            name: format!("Bus {count}"),
+            plugin: None,
+            instrument_bypassed: false,
+            instrument_offline: false,
+            record_mode: TrackMode::Global,
+            mix: Default::default(),
+            inserts: Vec::new(),
+            take_lanes: TakeLanes::default(),
+            kind: TrackKind::Bus,
+            output: None,
+            sends: Vec::new(),
+            state: Arc::default(),
+        };
+        let mut candidate = self.view.project.clone();
+        let index = candidate.tracks.len();
+        candidate.tracks.push(bus.clone());
+        let source = if let Some(source_id) = assign {
+            let source_index = candidate
+                .tracks
+                .iter()
+                .position(|track| track.id == source_id && track.is_instrument())
+                .ok_or("Track is unavailable.")?;
+            let before = candidate.tracks[source_index].output;
+            candidate.tracks[source_index].output = Some(id);
+            Some(SourceRoute {
+                track: source_id,
+                before,
+                after: Some(id),
+            })
+        } else {
+            None
+        };
+        let send_change = if let Some(source_id) = send {
+            let source_index = candidate
+                .tracks
+                .iter()
+                .position(|track| track.id == source_id && track.is_instrument())
+                .ok_or("Track is unavailable.")?;
+            let before = candidate.tracks[source_index].sends.clone();
+            candidate.tracks[source_index].sends.push(TrackSend {
+                id: send_id,
+                target: id,
+                level: clef_model::mixer::Control::Fader.bounds().0,
+                pre: false,
+                enabled: true,
+            });
+            let after = candidate.tracks[source_index].sends.clone();
+            Some(SourceSend {
+                track: source_id,
+                before,
+                after,
+            })
+        } else {
+            None
+        };
+        candidate.next_id = next;
+        candidate.validate()?;
+        self.view.project = candidate;
+        if source.is_some() || send_change.is_some() {
+            self.record_edit(Edit::Bus {
+                slot: Box::new(TrackSlot {
+                    track: bus,
+                    index,
+                    clips: Vec::new(),
+                }),
+                source,
+                send: send_change,
+            });
+        } else {
+            self.record_edit(Edit::Track {
+                slot: Box::new(TrackSlot {
+                    track: bus,
+                    index,
+                    clips: Vec::new(),
+                }),
+                added: true,
+            });
+        }
+        self.select(Some(send.unwrap_or(id)))?;
+        self.publish_mix();
+        Ok(())
+    }
+
+    fn set_output(&mut self, epoch: u64, track: u64, output: Option<u64>) -> Result<()> {
+        if epoch != self.view.project_epoch || !self.view.project_open {
+            return Err("The mixer channel is no longer available.".into());
+        }
+        let index = self
+            .view
+            .project
+            .tracks
+            .iter()
+            .position(|candidate| candidate.id == track && candidate.is_instrument())
+            .ok_or("Mixer channel is unavailable.")?;
+        if let Some(bus) = output
+            && self.view.project.bus(bus).is_none()
+        {
+            return Err("Output bus is unavailable.".into());
+        }
+        let before = self.view.project.tracks[index].output;
+        if before == output {
+            return Ok(());
+        }
+        let mut candidate = self.view.project.clone();
+        candidate.tracks[index].output = output;
+        candidate.validate()?;
+        self.view.project = candidate;
+        self.record_edit(Edit::Output {
+            track,
+            before,
+            after: output,
+        });
+        self.publish_mix();
+        Ok(())
+    }
+
+    fn edit_send(&mut self, epoch: u64, track: u64, edit: SendEdit) -> Result<()> {
+        // Any send edit ends an earlier preview; a new preview replaces it.
+        let cleared = self.send_preview.take().is_some();
+        let result = self.apply_send_edit(epoch, track, edit);
+        if cleared && result.is_err() {
+            self.publish_mix();
+        }
+        result
+    }
+
+    fn apply_send_edit(&mut self, epoch: u64, track: u64, edit: SendEdit) -> Result<()> {
+        if epoch != self.view.project_epoch || !self.view.project_open {
+            return Err("The mixer channel is no longer available.".into());
+        }
+        let index = self
+            .view
+            .project
+            .tracks
+            .iter()
+            .position(|candidate| candidate.id == track && candidate.is_instrument())
+            .ok_or("Mixer channel is unavailable.")?;
+        if let SendEdit::PreviewLevel { id, level } = edit {
+            if !self.view.project.tracks[index]
+                .sends
+                .iter()
+                .any(|send| send.id == id)
+            {
+                return Err("Send is no longer available.".into());
+            }
+            if !clef_model::mixer::Control::Fader.accepts(level) {
+                return Err("Send level is outside its supported range.".into());
+            }
+            self.send_preview = Some(SendPreview {
+                epoch,
+                track,
+                id,
+                level,
+            });
+            self.publish_mix();
+            return Ok(());
+        }
+        if edit == SendEdit::CancelPreview {
+            self.publish_mix();
+            return Ok(());
+        }
+        if let SendEdit::CommitLevel { id, level } = edit {
+            if !clef_model::mixer::Control::Fader.accepts(level) {
+                return Err("Send level is outside its supported range.".into());
+            }
+            let before = self.view.project.tracks[index].sends.clone();
+            let mut candidate = self.view.project.clone();
+            candidate.tracks[index]
+                .sends
+                .iter_mut()
+                .find(|send| send.id == id)
+                .ok_or("Send is no longer available.")?
+                .level = level;
+            if candidate.tracks[index].sends == before {
+                return Ok(());
+            }
+            candidate.validate()?;
+            self.view.project = candidate;
+            self.record_edit(Edit::Sends {
+                track,
+                before,
+                after: self.view.project.tracks[index].sends.clone(),
+            });
+            self.publish_mix();
+            return Ok(());
+        }
+        let mut candidate = self.view.project.clone();
+        let before = candidate.tracks[index].sends.clone();
+        match edit {
+            SendEdit::Add { target } => {
+                if candidate.bus(target).is_none() {
+                    return Err("Send destination bus is unavailable.".into());
+                }
+                if candidate.tracks[index]
+                    .sends
+                    .iter()
+                    .any(|send| send.target == target)
+                {
+                    return Err("This track already sends to that bus.".into());
+                }
+                let id = candidate.next_id;
+                candidate.next_id = id.checked_add(1).ok_or("send ID exhausted")?;
+                candidate.tracks[index].sends.push(TrackSend {
+                    id,
+                    target,
+                    level: clef_model::mixer::Control::Fader.bounds().0,
+                    pre: false,
+                    enabled: true,
+                });
+            }
+            SendEdit::Remove { id } => {
+                let position = candidate.tracks[index]
+                    .sends
+                    .iter()
+                    .position(|send| send.id == id)
+                    .ok_or("Send is no longer available.")?;
+                candidate.tracks[index].sends.remove(position);
+            }
+            SendEdit::SetTarget { id, target } => {
+                if candidate.bus(target).is_none() {
+                    return Err("Send destination bus is unavailable.".into());
+                }
+                if candidate.tracks[index]
+                    .sends
+                    .iter()
+                    .any(|send| send.id != id && send.target == target)
+                {
+                    return Err("This track already sends to that bus.".into());
+                }
+                candidate.tracks[index]
+                    .sends
+                    .iter_mut()
+                    .find(|send| send.id == id)
+                    .ok_or("Send is no longer available.")?
+                    .target = target;
+            }
+            SendEdit::SetPre { id, pre } => {
+                candidate.tracks[index]
+                    .sends
+                    .iter_mut()
+                    .find(|send| send.id == id)
+                    .ok_or("Send is no longer available.")?
+                    .pre = pre;
+            }
+            SendEdit::SetEnabled { id, enabled } => {
+                candidate.tracks[index]
+                    .sends
+                    .iter_mut()
+                    .find(|send| send.id == id)
+                    .ok_or("Send is no longer available.")?
+                    .enabled = enabled;
+            }
+            SendEdit::PreviewLevel { .. }
+            | SendEdit::CancelPreview
+            | SendEdit::CommitLevel { .. } => {
+                return Ok(());
+            }
+        }
+        if candidate.tracks[index].sends == before {
+            return Ok(());
+        }
+        candidate.validate()?;
+        self.view.project = candidate;
+        self.record_edit(Edit::Sends {
+            track,
+            before,
+            after: self.view.project.tracks[index].sends.clone(),
+        });
+        self.publish_mix();
+        Ok(())
+    }
+
     fn rename(&mut self, id: u64, name: String) -> Result<()> {
         let mut candidate = self.view.project.clone();
         let track = candidate
@@ -2432,22 +2985,42 @@ impl Session {
         }
     }
     fn refresh(&mut self) {
+        let mut volatile = std::mem::take(&mut self.volatile);
+        let due = volatile.due(Instant::now());
         self.refresh_insert_views();
         self.refresh_transport();
         self.view.edit_history = self.edits.view(self.history_available());
+        self.view.view_unsaved = self.view_unsaved();
         self.view.record_unavailable = self.record_unavailable();
+        let missing: HashMap<u64, bool> = self
+            .view
+            .project
+            .tracks
+            .iter()
+            .filter_map(|track| {
+                let plugin = track.plugin.as_ref()?;
+                Some((track.id, !self.paths.exists(&plugin.path)))
+            })
+            .collect();
+        volatile.tracks.retain(|id, _| {
+            self.runtimes
+                .get(id)
+                .is_some_and(|runtime| runtime.broker.is_some())
+        });
         self.view.tracks = self.view.project.tracks.iter().map(|track| {
             let runtime = self.runtimes.get(&track.id);
+            let missing = missing.get(&track.id).copied().unwrap_or(false);
             let status = if track.instrument_offline { "Offline" }
                 else if track.plugin.is_none() { "Empty" }
                 else if track.plugin.as_ref().is_some_and(|p| self.blocked(p)) { "Quarantined" }
-                else if track.plugin.as_ref().is_some_and(|p| !p.path.exists()) { "Missing" }
+                else if missing { "Missing" }
                 else if runtime.is_some_and(|r| r.loading) { "Loading" }
                 else if self.engine.is_some() && runtime.is_some_and(|r| r.instrument.is_some() && r.broker.is_none()) { "Unavailable" }
                 else if runtime.is_some_and(|r| r.instrument.is_some()) { "Ready" }
                 else if runtime.is_some_and(|r| !r.error.is_empty()) { "Unavailable" } else { "Not loaded" };
             let diagnostics = runtime.map(|r| {
                 if let Some(broker) = &r.broker {
+                    volatile.track(due, track.id, || {
                     let s = &broker.stats;
                     let error = s
                         .error
@@ -2457,9 +3030,10 @@ impl Session {
                         .unwrap_or_default();
                     format!("latency {} samples · processed {} blocks · missed {} blocks · transition {} frames · stale {} blocks · MIDI {} / dropped {} · playback overflows {} · max RPC {} us · max worker {} us{}",
                         s.latency.load(Ordering::Relaxed),s.processed.load(Ordering::Relaxed),s.misses.load(Ordering::Relaxed),s.transition_frames.load(Ordering::Relaxed),s.stale.load(Ordering::Relaxed),s.midi_received.load(Ordering::Relaxed),s.midi_dropped.load(Ordering::Relaxed),s.playback_dropped.load(Ordering::Relaxed),s.max_rpc_us.load(Ordering::Relaxed),s.max_worker_us.load(Ordering::Relaxed), if error.is_empty() { String::new() } else { format!(" · {error}") })
+                    })
                 } else { r.error.clone() }
             }).unwrap_or_default();
-            TrackView { id: track.id, status: status.into(), diagnostics, loading: runtime.is_some_and(|r| r.loading), lost: runtime.is_some_and(|r| r.lost), loss_version: runtime.map_or(0,|r|r.request) }
+            TrackView { id: track.id, status: status.into(), missing, diagnostics, loading: runtime.is_some_and(|r| r.loading), lost: runtime.is_some_and(|r| r.lost), loss_version: runtime.map_or(0,|r|r.request) }
         }).collect();
         let selected = self.view.selected.and_then(|id| self.runtimes.get(&id));
         self.view.loaded = selected.is_some_and(|r| r.instrument.is_some());
@@ -2470,9 +3044,12 @@ impl Session {
             })
         });
         self.view.quarantine_error = self.registry_error.clone();
-        if let Some(engine) = &self.engine {
+        if let Some(engine) = &self.engine
+            && (due || self.view.actual.is_empty())
+        {
             self.view.actual = engine.summary();
         }
+        self.volatile = volatile;
     }
     fn poll(&mut self) {
         self.poll_inserts();
@@ -2539,7 +3116,25 @@ impl Session {
         for (plugin, reason) in faults {
             self.quarantine(plugin, reason);
         }
-        if self.engine.is_some() && self.last_devices.elapsed() > Duration::from_secs(2) {
+        self.paths.rescan(
+            Instant::now(),
+            self.view
+                .project
+                .tracks
+                .iter()
+                .filter_map(|track| track.plugin.as_ref())
+                .chain(
+                    self.view
+                        .project
+                        .tracks
+                        .iter()
+                        .flat_map(|track| &track.inserts)
+                        .chain(&self.view.project.master_inserts)
+                        .map(|insert| &insert.plugin),
+                )
+                .map(|plugin| plugin.path.as_path()),
+        );
+        if self.engine.is_some() && self.last_devices.elapsed() > RESCAN_INTERVAL {
             self.last_devices = Instant::now();
             if let Err(e) = Devices::enumerate().and_then(|d| d.validate(&self.view.project.audio))
             {
@@ -2607,7 +3202,14 @@ impl Backend {
                 match actions.recv_timeout(Duration::from_millis(30)) {
                     Ok(Action::Shutdown) => break,
                     Ok(action) => {
-                        let acknowledge = !matches!(action, Action::PreviewMix(_));
+                        let acknowledge = !matches!(
+                            action,
+                            Action::PreviewMix(_)
+                                | Action::Send {
+                                    edit: SendEdit::PreviewLevel { .. } | SendEdit::CancelPreview,
+                                    ..
+                                }
+                        );
                         let result = session.apply(action);
                         if let Err(ref error) = result {
                             session.view.message = error.to_string();
@@ -2936,7 +3538,7 @@ mod tests {
         let identity = plugin(directory.0.join("Missing.vst3"), "missing");
         let track = &mut session.view.project.tracks[0];
         track.plugin = Some(identity.clone());
-        track.state = vec![42];
+        track.state = vec![42].into();
         let midi = Arc::make_mut(&mut session.view.project.midi);
         midi.record(
             1,
@@ -2971,7 +3573,7 @@ mod tests {
         let before = InstrumentState::from(&session.view.project.tracks[0]);
         session.view.project.tracks[0].plugin =
             Some(plugin(directory.0.join("Missing.vst3"), "missing"));
-        session.view.project.tracks[0].state = vec![1];
+        session.view.project.tracks[0].state = vec![1].into();
         let after = InstrumentState::from(&session.view.project.tracks[0]);
         session.record_edit(Edit::Instrument {
             id: 1,
@@ -2983,12 +3585,12 @@ mod tests {
         seek(&mut session, 0).unwrap();
         assert!(session.view.project.tracks.is_empty());
         seek(&mut session, 3).unwrap();
-        assert_eq!(session.view.project.tracks[0].state, [1]);
-        session.view.project.tracks[0].state = vec![2];
+        assert_eq!(session.view.project.tracks[0].state[..], [1]);
+        session.view.project.tracks[0].state = vec![2].into();
         assert!(seek(&mut session, 0).is_err());
         assert_eq!(session.view.edit_history.cursor, 3);
         assert_eq!(session.view.project.tracks[0].name, "Piano");
-        assert_eq!(session.view.project.tracks[0].state, [2]);
+        assert_eq!(session.view.project.tracks[0].state[..], [2]);
     }
 
     #[test]
@@ -3046,9 +3648,9 @@ mod tests {
         );
         seek(&mut session, 3).unwrap();
         assert_eq!(session.track(1).unwrap().plugin.as_ref(), Some(&first));
-        assert_eq!(session.track(1).unwrap().state, [73]);
+        assert_eq!(session.track(1).unwrap().state[..], [73]);
         seek(&mut session, 2).unwrap();
-        assert_ne!(session.track(1).unwrap().state, [73]);
+        assert_ne!(session.track(1).unwrap().state[..], [73]);
         seek(&mut session, 4).unwrap();
         assert_eq!(session.track(1).unwrap().plugin.as_ref(), Some(&second));
 
@@ -3083,7 +3685,7 @@ mod tests {
             format: "CLAP".into(),
             path: "/Fixture.clap".into(),
         });
-        track.state = vec![7, 9];
+        track.state = vec![7, 9].into();
         let project = session.view.project.clone();
         session.view.recording = true;
         session.view.editor = true;
@@ -3174,6 +3776,190 @@ mod tests {
             .recv_timeout(Duration::from_secs(3))
             .unwrap();
         assert_eq!(completed, Some(true));
+    }
+
+    #[test]
+    fn volatile_diagnostics_refresh_at_most_once_per_second() {
+        let processed = std::sync::atomic::AtomicU64::new(0);
+        let read = || {
+            format!(
+                "processed {} blocks",
+                processed.fetch_add(1, Ordering::Relaxed)
+            )
+        };
+        let mut volatile = Volatile::default();
+        let start = Instant::now();
+        let first = volatile.due(start);
+        assert!(first);
+        assert_eq!(volatile.track(first, 1, read), "processed 0 blocks");
+        // The engine counter keeps moving, but polls inside one second publish the same text.
+        for poll in 1..33 {
+            let due = volatile.due(start + Duration::from_millis(30 * poll));
+            assert!(!due);
+            assert_eq!(volatile.track(due, 1, read), "processed 0 blocks");
+        }
+        // A newly attached track is shown immediately.
+        assert_eq!(volatile.track(false, 2, read), "processed 1 blocks");
+        let due = volatile.due(start + VOLATILE_INTERVAL);
+        assert!(due);
+        assert_eq!(volatile.track(due, 1, read), "processed 2 blocks");
+    }
+
+    #[test]
+    fn idle_polls_inside_one_second_publish_no_new_view() {
+        let (_directory, mut session) = isolated();
+        session.apply(Action::New).unwrap();
+        session.apply(Action::AddTrack(None)).unwrap();
+        session.poll();
+        let view = session.view.for_ui();
+        for _ in 0..3 {
+            session.poll();
+            session.poll_autosave(Instant::now());
+            assert!(session.view.for_ui() == view);
+        }
+    }
+
+    #[test]
+    fn plugin_paths_are_cached_and_rechecked_on_the_rescan_cadence() {
+        let (directory, mut session) = isolated();
+        session.apply(Action::New).unwrap();
+        session.apply(Action::AddTrack(None)).unwrap();
+        let bundle = directory.0.join("Late.vst3");
+        session.view.project.tracks[0].plugin = Some(plugin(bundle.clone(), "late"));
+        session.poll();
+        assert!(session.view.state(1).unwrap().missing);
+        assert_eq!(session.view.state(1).unwrap().status, "Missing");
+        std::fs::create_dir(&bundle).unwrap();
+        session.poll();
+        assert!(
+            session.view.state(1).unwrap().missing,
+            "refresh must not touch the filesystem"
+        );
+        session.paths.checked = Some(Instant::now() - RESCAN_INTERVAL);
+        session.poll();
+        assert!(!session.view.state(1).unwrap().missing);
+        assert_ne!(session.view.state(1).unwrap().status, "Missing");
+    }
+
+    #[test]
+    fn send_level_previews_are_transient_and_the_commit_is_one_edit() {
+        let (_directory, mut session) = isolated();
+        session.apply(Action::New).unwrap();
+        session.apply(Action::AddTrack(None)).unwrap();
+        session.apply(Action::AddBusSend { track: 1 }).unwrap();
+        let epoch = session.view.project_epoch;
+        let send = session.view.project.tracks[0].sends[0].clone();
+        let cursor = session.view.edit_history.cursor;
+        session.view.dirty = false;
+        let preview = |level| Action::Send {
+            epoch,
+            track: 1,
+            edit: SendEdit::PreviewLevel { id: send.id, level },
+        };
+        session.apply(preview(-100)).unwrap();
+        session.apply(preview(-90)).unwrap();
+        assert_eq!(session.view.project.tracks[0].sends[0], send);
+        assert!(!session.view.dirty);
+        assert_eq!(session.view.edit_history.cursor, cursor);
+        assert_eq!(session.send_preview.map(|preview| preview.level), Some(-90));
+        session
+            .apply(Action::Send {
+                epoch,
+                track: 1,
+                edit: SendEdit::CommitLevel {
+                    id: send.id,
+                    level: -90,
+                },
+            })
+            .unwrap();
+        assert!(session.send_preview.is_none());
+        assert_eq!(session.view.project.tracks[0].sends[0].level, -90);
+        assert_eq!(session.view.edit_history.cursor, cursor + 1);
+        seek(&mut session, cursor).unwrap();
+        assert_eq!(session.view.project.tracks[0].sends[0].level, send.level);
+
+        session.apply(preview(-80)).unwrap();
+        session
+            .apply(Action::Send {
+                epoch,
+                track: 1,
+                edit: SendEdit::CancelPreview,
+            })
+            .unwrap();
+        assert!(session.send_preview.is_none());
+        assert_eq!(session.view.project.tracks[0].sends[0].level, send.level);
+        session.apply(preview(-70)).unwrap();
+        session.apply(Action::New).unwrap();
+        assert!(session.send_preview.is_none());
+        assert!(SendEdit::CancelPreview.is_preview());
+        assert!(!SendEdit::CommitLevel { id: 1, level: 0 }.is_preview());
+    }
+
+    #[test]
+    fn arrangement_scroll_and_zoom_never_start_an_autosave() {
+        let (_directory, mut session) = isolated();
+        session.apply(Action::New).unwrap();
+        let view = ArrangementView {
+            snap: clef_model::midi::Snap::Sixteenth,
+            offset: 960,
+            zoom_milli: 48_000,
+        };
+        session.apply(Action::ArrangementView(view)).unwrap();
+        assert_eq!(session.view.project.arrangement_view, view);
+        assert!(!session.view.dirty);
+        session.poll_autosave(session.last_checkpoint + AUTOSAVE_INTERVAL);
+        assert!(session.checkpoint.is_none() && session.journal.is_none());
+        // The view is saved with the next real autosave.
+        session.apply(Action::AddTrack(None)).unwrap();
+        session.poll_autosave(session.last_checkpoint + AUTOSAVE_INTERVAL);
+        session.finish_checkpoint();
+        let recovered = session.journal.as_ref().unwrap().recover().unwrap();
+        assert_eq!(recovered.arrangement_view, view);
+    }
+
+    #[test]
+    fn a_view_only_change_is_saved_silently_when_leaving_a_clean_saved_project() {
+        let (directory, mut session) = isolated();
+        let view = ArrangementView {
+            snap: clef_model::midi::Snap::Sixteenth,
+            offset: 960,
+            zoom_milli: 48_000,
+        };
+        // Untitled: nothing is written.
+        session.apply(Action::New).unwrap();
+        session.apply(Action::ArrangementView(view)).unwrap();
+        session.refresh();
+        assert!(!session.view.view_unsaved);
+        session.apply(Action::SaveViewBeforeClose).unwrap();
+
+        let path = directory.0.join("View.clef");
+        save(&mut session, path.clone(), false, false).unwrap();
+        let initial = view;
+        let scrolled = ArrangementView {
+            offset: 1920,
+            ..view
+        };
+        session.apply(Action::ArrangementView(scrolled)).unwrap();
+        session.refresh();
+        assert!(session.view.view_unsaved && !session.view.dirty);
+        session.apply(Action::SaveViewBeforeClose).unwrap();
+        assert_eq!(Project::read(&path).unwrap().arrangement_view, scrolled);
+        session.refresh();
+        assert!(!session.view.view_unsaved);
+
+        // New also writes the view first; the saved file is then reopened with it.
+        session.apply(Action::ArrangementView(initial)).unwrap();
+        session.apply(Action::New).unwrap();
+        assert_eq!(Project::read(&path).unwrap().arrangement_view, initial);
+        session.apply(Action::Open(path.clone())).unwrap();
+        assert_eq!(session.view.project.arrangement_view, initial);
+
+        // A dirty project keeps the prompt path: leaving without saving writes nothing.
+        session.apply(Action::ArrangementView(scrolled)).unwrap();
+        session.apply(Action::AddTrack(None)).unwrap();
+        assert!(session.view.dirty);
+        session.apply(Action::New).unwrap();
+        assert_eq!(Project::read(&path).unwrap().arrangement_view, initial);
     }
 
     fn test_executable() -> PathBuf {
@@ -3330,6 +4116,176 @@ mod tests {
         assert_eq!(session.view.project, before);
     }
     #[test]
+    fn buses_outputs_sends_and_bus_removal_refusal_round_trip_without_workers() {
+        let (directory, mut session) = isolated();
+        session.apply(Action::New).unwrap();
+        session.apply(Action::AddTrack(None)).unwrap();
+        session.apply(Action::AddTrack(None)).unwrap();
+        session.apply(Action::AddBus { assign: Some(1) }).unwrap();
+        assert_eq!(session.view.project.tracks[2].kind, TrackKind::Bus);
+        assert_eq!(session.view.project.tracks[0].output, Some(3));
+        let history = session.view.edit_history.clone();
+        session
+            .apply(Action::SeekHistory {
+                version: history.version,
+                target: history.cursor - 1,
+            })
+            .unwrap();
+        assert_eq!(session.view.project.tracks.len(), 2);
+        assert_eq!(session.view.project.tracks[0].output, None);
+        let history = session.view.edit_history.clone();
+        session
+            .apply(Action::SeekHistory {
+                version: history.version,
+                target: history.cursor + 1,
+            })
+            .unwrap();
+        assert_eq!(session.view.project.tracks[2].kind, TrackKind::Bus);
+        assert_eq!(session.view.project.tracks[0].output, Some(3));
+        let epoch = session.view.project_epoch;
+        session
+            .apply(Action::SetOutput {
+                epoch,
+                track: 2,
+                output: Some(3),
+            })
+            .unwrap();
+        session
+            .apply(Action::Send {
+                epoch,
+                track: 2,
+                edit: SendEdit::Add { target: 3 },
+            })
+            .unwrap();
+        let send = session.view.project.tracks[1].sends[0].id;
+        assert!(session.view.project.tracks[1].sends[0].enabled);
+        let silence = session.view.project.tracks[1].sends[0].level;
+        session
+            .apply(Action::Send {
+                epoch,
+                track: 2,
+                edit: SendEdit::PreviewLevel {
+                    id: send,
+                    level: -120,
+                },
+            })
+            .unwrap();
+        session
+            .apply(Action::Send {
+                epoch,
+                track: 2,
+                edit: SendEdit::CommitLevel {
+                    id: send,
+                    level: -120,
+                },
+            })
+            .unwrap();
+        assert_eq!(session.view.project.tracks[1].sends[0].level, -120);
+        let history = session.view.edit_history.clone();
+        session
+            .apply(Action::SeekHistory {
+                version: history.version,
+                target: history.cursor - 1,
+            })
+            .unwrap();
+        assert_eq!(session.view.project.tracks[1].sends[0].level, silence);
+        let history = session.view.edit_history.clone();
+        session
+            .apply(Action::SeekHistory {
+                version: history.version,
+                target: history.cursor + 1,
+            })
+            .unwrap();
+        assert_eq!(session.view.project.tracks[1].sends[0].level, -120);
+        assert_eq!(
+            session
+                .apply(Action::Send {
+                    epoch,
+                    track: 2,
+                    edit: SendEdit::Add { target: 3 },
+                })
+                .unwrap_err()
+                .to_string(),
+            "This track already sends to that bus."
+        );
+        let path = directory.0.join("Routing.clef");
+        save(&mut session, path.clone(), false, false).unwrap();
+        let expected = session.view.project.clone();
+        let reopened =
+            Session::with_registry(directory.0.join("quarantine.json"), test_executable());
+        let mut reopened = reopened;
+        reopened.apply(Action::Open(path)).unwrap();
+        assert_eq!(reopened.view.project, expected);
+        assert!(reopened.view.project.tracks[2].is_bus());
+
+        assert!(session.apply(Action::RemoveTrack(3)).is_err());
+        assert_eq!(
+            session
+                .apply(Action::RemoveTrack(3))
+                .unwrap_err()
+                .to_string(),
+            "Bus still has 2 sources. Reassign them before removing it."
+        );
+        session
+            .apply(Action::Send {
+                epoch,
+                track: 2,
+                edit: SendEdit::Remove { id: send },
+            })
+            .unwrap();
+        session
+            .apply(Action::SetOutput {
+                epoch,
+                track: 1,
+                output: None,
+            })
+            .unwrap();
+        session
+            .apply(Action::SetOutput {
+                epoch,
+                track: 2,
+                output: None,
+            })
+            .unwrap();
+        session.apply(Action::RemoveTrack(3)).unwrap();
+        assert_eq!(session.view.project.tracks.len(), 2);
+    }
+
+    #[test]
+    fn add_send_to_new_bus_is_one_undo_step() {
+        let (_directory, mut session) = isolated();
+        session.apply(Action::New).unwrap();
+        session.apply(Action::AddTrack(None)).unwrap();
+        let source = session.view.project.tracks[0].id;
+        session.apply(Action::AddBusSend { track: source }).unwrap();
+        let bus = session.view.project.tracks.last().unwrap().id;
+        assert!(session.view.project.tracks.last().unwrap().is_bus());
+        let send = session.view.project.tracks[0].sends[0].clone();
+        assert_eq!(send.target, bus);
+        assert_eq!(send.id, bus + 1);
+        assert_eq!(session.view.selected, Some(source));
+        let history = session.view.edit_history.clone();
+        assert_eq!(history.labels.last(), Some(&"New Bus Send"));
+        session
+            .apply(Action::SeekHistory {
+                version: history.version,
+                target: history.cursor - 1,
+            })
+            .unwrap();
+        assert_eq!(session.view.project.tracks.len(), 1);
+        assert!(session.view.project.tracks[0].sends.is_empty());
+        let history = session.view.edit_history.clone();
+        session
+            .apply(Action::SeekHistory {
+                version: history.version,
+                target: history.cursor + 1,
+            })
+            .unwrap();
+        assert!(session.view.project.tracks.last().unwrap().is_bus());
+        assert_eq!(session.view.project.tracks[0].sends, vec![send]);
+    }
+
+    #[test]
     fn save_keeps_unloaded_missing_and_quarantined_state_and_requires_loss_consent() {
         let (directory, mut session) = isolated();
         for _ in 0..3 {
@@ -3340,7 +4296,7 @@ mod tests {
                 directory.0.join(format!("{}.vst3", track.id)),
                 "same",
             ));
-            track.state = vec![track.id as u8, 0, 255];
+            track.state = vec![track.id as u8, 0, 255].into();
         }
         let identity = session.view.project.tracks[0].plugin.clone().unwrap();
         session.runtimes.insert(
@@ -3420,7 +4376,7 @@ mod tests {
         assert!(session.apply(Action::Rename(1, "  ".into())).is_err());
         assert!(session.apply(Action::SelectTrack(99, None)).is_err());
         assert!(session.apply(Action::MoveTrack(1, -1)).is_err());
-        session.view.project.tracks[0].state = vec![42; 1024];
+        session.view.project.tracks[0].state = vec![42; 1024].into();
         assert!(session.view.for_ui().project.tracks[0].state.is_empty());
         assert_eq!(session.view.project.tracks[0].state.len(), 1024);
     }
@@ -3554,7 +4510,7 @@ mod tests {
         assert!(save(&mut session, path.clone(), true, false).is_err());
         assert_eq!(Project::read(&path).unwrap(), before);
         assert!(session.view.dirty);
-        assert_eq!(session.view.project.tracks[0].state, vec![99]);
+        assert_eq!(session.view.project.tracks[0].state[..], [99]);
         session.poll();
         assert_eq!(session.view.state(2).unwrap().status, "Quarantined");
         assert!(session.runtimes[&1].instrument.is_some());
@@ -3581,7 +4537,8 @@ mod tests {
             session.view.project.tracks[index].plugin = imported.tracks[0].plugin.clone();
             session.view.project.tracks[index].state =
                 crate::files::read_state(&root.join("validation-output/states").join(state))
-                    .unwrap();
+                    .unwrap()
+                    .into();
             let id = index as u64 + 1;
             session.request_load(id, None).unwrap();
         }
@@ -3627,7 +4584,7 @@ mod tests {
         let path = directory.0.join("Commercial.clef");
         save(&mut session, path.clone(), false, false).unwrap();
         for (track, state) in session.view.project.tracks.iter().zip(&expected) {
-            assert_eq!(&track.state, state);
+            assert_eq!(&track.state[..], &state[..]);
         }
         session.apply(Action::New).unwrap();
         session.apply(Action::Open(path)).unwrap();

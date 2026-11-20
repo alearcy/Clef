@@ -295,6 +295,99 @@ impl Passes {
     }
 }
 
+impl Passes {
+    /// Start a capture: packets before the window only set the controller state that seeds it.
+    fn begin(
+        map: &SampleMap,
+        projection: Projection,
+        baseline: ControllerBaseline,
+        before: &[Captured],
+    ) -> Self {
+        let mut passes = Passes {
+            controls: std::array::from_fn(|index| {
+                let bytes = baseline[index];
+                if control_index(bytes) == Some(index) {
+                    bytes
+                } else {
+                    neutral(index)
+                }
+            }),
+            held: BTreeMap::new(),
+            current: Vec::new(),
+            passes: Vec::new(),
+            number: 0,
+            produced: 0,
+            order: 0,
+            has_input: false,
+        };
+        for packet in before {
+            if let Some(index) = control_index(packet.bytes) {
+                passes.controls[index] = packet.bytes;
+            }
+        }
+        passes.seed_controls(map.tick_at(projection.origin));
+        passes
+    }
+
+    /// Add one packet at or after the window start; false once a capture limit is reached.
+    fn feed(
+        &mut self,
+        map: &SampleMap,
+        projection: Projection,
+        loop_ticks: [u64; 2],
+        packet: &Captured,
+    ) -> bool {
+        let Some((packet_pass, frame)) = projection.position(packet.at) else {
+            return true;
+        };
+        if !self.advance(packet_pass, loop_ticks) {
+            return false;
+        }
+        let tick = map.tick_at(frame);
+        if supported_control(packet.bytes) {
+            if let Some(index) = control_index(packet.bytes) {
+                self.controls[index] = packet.bytes;
+            }
+            self.control(tick, packet.bytes);
+            self.has_input = true;
+        } else {
+            self.has_input |= self.note(tick, packet.bytes);
+        }
+        true
+    }
+
+    fn preview(&self, complete: bool) -> NotePreview {
+        let mut current = Vec::new();
+        if complete {
+            current.extend(self.current.iter().filter_map(NoteMark::from_event));
+            for (&(_, key), notes) in &self.held {
+                current.extend(notes.iter().map(|note| NoteMark {
+                    start: note.tick,
+                    end: None,
+                    key,
+                }));
+            }
+        }
+        let previous = self
+            .passes
+            .iter()
+            .rev()
+            .find(|pass| {
+                pass.iter()
+                    .any(|event| matches!(event.message, Message::Note { .. }))
+            })
+            .into_iter()
+            .flatten()
+            .filter_map(NoteMark::from_event)
+            .collect();
+        NotePreview { current, previous }
+    }
+}
+
+fn loop_ticks(map: &SampleMap, projection: Projection) -> [u64; 2] {
+    [projection.left, projection.right].map(|frame| map.tick_at(frame))
+}
+
 /// Reuse the capture's timestamp, held-note, and wrap rules for the live view.
 /// `input` is sorted and contains only packets through the requested position.
 fn passes_through(
@@ -304,50 +397,15 @@ fn passes_through(
     baseline: ControllerBaseline,
     input: &[Captured],
 ) -> (Passes, bool) {
-    let mut passes = Passes {
-        controls: std::array::from_fn(|index| {
-            let bytes = baseline[index];
-            if control_index(bytes) == Some(index) {
-                bytes
-            } else {
-                neutral(index)
-            }
-        }),
-        held: BTreeMap::new(),
-        current: Vec::new(),
-        passes: Vec::new(),
-        number: 0,
-        produced: 0,
-        order: 0,
-        has_input: false,
-    };
     let before = input.partition_point(|packet| packet.at < projection.start);
-    for packet in &input[..before] {
-        if let Some(index) = control_index(packet.bytes) {
-            passes.controls[index] = packet.bytes;
-        }
-    }
-    passes.seed_controls(map.tick_at(projection.origin));
-    let loop_ticks = [projection.left, projection.right].map(|frame| map.tick_at(frame));
+    let mut passes = Passes::begin(map, projection, baseline, &input[..before]);
+    let ticks = loop_ticks(map, projection);
     for packet in &input[before..] {
-        let Some((packet_pass, frame)) = projection.position(packet.at) else {
-            continue;
-        };
-        if !passes.advance(packet_pass, loop_ticks) {
+        if !passes.feed(map, projection, ticks, packet) {
             return (passes, false);
         }
-        let tick = map.tick_at(frame);
-        if supported_control(packet.bytes) {
-            if let Some(index) = control_index(packet.bytes) {
-                passes.controls[index] = packet.bytes;
-            }
-            passes.control(tick, packet.bytes);
-            passes.has_input = true;
-        } else {
-            passes.has_input |= passes.note(tick, packet.bytes);
-        }
     }
-    let complete = passes.advance(number, loop_ticks);
+    let complete = passes.advance(number, ticks);
     (passes, complete)
 }
 
@@ -359,30 +417,76 @@ pub fn note_preview(
     input: &[Captured],
 ) -> NotePreview {
     let (passes, complete) = passes_through(map, projection, pass, baseline, input);
-    let mut current = Vec::new();
-    if complete {
-        current.extend(passes.current.iter().filter_map(NoteMark::from_event));
-        for (&(_, key), notes) in &passes.held {
-            current.extend(notes.iter().map(|note| NoteMark {
-                start: note.tick,
-                end: None,
-                key,
-            }));
+    passes.preview(complete)
+}
+
+/// The live take preview, built incrementally on the session thread: each captured packet is
+/// processed once, so a take costs linear work instead of a rebuild per poll. It equals
+/// [`note_preview`] for the same sorted input and rebuilds itself when input arrives that an
+/// incremental update cannot place (before the window start or in a pass already left).
+pub struct LivePreview {
+    projection: Projection,
+    baseline: ControllerBaseline,
+    passes: Option<Passes>,
+    consumed: usize,
+    last: u64,
+    complete: bool,
+}
+
+impl LivePreview {
+    pub fn new(projection: Projection, baseline: ControllerBaseline) -> Self {
+        Self {
+            projection,
+            baseline,
+            passes: None,
+            consumed: 0,
+            last: 0,
+            complete: true,
         }
     }
-    let previous = passes
-        .passes
-        .iter()
-        .rev()
-        .find(|pass| {
-            pass.iter()
-                .any(|event| matches!(event.message, Message::Note { .. }))
-        })
-        .into_iter()
-        .flatten()
-        .filter_map(NoteMark::from_event)
-        .collect();
-    NotePreview { current, previous }
+
+    pub fn projection(&self) -> Projection {
+        self.projection
+    }
+
+    /// The preview for `pass`, where `input` is sorted, contains only packets through the
+    /// requested position and extends the input of the previous call.
+    pub fn update(&mut self, map: &SampleMap, pass: u64, input: &[Captured]) -> NotePreview {
+        let projection = self.projection;
+        let fresh = input.len() < self.consumed
+            || input[self.consumed..].first().is_some_and(|packet| {
+                let number = self.passes.as_ref().map_or(0, |passes| passes.number);
+                packet.at < self.last
+                    || packet.at < projection.start
+                    || projection
+                        .position(packet.at)
+                        .is_some_and(|(packet_pass, _)| packet_pass < number)
+            });
+        if fresh {
+            self.passes = None;
+            self.consumed = 0;
+            self.complete = true;
+        }
+        let passes = self.passes.get_or_insert_with(|| {
+            let before = input.partition_point(|packet| packet.at < projection.start);
+            self.consumed = before;
+            Passes::begin(map, projection, self.baseline, &input[..before])
+        });
+        let ticks = loop_ticks(map, projection);
+        for packet in &input[self.consumed..] {
+            if self.complete && !passes.feed(map, projection, ticks, packet) {
+                self.complete = false;
+            }
+        }
+        if let Some(packet) = input.last() {
+            self.last = packet.at;
+        }
+        self.consumed = input.len();
+        if self.complete && !passes.advance(pass, ticks) {
+            self.complete = false;
+        }
+        passes.preview(self.complete)
+    }
 }
 
 /// Assemble the capture against its half-open presentation window on the session thread.
@@ -1334,6 +1438,72 @@ mod tests {
         let linear_preview = note_preview(&map, linear, 0, [[0; 3]; CONTROLS], &input[..2]);
         assert!(linear_preview.previous.is_empty());
         assert_eq!(linear_preview.current, vec![first]);
+    }
+
+    #[test]
+    fn live_preview_matches_a_full_rebuild_for_every_poll() {
+        let map = SampleMap::new(&Timeline::default(), 48_000).unwrap();
+        let start = 8_000;
+        let baseline = [[0; 3]; CONTROLS];
+        for range in [Some([100, 200]), None] {
+            let projection = window(&map, start, 100, range);
+            let span = map.sample_at(200) - map.sample_at(100);
+            // Notes, held notes across wraps, controllers, and packets before the window.
+            let mut input = vec![Captured {
+                at: start - 10,
+                bytes: [0xb0, 1, 64],
+            }];
+            for index in 0..400_u64 {
+                let at = start + index * span / 37;
+                let key = 40 + (index % 24) as u8;
+                input.push(Captured {
+                    at,
+                    bytes: if index % 5 == 4 {
+                        [0xb0, 1, (index % 128) as u8]
+                    } else if index % 2 == 0 {
+                        [0x90, key, 90]
+                    } else {
+                        [0x80, key - 1, 0]
+                    },
+                });
+            }
+            let mut live = LivePreview::new(projection, baseline);
+            let mut due = 0;
+            let mut polls = 0;
+            while due < input.len() {
+                due = (due + 1 + polls % 7).min(input.len());
+                polls += 1;
+                let now = input[due - 1].at + polls as u64 % 3;
+                let pass = projection.position(now).map_or(0, |(pass, _)| pass);
+                assert_eq!(
+                    live.update(&map, pass, &input[..due]),
+                    note_preview(&map, projection, pass, baseline, &input[..due]),
+                    "poll {polls}"
+                );
+            }
+            // A packet drained after the preview moved into the next pass is placed by a rebuild.
+            if range.is_some() {
+                let mut late = LivePreview::new(projection, baseline);
+                let mut base = input[..100].to_vec();
+                let last = base.last().unwrap().at;
+                let (pass, _) = projection.position(last).unwrap();
+                let next = (last..).find(|&at| projection.position(at).unwrap().0 > pass);
+                let next = next.unwrap();
+                let next_pass = pass + 1;
+                assert_eq!(
+                    late.update(&map, next_pass, &base),
+                    note_preview(&map, projection, next_pass, baseline, &base)
+                );
+                base.push(Captured {
+                    at: next - 1,
+                    bytes: [0x91, 70, 90],
+                });
+                assert_eq!(
+                    late.update(&map, next_pass, &base),
+                    note_preview(&map, projection, next_pass, baseline, &base)
+                );
+            }
+        }
     }
 
     #[test]

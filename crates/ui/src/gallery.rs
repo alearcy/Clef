@@ -34,6 +34,7 @@ const MIXER_CASES: &[&str] = &[
     "header-long",
     "header-dock",
 ];
+const ROUTING_CASES: &[&str] = &["buses", "solo", "long-sends", "empty"];
 const INSERT_CASES: &[&str] = &[
     "empty",
     "populated",
@@ -41,6 +42,7 @@ const INSERT_CASES: &[&str] = &[
     "bypassed",
     "missing",
     "failed",
+    "late",
     "long-chain",
     "vi-bypassed",
     "vi-offline",
@@ -136,10 +138,13 @@ fn arrangement_fixture(app: &mut App, case: &str) {
         instrument_bypassed: false,
         instrument_offline: false,
         record_mode: Default::default(),
+        kind: clef_model::project::TrackKind::Instrument,
+        output: None,
+        sends: Vec::new(),
         mix: Default::default(),
         inserts: Vec::new(),
         take_lanes: Default::default(),
-        state: Vec::new(),
+        state: Default::default(),
     });
     view.project.next_id = 3;
     view.transport.audible_tick = 1_200;
@@ -392,12 +397,105 @@ fn insert_fixture(app: &mut App, case: &str) {
                 },
             );
         }
+        "late" => {
+            app.view.inserts.insert(
+                eq.id,
+                InsertView {
+                    late: Some(25),
+                    ..Default::default()
+                },
+            );
+        }
         "insertion" => app.mixer_ui.gallery_insert_focus = Some(delay.id),
         _ => {}
     }
     app.view.project.tracks[0].inserts = vec![eq, delay];
     app.view.project.tracks[0].inserts.extend(long);
     app.view.project.master_inserts.push(master);
+}
+
+fn routing_fixture(app: &mut App, case: &str) {
+    use clef_model::project::{Send, Track, TrackKind};
+    use clef_session::Meter;
+    mixer_fixture(app, "playing");
+    app.mixer_ui.open = true;
+    for track in &mut app.view.project.tracks {
+        track.mix.solo = false;
+        track.mix.mute = false;
+    }
+    app.view.project.tracks[0].output = Some(3);
+    app.view.project.tracks[1].output = Some(4);
+    let bus = |id, name: &str| Track {
+        id,
+        name: name.into(),
+        plugin: None,
+        instrument_bypassed: false,
+        instrument_offline: false,
+        record_mode: Default::default(),
+        kind: TrackKind::Bus,
+        output: None,
+        sends: Vec::new(),
+        mix: Default::default(),
+        inserts: Vec::new(),
+        take_lanes: Default::default(),
+        state: Default::default(),
+    };
+    app.view.project.tracks.push(bus(3, "Reverb"));
+    app.view.project.tracks.push(bus(4, "Drum Bus"));
+    app.view.project.next_id = 7;
+    app.view.project.tracks[0].sends = vec![Send {
+        id: 5,
+        target: 4,
+        level: -60,
+        pre: true,
+        enabled: true,
+    }];
+    app.view.project.tracks[1].sends = vec![Send {
+        id: 6,
+        target: 3,
+        level: -30,
+        pre: false,
+        enabled: true,
+    }];
+    app.view.track_meters.insert(
+        3,
+        Meter {
+            level: [-18, -21],
+            hold: [-12, -16],
+            clipped: false,
+        },
+    );
+    app.view.track_meters.insert(
+        4,
+        Meter {
+            level: [-24, -26],
+            hold: [-18, -21],
+            clipped: false,
+        },
+    );
+    if case == "long-sends" {
+        let mut id = 7;
+        for target in [3, 4] {
+            app.view.project.tracks[0].sends.push(Send {
+                id,
+                target,
+                level: -40,
+                pre: id % 2 == 0,
+                enabled: true,
+            });
+            id += 1;
+        }
+        app.view.project.next_id = id;
+    }
+    if case == "solo" {
+        app.view.project.tracks[3].mix.solo = true;
+    }
+    if case == "empty" {
+        app.view.project.tracks[0].output = None;
+        app.view.project.tracks[1].output = None;
+        app.view.project.tracks[0].sends.clear();
+        app.view.project.tracks[1].sends.clear();
+    }
 }
 
 fn history_fixture(case: &str) -> Snapshot {
@@ -409,10 +507,13 @@ fn history_fixture(case: &str) -> Snapshot {
         instrument_bypassed: false,
         instrument_offline: false,
         record_mode: Default::default(),
+        kind: clef_model::project::TrackKind::Instrument,
+        output: None,
+        sends: Vec::new(),
         mix: Default::default(),
         inserts: Vec::new(),
         take_lanes: Default::default(),
-        state: Vec::new(),
+        state: Default::default(),
     });
     project.next_id = 2;
     Snapshot {
@@ -536,6 +637,11 @@ impl Gallery {
             self.frames = 0;
             return;
         }
+        if self.prefix == "t15" {
+            routing_fixture(&mut self.app, case);
+            self.frames = 0;
+            return;
+        }
         if self.prefix == "t10" {
             piano_roll_fixture(&mut self.app, case);
             self.frames = 0;
@@ -635,7 +741,10 @@ impl eframe::App for Gallery {
                     &mut app.piano_roll_open,
                 );
             });
-        } else if matches!(self.prefix, "t08" | "t09" | "t10" | "t11" | "t12" | "t34") {
+        } else if matches!(
+            self.prefix,
+            "t08" | "t09" | "t10" | "t11" | "t12" | "t15" | "t34"
+        ) {
             egui::Frame::new()
                 .inner_margin(12.0)
                 .show(ui, |ui| self.app.main_surface(ui, &ctx));
@@ -683,6 +792,10 @@ pub fn render_inserts(output: PathBuf, width: u32) -> Result<()> {
     render(output, width, "t12", INSERT_CASES)
 }
 
+pub fn render_routing(output: PathBuf, width: u32) -> Result<()> {
+    render(output, width, "t15", ROUTING_CASES)
+}
+
 pub fn render_transport(output: PathBuf, width: u32) -> Result<()> {
     render(output, width, "t34", TRANSPORT_CASES)
 }
@@ -697,7 +810,9 @@ fn render(
         return Err("gallery width must be 1024 or 760 points".into());
     }
     std::fs::create_dir_all(&output)?;
-    let height = if matches!(prefix, "t11" | "t12") {
+    let height = if prefix == "t15" {
+        900.0
+    } else if matches!(prefix, "t11" | "t12") {
         768.0
     } else {
         640.0
@@ -986,6 +1101,264 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn t15_mixer_exposes_bus_sends_output_and_add_bus_at_both_widths() {
+        for width in [760.0, 1024.0] {
+            let ctx = egui::Context::default();
+            ctx.enable_accesskit();
+            let mut app = App::new(ctx.clone(), PathBuf::new());
+            routing_fixture(&mut app, "buses");
+            app.mixer_ui.open = true;
+            let render = |app: &mut App, events| {
+                ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(width, 900.0),
+                        )),
+                        events,
+                        ..Default::default()
+                    },
+                    |ui| app.main_surface(ui, &ctx),
+                )
+            };
+            let _ = render(&mut app, vec![]);
+            let tree = render(&mut app, vec![])
+                .platform_output
+                .accesskit_update
+                .unwrap();
+            let find = |label: &str| {
+                tree.nodes
+                    .iter()
+                    .find_map(|(_, node)| {
+                        (node.label() == Some(label) || node.value() == Some(label))
+                            .then(|| node.bounds())
+                            .flatten()
+                    })
+                    .unwrap_or_else(|| panic!("missing {label} at {width} points"))
+            };
+            let bus = find("Reverb");
+            let send = find("Strings Send");
+            let add_send = find("Strings, Add send…");
+            let add_effect = find("Strings, Add audio effect…");
+            let add_bus = find("+ Bus");
+            assert!(bus.x0 >= 0.0 && bus.x1 <= f64::from(width));
+            assert!(send.x0 >= bus.x1.min(send.x0) && send.x1 <= f64::from(width));
+            assert!(add_send.x0 >= 0.0 && add_send.x1 <= f64::from(width));
+            assert!(add_bus.x0 >= 0.0 && add_bus.x1 <= f64::from(width));
+            assert!(
+                (add_send.height() - add_effect.height()).abs() < 1.0,
+                "Add send is {:.1} high, Add effect is {:.1} high at {width} points",
+                add_send.height(),
+                add_effect.height()
+            );
+            let find_prefix = |prefixes: &[&str]| {
+                tree.nodes
+                    .iter()
+                    .find_map(|(_, node)| {
+                        let label = node.label()?;
+                        prefixes
+                            .iter()
+                            .any(|prefix| label.starts_with(prefix))
+                            .then(|| node.bounds())
+                            .flatten()
+                    })
+                    .unwrap_or_else(|| panic!("missing {prefixes:?} at {width} points"))
+            };
+            let slot = find_prefix(&["Strings, Plugin "]);
+            let power = find_prefix(&["Strings, Bypass Plugin ", "Strings, Enable Plugin "]);
+            let power_center = (power.x0 + power.x1) / 2.0;
+            let frame_right = add_send.x1 + f64::from(crate::theme::MIX_PADDING[1]);
+            let slot_end = (slot.x1 + frame_right) / 2.0;
+            assert!(
+                (power_center - slot_end).abs() < 1.0,
+                "bypass is not centred between slot and strip edge at {width} points: slot={slot:?} power={power:?} add_send={add_send:?} power_center={power_center} slot_end={slot_end}"
+            );
+            assert!(
+                (power.width() - 14.0).abs() < 1.0,
+                "insert bypass keeps too much horizontal padding: {power:?}"
+            );
+            let send_bypass =
+                find_prefix(&["Strings, Bypass Send to ", "Strings, Enable Send to "]);
+            assert!(
+                (send_bypass.width() - 14.0).abs() < 1.0
+                    && (send_bypass.height() - 16.0).abs() < 1.0,
+                "send bypass is not the compact glyph: {send_bypass:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn t15_buses_dock_right_and_strips_keep_one_width_and_height() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut app = App::new(ctx.clone(), PathBuf::new());
+        routing_fixture(&mut app, "buses");
+        app.mixer_ui.open = true;
+        let render = |app: &mut App, events| {
+            ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1024.0, 900.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| app.main_surface(ui, &ctx),
+            )
+        };
+        let _ = render(&mut app, vec![]);
+        let tree = render(&mut app, vec![])
+            .platform_output
+            .accesskit_update
+            .unwrap();
+        let bounds = |label: &str| {
+            tree.nodes
+                .iter()
+                .filter_map(|(_, node)| {
+                    (node.label() == Some(label) || node.value() == Some(label))
+                        .then(|| node.bounds())
+                        .flatten()
+                })
+                .collect::<Vec<_>>()
+        };
+        let strings = bounds("Strings Fader")[0];
+        let piano = bounds("Piano Fader")[0];
+        let drum_bus = bounds("Reverb Fader")[0];
+        let master = bounds("Master Fader")[0];
+        assert!((piano.x0 - strings.x0 - 93.0).abs() < 1.0);
+        assert!(drum_bus.x0 > piano.x1);
+        assert!(master.x0 > drum_bus.x0);
+        assert!((drum_bus.y0 - strings.y0).abs() < 1.0);
+        assert!((master.y0 - strings.y0).abs() < 1.0);
+    }
+
+    #[test]
+    fn t15_mixer_strip_click_selects_the_channel_and_reveals_it() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut app = App::new(ctx.clone(), PathBuf::new());
+        routing_fixture(&mut app, "buses");
+        app.mixer_ui.open = true;
+        app.view.selected = Some(2);
+        app.mixer_ui.follow_instrument_selection(Some(2));
+        let render = |app: &mut App, events| {
+            ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1024.0, 900.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| app.main_surface(ui, &ctx),
+            )
+        };
+        let _ = render(&mut app, vec![]);
+        let tree = render(&mut app, vec![])
+            .platform_output
+            .accesskit_update
+            .unwrap();
+        let send = tree
+            .nodes
+            .iter()
+            .find_map(|(_, node)| {
+                (node.label() == Some("Strings Send") || node.value() == Some("Strings Send"))
+                    .then(|| node.bounds())
+                    .flatten()
+            })
+            .unwrap();
+        let pos = egui::pos2(
+            (send.x0 + send.x1) as f32 / 2.0,
+            (send.y0 + send.y1) as f32 / 2.0,
+        );
+        for pressed in [true, false] {
+            let _ = render(
+                &mut app,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+        }
+        assert_eq!(app.track_focus, Some(1));
+        assert_eq!(app.mixer_ui.reveal, None);
+    }
+
+    #[test]
+    fn t15_add_send_menu_can_create_a_bus_or_pick_an_existing_one() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut app = App::new(ctx.clone(), PathBuf::new());
+        routing_fixture(&mut app, "buses");
+        app.mixer_ui.open = true;
+        let render = |app: &mut App, events| {
+            ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1024.0, 900.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| app.main_surface(ui, &ctx),
+            )
+        };
+        let _ = render(&mut app, vec![]);
+        let tree = render(&mut app, vec![])
+            .platform_output
+            .accesskit_update
+            .unwrap();
+        let add_send = tree
+            .nodes
+            .iter()
+            .find_map(|(_, node)| {
+                (node.label() == Some("Strings, Add send…")
+                    || node.value() == Some("Strings, Add send…"))
+                .then(|| node.bounds())
+                .flatten()
+            })
+            .unwrap();
+        let pos = egui::pos2(
+            (add_send.x0 + add_send.x1) as f32 / 2.0,
+            (add_send.y0 + add_send.y1) as f32 / 2.0,
+        );
+        for pressed in [true, false] {
+            let _ = render(
+                &mut app,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+        }
+        let _ = render(&mut app, vec![]);
+        let tree = render(&mut app, vec![])
+            .platform_output
+            .accesskit_update
+            .unwrap();
+        let mut labels = Vec::new();
+        for (_, node) in &tree.nodes {
+            labels.extend(node.label().map(str::to_owned));
+            labels.extend(node.value().map(str::to_owned));
+        }
+        assert!(
+            labels.iter().any(|label| label == "New Bus Send…"),
+            "new-send action missing: {labels:?}"
+        );
+        assert!(
+            labels.iter().any(|label| label == "Reverb"),
+            "existing bus entries missing: {labels:?}"
+        );
     }
 
     #[test]

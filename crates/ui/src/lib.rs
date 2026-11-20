@@ -97,6 +97,7 @@ enum Command {
     Settings,
     Commands,
     AddTrack,
+    AddBus,
     Instrument,
     Editor,
     CloseEditor,
@@ -223,6 +224,7 @@ fn commands() -> Vec<Binding> {
         (Settings, "Audio/MIDI Settings", None),
         (Commands, "Commands / Keyboard Shortcuts", Some(Key::K)),
         (AddTrack, "Add Instrument Track", None),
+        (AddBus, "Add Bus", None),
         (Instrument, "Choose Instrument", None),
         (Editor, "Open Editor", None),
         (CloseEditor, "Close Editor", None),
@@ -320,6 +322,28 @@ struct FilePicker {
     folder: PathBuf,
     name: String,
     error: String,
+    /// The listing of `folder`, read once per folder: navigating or reopening the picker
+    /// reads it again, and frames do no directory I/O.
+    listing: Option<std::result::Result<Vec<PickerEntry>, String>>,
+}
+struct PickerEntry {
+    path: PathBuf,
+    name: String,
+    folder: bool,
+}
+fn list_folder(folder: &std::path::Path) -> std::result::Result<Vec<PickerEntry>, String> {
+    let mut entries: Vec<_> = std::fs::read_dir(folder)
+        .map_err(|error| error.to_string())?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter_map(|path| {
+            let folder = path.is_dir();
+            let name = path.file_name()?.to_string_lossy().into_owned();
+            (!name.starts_with('.') && (folder || path.extension().is_some_and(|e| e == "clef")))
+                .then_some(PickerEntry { path, name, folder })
+        })
+        .collect();
+    entries.sort_by(|a, b| (!a.folder, a.path.file_name()).cmp(&(!b.folder, b.path.file_name())));
+    Ok(entries)
 }
 impl FilePicker {
     fn new(mode: FileMode, current: Option<&PathBuf>) -> Self {
@@ -338,6 +362,7 @@ impl FilePicker {
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "Untitled.clef".into()),
             error: String::new(),
+            listing: None,
         }
     }
 }
@@ -455,6 +480,7 @@ impl App {
         style.spacing.item_spacing = egui::vec2(12.0, 8.0);
         style.spacing.button_padding = egui::vec2(8.0, 4.0);
         style.spacing.interact_size.y = 24.0;
+        style.interaction.selectable_labels = false;
         context.set_global_style(style);
         Self {
             transport_ui: transport::TransportUi::default(),
@@ -514,9 +540,8 @@ impl App {
         {
             return;
         }
-        if !matches!(action, Action::CommitMix(_)) {
-            self.cancel_mix_gesture();
-        }
+        // A mixer drag survives another action: its release commits when the session is idle
+        // (T37 L3). Escape, focus loss and dialogs still cancel it in `mixer_logic`.
         let loop_range = match &action {
             Action::Transport(TransportAction::SetLoopRange(range)) => Some(*range),
             _ => None,
@@ -578,7 +603,7 @@ impl App {
             }
             OpenRecent | LocateRecent | RemoveRecent | ShowRecovery | RecoverProject
             | DiscardRecovery | RecoveryLater => false,
-            AddTrack => self.view.project.tracks.len() < crate::project::MAX_TRACKS,
+            AddTrack | AddBus => self.view.project.tracks.len() < crate::project::MAX_TRACKS,
             RemoveTrack | MoveUp | MoveDown | PreviousTrack | NextTrack => {
                 let index = self
                     .view
@@ -712,10 +737,22 @@ impl App {
                 self.send(Action::Open(path));
             }
             Transition::Close => {
-                if self.has_unsaved_changes() {
-                    self.awaiting_close = true;
-                    self.send(Action::DiscardBeforeClose);
+                let action = if self.has_unsaved_changes() {
+                    Some(Action::DiscardBeforeClose)
                 } else {
+                    // Only the view changed: the session writes it silently (T37 L4).
+                    self.view
+                        .view_unsaved
+                        .then_some(Action::SaveViewBeforeClose)
+                };
+                let actions = self.actions_in_flight;
+                if let Some(action) = action {
+                    self.awaiting_close = true;
+                    self.send(action);
+                }
+                if self.actions_in_flight == actions {
+                    // Nothing to send, or the session is unavailable: close at once.
+                    self.awaiting_close = false;
                     self.exiting = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
@@ -828,6 +865,7 @@ impl App {
                     .map(|t| (t.id, self.rename.clone()));
                 self.send(Action::AddTrack(rename));
             }
+            AddBus => self.send(Action::AddBus { assign: None }),
             Instrument => {
                 self.picker_open = true;
                 if self.catalog.plugins.is_empty() {
@@ -1002,7 +1040,7 @@ impl App {
     fn poll(&mut self, ctx: &egui::Context) {
         while let Ok((view, completed)) = self.backend.receive.try_recv() {
             if self.view.selected != view.selected {
-                self.mixer_ui.follow_instrument_selection();
+                self.mixer_ui.follow_instrument_selection(view.selected);
             }
             if self.history_window.pending
                 && let Some(success) = completed
@@ -1664,45 +1702,37 @@ impl App {
                 if ui.button("Parent Folder").clicked() {
                     navigate = picker.folder.parent().map(|p| p.to_owned());
                 }
-                egui::ScrollArea::vertical().max_height(260.0).show(
-                    ui,
-                    |ui| match std::fs::read_dir(&picker.folder) {
+                let listing = picker
+                    .listing
+                    .get_or_insert_with(|| list_folder(&picker.folder));
+                egui::ScrollArea::vertical()
+                    .max_height(260.0)
+                    .show(ui, |ui| match listing {
                         Ok(entries) => {
-                            let mut paths: Vec<_> = entries
-                                .filter_map(|e| e.ok().map(|e| e.path()))
-                                .filter(|p| {
-                                    p.is_dir() || p.extension().is_some_and(|e| e == "clef")
-                                })
-                                .collect();
-                            paths.sort_by_key(|p| {
-                                (!p.is_dir(), p.file_name().map(|s| s.to_owned()))
-                            });
-                            for path in paths {
-                                let folder = path.is_dir();
-                                let name = path.file_name().unwrap_or_default().to_string_lossy();
-                                if name.starts_with('.') {
-                                    continue;
-                                }
+                            for entry in entries.iter() {
                                 if ui
                                     .selectable_label(
-                                        picker.name == name,
-                                        format!("{name}{}", if folder { "/" } else { "" }),
+                                        picker.name == entry.name,
+                                        format!(
+                                            "{}{}",
+                                            entry.name,
+                                            if entry.folder { "/" } else { "" }
+                                        ),
                                     )
                                     .clicked()
                                 {
-                                    if folder {
-                                        navigate = Some(path);
+                                    if entry.folder {
+                                        navigate = Some(entry.path.clone());
                                     } else {
-                                        picker.name = name.into_owned();
+                                        picker.name.clone_from(&entry.name);
                                     }
                                 }
                             }
                         }
-                        Err(e) => {
-                            ui.colored_label(colors::DANGER, e.to_string());
+                        Err(error) => {
+                            ui.colored_label(colors::DANGER, error.as_str());
                         }
-                    },
-                );
+                    });
                 ui.horizontal(|ui| {
                     let label = ui.label("File name or absolute path");
                     ui.text_edit_singleline(&mut picker.name)
@@ -1723,6 +1753,7 @@ impl App {
             });
         if let Some(folder) = navigate {
             picker.folder = folder;
+            picker.listing = None;
         }
         if !open {
             self.file = None;
@@ -2068,6 +2099,37 @@ mod tests {
         assert_eq!(app.actions_in_flight, 1);
     }
     #[test]
+    fn file_picker_lists_a_folder_once_until_navigation() {
+        let folder = std::env::temp_dir().join(format!("clef-picker-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(folder.join("Sub")).unwrap();
+        for name in ["b.clef", "a.clef", ".hidden.clef", "notes.txt"] {
+            std::fs::write(folder.join(name), []).unwrap();
+        }
+        let names = |app: &App| match app.file.as_ref().unwrap().listing.as_ref() {
+            Some(Ok(entries)) => entries.iter().map(|e| e.name.clone()).collect::<Vec<_>>(),
+            _ => Vec::new(),
+        };
+        let context = egui::Context::default();
+        let mut app = App::new(context.clone(), PathBuf::new());
+        let mut picker = FilePicker::new(FileMode::Open, None);
+        picker.folder.clone_from(&folder);
+        app.file = Some(picker);
+        let _ = context.run_ui(Default::default(), |ui| app.files(ui.ctx()));
+        assert_eq!(names(&app), ["Sub", "a.clef", "b.clef"]);
+        std::fs::write(folder.join("c.clef"), []).unwrap();
+        let _ = context.run_ui(Default::default(), |ui| app.files(ui.ctx()));
+        assert_eq!(
+            names(&app),
+            ["Sub", "a.clef", "b.clef"],
+            "frames reuse the listing"
+        );
+        app.file.as_mut().unwrap().listing = None;
+        let _ = context.run_ui(Default::default(), |ui| app.files(ui.ctx()));
+        assert_eq!(names(&app), ["Sub", "a.clef", "b.clef", "c.clef"]);
+        std::fs::remove_dir_all(&folder).unwrap();
+    }
+    #[test]
     fn dirty_project_transition_waits_for_confirmation_and_cancel_keeps_it() {
         let context = egui::Context::default();
         let mut app = App::new(context.clone(), PathBuf::new());
@@ -2082,6 +2144,20 @@ mod tests {
         assert!(app.view.dirty);
         assert!(app.confirm.is_none());
         assert!(app.busy_since.is_none());
+    }
+    #[test]
+    fn closing_a_clean_project_with_only_view_changes_saves_without_a_prompt() {
+        let context = egui::Context::default();
+        let mut app = App::new(context.clone(), PathBuf::new());
+        app.view.view_unsaved = true;
+        app.transition(Transition::Close, &context);
+        assert!(app.confirm.is_none(), "no dialog for a view-only change");
+        assert!(app.awaiting_close && !app.exiting);
+        assert_eq!(app.actions_in_flight, 1);
+
+        let mut app = App::new(context.clone(), PathBuf::new());
+        app.transition(Transition::Close, &context);
+        assert!(app.confirm.is_none() && !app.awaiting_close && app.exiting);
     }
     #[test]
     fn save_before_close_waits_for_success_and_failed_save_cancels_close() {
@@ -2162,6 +2238,7 @@ mod tests {
         assert_eq!(style.visuals.widgets.inactive.bg_fill, colors::PANEL);
         assert_eq!(style.visuals.widgets.hovered.bg_fill, colors::FIELD);
         assert_eq!(style.visuals.widgets.active.bg_fill, colors::FIELD);
+        assert!(!style.interaction.selectable_labels);
     }
 
     #[test]
@@ -2181,7 +2258,10 @@ mod tests {
             mix: Default::default(),
             inserts: Vec::new(),
             take_lanes: Default::default(),
-            state: Vec::new(),
+            kind: Default::default(),
+            output: None,
+            sends: Vec::new(),
+            state: Default::default(),
         });
         std::sync::Arc::make_mut(&mut app.view.project.midi)
             .record(
@@ -2261,7 +2341,10 @@ mod tests {
             mix: Default::default(),
             inserts: Vec::new(),
             take_lanes: Default::default(),
-            state: Vec::new(),
+            kind: Default::default(),
+            output: None,
+            sends: Vec::new(),
+            state: Default::default(),
         }];
         app.rename = "New name".into();
         assert!(app.has_unsaved_changes());
@@ -2288,7 +2371,10 @@ mod tests {
                 mix: Default::default(),
                 inserts: Vec::new(),
                 take_lanes: Default::default(),
-                state: Vec::new(),
+                kind: Default::default(),
+                output: None,
+                sends: Vec::new(),
+                state: Default::default(),
             },
             crate::project::Track {
                 id: 2,
@@ -2300,7 +2386,10 @@ mod tests {
                 mix: Default::default(),
                 inserts: Vec::new(),
                 take_lanes: Default::default(),
-                state: Vec::new(),
+                kind: Default::default(),
+                output: None,
+                sends: Vec::new(),
+                state: Default::default(),
             },
         ];
         app.view.project.next_id = 3;

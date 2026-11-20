@@ -466,7 +466,10 @@ mod tests {
                 mix: Default::default(),
                 inserts: Vec::new(),
                 take_lanes: Default::default(),
-                state: Vec::new(),
+                kind: Default::default(),
+                output: None,
+                sends: Vec::new(),
+                state: Default::default(),
             }],
             next_id: 2,
             ..Default::default()

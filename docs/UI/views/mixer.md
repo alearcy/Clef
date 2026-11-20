@@ -106,7 +106,8 @@ Evidence at [1024 points](../snapshots/egui/t12-populated-1024.png) and
 [hovered insertion gap](../snapshots/egui/t12-insertion-1024.png),
 [bypassed](../snapshots/egui/t12-bypassed-1024.png),
 [missing](../snapshots/egui/t12-missing-1024.png),
-[failed](../snapshots/egui/t12-failed-1024.png) and
+[failed](../snapshots/egui/t12-failed-1024.png),
+[late](../snapshots/egui/t12-late-1024.png) (T37) and
 [long chain](../snapshots/egui/t12-long-chain-760.png). The `t12_gallery` example regenerates
 them at both review widths.
 
@@ -145,6 +146,63 @@ row stays visible. Evidence: [online](../snapshots/egui/t12-populated-1024.png),
 [empty VI](../snapshots/egui/t12-vi-empty-1024.png), and
 [long chain](../snapshots/egui/t12-long-chain-760.png). The `t12_gallery` example regenerates
 the states at 1024 and 760 points.
+
+## Clef T15
+
+T15 adds one **Bus** track kind and routing in the mixer. Buses are audio-only
+summing channels used as groups or FX returns. Instrument tracks output to Master or to one
+bus; buses output to Master only. There is no fixed send count: an instrument track may have
+one send to each bus, and a project-wide bound keeps the device callback bounded.
+
+The mixer has two banks: the instrument bank on the left and the bus bank docked on the
+right, immediately before Master. All strips have the same width; every strip reserves the
+same Gain, insert, Send/Inputs, Pan / Width, fader, output and name rows, so the faders and
+name boxes line up across instruments, buses and Master. A bus strip has Gain, Inserts, a
+read-only Inputs summary, Pan / Width, fader and meter, M / S, a fixed Master output and a
+peacock name box. It has no Plugin slot and no Sends section.
+
+An instrument strip adds a Sends section between Inserts and Pan / Width:
+
+```text
+Sends
+  PRE  Drum Bus  (knob)  ⏻     one line: tap, destination, level, bypass
+  POST Reverb    (knob)  ⏻
+  Add send…
+```
+
+The send row is one line. `PRE` / `POST` toggles the tap, the destination slot opens the bus
+list, the compact knob changes the level, and the shared power glyph bypasses the send. The
+row is width-bounded
+so adding a send never widens the strip. The dB value is not permanent text: the knob's popup
+shows only the value, and it stays open and updates live while the knob is dragged, so the
+track does not grow a second line per send. The section reserves a fixed height and scrolls
+beyond its rows. **Add send…** is a full-width field row at the same height and in the same
+style as **Add effect…**; its menu creates a send to a new bus or selects a bus that does not
+already receive a send from this track. Creating a bus and its send is one undo step.
+
+Clicking anywhere on a strip selects that channel; the channel name box is not the only hit
+target. Selecting from the mixer highlights the same instrument in the sequencer and scrolls
+it into view, and selecting in the sequencer reveals the strip in the instrument or bus bank.
+Bus strips select the bus but do not add an arrangement row. Insert and Plugin power buttons
+are centred in the gutter between the slot and the strip's trailing edge.
+
+The **Output** menu at the bottom of an instrument strip lists Master, every bus, and
+**New Bus…**. The current destination has a tick. Choosing a bus assigns it; **New Bus…**
+creates and assigns in one undo step. A bus strip shows its fixed `Output / Master` row.
+The mixer exposes the routing actions; dedicated routing entries in the track context menu
+are still pending. A bus with sources cannot be removed until they are reassigned.
+
+Solo is in place with upstream propagation: soloing a bus makes its direct sources audible,
+and a send from a soloed track keeps its return audible. Mute wins. The mixer's meters show
+the result; the strip layout does not dim channels in this provisional pass.
+
+Evidence at [1024](../snapshots/egui/t15-buses-1024.png) and
+[760](../snapshots/egui/t15-buses-760.png); the state set is
+[solo](../snapshots/egui/t15-solo-1024.png),
+[long sends](../snapshots/egui/t15-long-sends-1024.png) and
+[no buses](../snapshots/egui/t15-empty-1024.png). The `t15_gallery` example regenerates
+them at both review widths. The T15 proposal is
+[T15-routing.html](../proposals/T15-routing.html); this is provisional until T18.
 
 ## Legacy reference
 

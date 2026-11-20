@@ -266,7 +266,7 @@ mod tests {
             name: "VST3 Host Test Synth".into(),
             format: "VST3".into(),
         });
-        session.view.project.tracks[0].state = Vec::new();
+        session.view.project.tracks[0].state = Default::default();
         session.request_load(id, None).unwrap();
         let deadline = Instant::now() + Duration::from_secs(20);
         while !session

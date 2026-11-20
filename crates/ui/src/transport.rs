@@ -327,14 +327,27 @@ impl App {
             )
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                if self.view.project.tracks.is_empty() {
+                if !self
+                    .view
+                    .project
+                    .tracks
+                    .iter()
+                    .any(clef_model::project::Track::is_instrument)
+                {
                     ui.horizontal(|ui| {
                         ui.allocate_space(egui::vec2(header_width, row_height));
                         let (_, rect) = ui.allocate_space(egui::vec2(lane_width, row_height));
                         viewport.lane(ui, rect, transport.audible_tick);
                     });
                 }
-                for (index, track) in self.view.project.tracks.iter().enumerate() {
+                for (index, track) in self
+                    .view
+                    .project
+                    .tracks
+                    .iter()
+                    .filter(|track| track.is_instrument())
+                    .enumerate()
+                {
                     let state = self
                         .view
                         .state(track.id)
@@ -487,7 +500,13 @@ impl App {
                             self.rename_focus = true;
                         }
                         if response.has_focus() {
-                            let tracks = &self.view.project.tracks;
+                            let tracks: Vec<_> = self
+                                .view
+                                .project
+                                .tracks
+                                .iter()
+                                .filter(|track| track.is_instrument())
+                                .collect();
                             if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowDown))
                                 && index + 1 < tracks.len()
                             {
@@ -796,7 +815,10 @@ mod tests {
                     visible: true,
                     lanes: vec![Default::default(), Default::default()],
                 },
-                state: Vec::new(),
+                kind: Default::default(),
+                output: None,
+                sends: Vec::new(),
+                state: Default::default(),
             });
             std::sync::Arc::make_mut(&mut app.view.project.midi)
                 .record(
@@ -903,7 +925,10 @@ mod tests {
                 mix: Default::default(),
                 inserts: Vec::new(),
                 take_lanes: Default::default(),
-                state: Vec::new(),
+                kind: Default::default(),
+                output: None,
+                sends: Vec::new(),
+                state: Default::default(),
             });
             std::sync::Arc::make_mut(&mut app.view.project.midi)
                 .record(

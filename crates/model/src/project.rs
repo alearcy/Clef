@@ -15,6 +15,7 @@ use std::{
 const MAGIC: &[u8; 8] = b"CLEFPRJ2";
 const MAX_METADATA: usize = 16 * 1024 * 1024;
 pub const MAX_TRACKS: usize = 128;
+pub const MAX_SEND_EDGES: usize = 512;
 const MAX_TOTAL_STATE: usize = 512 * 1024 * 1024;
 
 pub struct TemporaryDirectory(pub PathBuf);
@@ -197,6 +198,47 @@ impl TakeLanes {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TrackKind {
+    #[default]
+    Instrument,
+    Bus,
+}
+
+impl TrackKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Instrument => "Instrument",
+            Self::Bus => "Bus",
+        }
+    }
+
+    pub fn is_bus(self) -> bool {
+        self == Self::Bus
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Send {
+    pub id: u64,
+    pub target: u64,
+    #[serde(default = "default_send_level")]
+    pub level: i16,
+    #[serde(default)]
+    pub pre: bool,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+fn default_send_level() -> i16 {
+    crate::mixer::Control::Fader.bounds().0
+}
+
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Insert {
@@ -222,12 +264,33 @@ pub struct Track {
     pub record_mode: TrackMode,
     #[serde(default)]
     pub take_lanes: TakeLanes,
+    #[serde(default)]
+    pub kind: TrackKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sends: Vec<Send>,
     #[serde(default, skip_serializing_if = "crate::mixer::Channel::is_default")]
     pub mix: crate::mixer::Channel,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inserts: Vec<Insert>,
+    /// Opaque instrument state, shared between the session, history and autosave snapshots.
     #[serde(skip)]
-    pub state: Vec<u8>,
+    pub state: Arc<[u8]>,
+}
+
+impl Track {
+    pub fn is_bus(&self) -> bool {
+        self.kind.is_bus()
+    }
+
+    pub fn is_instrument(&self) -> bool {
+        !self.is_bus()
+    }
+
+    pub fn output_bus(&self) -> Option<u64> {
+        self.output
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -321,7 +384,7 @@ struct LegacyProject {
 impl Default for Project {
     fn default() -> Self {
         Self {
-            version: 3,
+            version: 4,
             tracks: Vec::new(),
             next_id: 1,
             audio: AudioSettings::default(),
@@ -339,7 +402,7 @@ impl Project {
     pub fn inserts(&self, target: crate::mixer::Target) -> Option<&[Insert]> {
         match target {
             crate::mixer::Target::Master => Some(&self.master_inserts),
-            crate::mixer::Target::Track(id) => self
+            crate::mixer::Target::Track(id) | crate::mixer::Target::Bus(id) => self
                 .tracks
                 .iter()
                 .find(|t| t.id == id)
@@ -350,12 +413,35 @@ impl Project {
     pub fn inserts_mut(&mut self, target: crate::mixer::Target) -> Option<&mut Vec<Insert>> {
         match target {
             crate::mixer::Target::Master => Some(&mut self.master_inserts),
-            crate::mixer::Target::Track(id) => self
+            crate::mixer::Target::Track(id) | crate::mixer::Target::Bus(id) => self
                 .tracks
                 .iter_mut()
                 .find(|t| t.id == id)
                 .map(|track| &mut track.inserts),
         }
+    }
+
+    pub fn bus_ids(&self) -> impl Iterator<Item = u64> + '_ {
+        self.tracks.iter().filter(|t| t.is_bus()).map(|t| t.id)
+    }
+
+    pub fn instrument_ids(&self) -> impl Iterator<Item = u64> + '_ {
+        self.tracks
+            .iter()
+            .filter(|t| t.is_instrument())
+            .map(|t| t.id)
+    }
+
+    pub fn bus(&self, id: u64) -> Option<&Track> {
+        self.tracks.iter().find(|t| t.id == id && t.is_bus())
+    }
+
+    pub fn has_sources(&self, bus: u64) -> usize {
+        self.tracks
+            .iter()
+            .filter(|t| t.is_instrument())
+            .filter(|t| t.output == Some(bus) || t.sends.iter().any(|send| send.target == bus))
+            .count()
     }
 
     fn all_inserts(&self) -> impl Iterator<Item = &Insert> {
@@ -371,12 +457,12 @@ impl Project {
                 level: self.master,
                 ..Default::default()
             }),
-            crate::mixer::Target::Track(id) => self
+            crate::mixer::Target::Track(id) | crate::mixer::Target::Bus(id) => self
                 .tracks
                 .iter()
                 .find(|track| track.id == id)
                 .map(|track| track.mix)
-                .ok_or_else(|| "Mixer track is unavailable.".into()),
+                .ok_or_else(|| "Mixer channel is unavailable.".into()),
         }
     }
 
@@ -396,11 +482,11 @@ impl Project {
                 self.master = channel.level;
                 Ok(())
             }
-            crate::mixer::Target::Track(id) => self
+            crate::mixer::Target::Track(id) | crate::mixer::Target::Bus(id) => self
                 .tracks
                 .iter_mut()
                 .find(|track| track.id == id)
-                .ok_or("Mixer track is unavailable.")?
+                .ok_or("Mixer channel is unavailable.")?
                 .mix
                 .set(control, value),
         }
@@ -412,10 +498,8 @@ impl Project {
             return Err("Invalid master mixer settings.".into());
         }
         self.arrangement_view.validate()?;
-        self.midi
-            .validate(self.tracks.iter().map(|track| track.id))?;
         let valid_text = |text: &str| text.len() <= 4096 && !text.contains('\0');
-        if self.version != 3 {
+        if self.version != 4 {
             return Err("unsupported Clef project version".into());
         }
         if !(8000..=384000).contains(&self.audio.rate)
@@ -430,8 +514,11 @@ impl Project {
         if self.tracks.len() > MAX_TRACKS || self.next_id == 0 {
             return Err("invalid track count or next identity".into());
         }
+        let buses: std::collections::HashSet<u64> = self.bus_ids().collect();
+        self.midi.validate(self.instrument_ids())?;
         let mut ids = std::collections::HashSet::new();
         let mut total = 0usize;
+        let mut send_edges = 0usize;
         let valid_plugin = |plugin: &Plugin| {
             valid_text(&plugin.name)
                 && valid_text(&plugin.id)
@@ -462,16 +549,53 @@ impl Project {
             {
                 return Err("invalid track name or state size".into());
             }
-            track.take_lanes.validate()?;
             if !track.mix.valid() {
                 return Err("Invalid track mixer settings.".into());
             }
-            if let Some(plugin) = &track.plugin {
-                if !valid_plugin(plugin) {
-                    return Err("invalid plugin identity".into());
+            if track.is_bus() {
+                if track.plugin.is_some()
+                    || !track.state.is_empty()
+                    || track.take_lanes != TakeLanes::default()
+                    || track.instrument_bypassed
+                    || track.instrument_offline
+                    || track.output.is_some()
+                    || !track.sends.is_empty()
+                {
+                    return Err("invalid bus track state".into());
                 }
-            } else if !track.state.is_empty() {
-                return Err("state has no associated plugin".into());
+            } else {
+                if let Some(output) = track.output
+                    && !buses.contains(&output)
+                {
+                    return Err("invalid track output destination".into());
+                }
+                track.take_lanes.validate()?;
+                if let Some(plugin) = &track.plugin {
+                    if !valid_plugin(plugin) {
+                        return Err("invalid plugin identity".into());
+                    }
+                } else if !track.state.is_empty() {
+                    return Err("state has no associated plugin".into());
+                }
+                let mut targets = std::collections::HashSet::new();
+                for send in &track.sends {
+                    send_edges = send_edges.checked_add(1).ok_or("send edge overflow")?;
+                    if send_edges > MAX_SEND_EDGES {
+                        return Err("project send budget exceeded".into());
+                    }
+                    if send.id == 0 || send.id >= self.next_id || !ids.insert(send.id) {
+                        return Err("invalid send identity".into());
+                    }
+                    if !buses.contains(&send.target) || send.target == track.id {
+                        return Err("invalid send destination".into());
+                    }
+                    if !targets.insert(send.target) {
+                        return Err("duplicate send destination".into());
+                    }
+                    if !crate::mixer::Control::Fader.accepts(send.level) {
+                        return Err("invalid send level".into());
+                    }
+                }
             }
         }
         for insert in self.all_inserts() {
@@ -515,8 +639,11 @@ impl Project {
                     record_mode: t.record_mode,
                     mix: t.mix,
                     take_lanes: t.take_lanes.clone(),
+                    kind: t.kind,
+                    output: t.output,
+                    sends: t.sends.clone(),
                     inserts: t.inserts.clone(),
-                    state: Vec::new(),
+                    state: Arc::default(),
                 })
                 .collect(),
             next_id: self.next_id,
@@ -595,8 +722,11 @@ impl Project {
                     record_mode: TrackMode::Global,
                     mix: Default::default(),
                     take_lanes: TakeLanes::default(),
+                    kind: TrackKind::Instrument,
+                    output: None,
+                    sends: Vec::new(),
                     inserts: Vec::new(),
-                    state: Vec::new(),
+                    state: Arc::default(),
                 })
                 .collect();
             if tracks.is_empty() && total != 0 {
@@ -609,7 +739,7 @@ impl Project {
             };
             (
                 Self {
-                    version: 3,
+                    version: 4,
                     next_id: tracks.len() as u64 + 1,
                     tracks,
                     audio: legacy.audio,
@@ -624,7 +754,7 @@ impl Project {
             )
         } else {
             let metadata: Metadata = serde_json::from_slice(&metadata)?;
-            if !(2..=3).contains(&metadata.version) {
+            if !(2..=4).contains(&metadata.version) {
                 return Err("unsupported Clef project version".into());
             }
             let mut midi = metadata.midi;
@@ -637,7 +767,7 @@ impl Project {
             };
             (
                 Self {
-                    version: 3,
+                    version: 4,
                     tracks: metadata.tracks,
                     next_id: metadata.next_id,
                     audio: metadata.audio,
@@ -666,8 +796,9 @@ impl Project {
             if length != 0 && track.plugin.is_none() {
                 return Err("orphan plugin state".into());
             }
-            track.state = vec![0; length];
-            reader.read_exact(&mut track.state)?;
+            let mut state = vec![0; length];
+            reader.read_exact(&mut state)?;
+            track.state = state.into();
         }
         for (insert, length) in project
             .tracks
@@ -799,7 +930,10 @@ mod tests {
                 mix: Default::default(),
                 inserts: Vec::new(),
                 take_lanes: TakeLanes::default(),
-                state: vec![0, 255, 1, 2],
+                kind: TrackKind::Instrument,
+                output: None,
+                sends: Vec::new(),
+                state: Arc::from([0, 255, 1, 2]),
             }],
             next_id: 2,
             ..Default::default()
@@ -930,7 +1064,7 @@ mod tests {
             &bytes[16 + length..],
         );
         let migrated = Project::decode(&mut old.as_slice()).unwrap();
-        assert_eq!(migrated.version, 3);
+        assert_eq!(migrated.version, 4);
         assert_eq!(migrated.record_mode, Mode::NewTake);
         assert_eq!(migrated.midi.mode, Mode::Merge);
         assert_eq!(migrated.midi.clips(track), project.midi.clips(track));
@@ -956,7 +1090,7 @@ mod tests {
         bytes[12..16].copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(Project::decode(&mut bytes.as_slice()).is_err());
         let mut project = sample();
-        project.version = 4;
+        project.version = 5;
         assert!(project.write(&mut Vec::new()).is_err());
     }
     #[test]
@@ -969,10 +1103,10 @@ mod tests {
         changed.tracks.first_mut().unwrap().name = "Changed".into();
         assert!(changed.save(&path, false).is_err());
         assert_eq!(Project::read(&path).unwrap(), project);
-        changed.version = 4;
+        changed.version = 5;
         assert!(changed.save(&path, true).is_err());
         assert_eq!(Project::read(&path).unwrap(), project);
-        changed.version = 3;
+        changed.version = 4;
         changed.save(&path, true).unwrap();
         assert_eq!(Project::read(&path).unwrap(), changed);
         assert_eq!(std::fs::read_dir(&directory.0).unwrap().count(), 1);
@@ -1011,9 +1145,9 @@ mod tests {
         let path = directory.0.join("Legacy.clef");
         std::fs::write(&path, &original).unwrap();
         let project = Project::read(&path).unwrap();
-        assert_eq!(project.version, 3);
+        assert_eq!(project.version, 4);
         assert_eq!(project.tracks[0].id, 1);
-        assert_eq!(project.tracks[0].state, vec![0, 255, 42]);
+        assert_eq!(*project.tracks[0].state, [0, 255, 42]);
         assert_eq!(std::fs::read(&path).unwrap(), original);
         let copy = directory.0.join("Migrated.clef");
         project.save(&copy, false).unwrap();
@@ -1036,7 +1170,7 @@ mod tests {
             let mut track = project.tracks[0].clone();
             track.id = id;
             track.name = format!("Track {id}");
-            track.state = vec![id as u8; id as usize];
+            track.state = vec![id as u8; id as usize].into();
             project.tracks.push(track);
         }
         project.next_id = 9;
@@ -1082,7 +1216,10 @@ mod tests {
                         mix: Default::default(),
                         inserts: Vec::new(),
                         take_lanes: TakeLanes::default(),
-                        state: vec![],
+                        kind: TrackKind::Instrument,
+                        output: None,
+                        sends: Vec::new(),
+                        state: Default::default(),
                     })
                     .collect(),
                 next_id: count as u64 + 1,
@@ -1157,12 +1294,149 @@ mod tests {
             &bytes[16 + length..],
         );
         let migrated = Project::decode(&mut old.as_slice()).unwrap();
-        assert_eq!(migrated.version, 3);
+        assert_eq!(migrated.version, 4);
         assert_eq!(migrated.record_mode, Mode::Merge);
         assert_eq!(migrated.tracks[0].record_mode, TrackMode::Global);
         assert!(!migrated.tracks[0].take_lanes.visible);
         assert!(migrated.tracks[0].take_lanes.lanes.is_empty());
         assert!(migrated.tracks[0].inserts.is_empty());
         assert!(migrated.master_inserts.is_empty());
+    }
+    #[test]
+    fn bus_output_and_sends_round_trip_and_reject_invalid_routing() {
+        let mut project = sample();
+        project.tracks.push(Track {
+            id: 2,
+            name: "Reverb".into(),
+            plugin: None,
+            instrument_bypassed: false,
+            instrument_offline: false,
+            record_mode: TrackMode::Global,
+            mix: Default::default(),
+            inserts: Vec::new(),
+            take_lanes: TakeLanes::default(),
+            kind: TrackKind::Bus,
+            output: None,
+            sends: Vec::new(),
+            state: Default::default(),
+        });
+        project.tracks[0].output = Some(2);
+        project.tracks[0].sends.push(Send {
+            id: 3,
+            target: 2,
+            level: -60,
+            pre: false,
+            enabled: true,
+        });
+        project.next_id = 4;
+        project.validate().unwrap();
+        let mut bytes = Vec::new();
+        project.write(&mut bytes).unwrap();
+        assert_eq!(Project::decode(&mut bytes.as_slice()).unwrap(), project);
+
+        let mut duplicate = project.clone();
+        duplicate.tracks[0].sends.push(Send {
+            id: 4,
+            target: 2,
+            level: 0,
+            pre: true,
+            enabled: true,
+        });
+        duplicate.next_id = 5;
+        assert!(duplicate.validate().is_err());
+
+        let mut wrong_output = project.clone();
+        wrong_output.tracks[0].output = Some(1);
+        assert!(wrong_output.validate().is_err());
+
+        let mut bus_plugin = project.clone();
+        bus_plugin.tracks[1].plugin = sample().tracks[0].plugin.clone();
+        assert!(bus_plugin.validate().is_err());
+
+        let mut bus_send = project.clone();
+        bus_send.tracks[1].sends.push(Send {
+            id: 4,
+            target: 2,
+            level: 0,
+            pre: false,
+            enabled: true,
+        });
+        bus_send.next_id = 5;
+        assert!(bus_send.validate().is_err());
+    }
+
+    #[test]
+    fn v3_metadata_migrates_to_v4_defaults() {
+        let mut bytes = Vec::new();
+        sample().write(&mut bytes).unwrap();
+        let length = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+        let mut metadata: serde_json::Value =
+            serde_json::from_slice(&bytes[16..16 + length]).unwrap();
+        metadata["version"] = serde_json::json!(3);
+        for track in metadata["tracks"].as_array_mut().unwrap() {
+            let track = track.as_object_mut().unwrap();
+            track.remove("kind");
+            track.remove("output");
+            track.remove("sends");
+        }
+        let old = container(
+            MAGIC,
+            &serde_json::to_vec(&metadata).unwrap(),
+            &bytes[16 + length..],
+        );
+        let migrated = Project::decode(&mut old.as_slice()).unwrap();
+        assert_eq!(migrated.version, 4);
+        assert_eq!(migrated.tracks[0].kind, TrackKind::Instrument);
+        assert_eq!(migrated.tracks[0].output, None);
+        assert!(migrated.tracks[0].sends.is_empty());
+    }
+
+    #[test]
+    fn shared_instrument_state_keeps_the_container_byte_identical() {
+        let mut project = sample();
+        let plugin = project.tracks[0].plugin.clone().unwrap();
+        project.tracks[0].inserts = vec![Insert {
+            id: 2,
+            plugin,
+            bypassed: false,
+            state: Arc::from([7, 8, 9]),
+        }];
+        project.next_id = 3;
+        let mut bytes = Vec::new();
+        project.write(&mut bytes).unwrap();
+        // The pre-Arc container: header, metadata, then raw track states and insert states.
+        let length = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+        let expected = container(MAGIC, &bytes[16..16 + length], &[0, 255, 1, 2, 7, 8, 9]);
+        assert_eq!(bytes, expected);
+        let decoded = Project::decode(&mut bytes.as_slice()).unwrap();
+        assert_eq!(*decoded.tracks[0].state, [0, 255, 1, 2]);
+        let snapshot = decoded.clone();
+        assert!(Arc::ptr_eq(
+            &snapshot.tracks[0].state,
+            &decoded.tracks[0].state
+        ));
+        let mut again = Vec::new();
+        decoded.write(&mut again).unwrap();
+        assert_eq!(again, bytes);
+
+        // Projects written by earlier builds re-encode to the same bytes when present locally.
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../validation-output");
+        for entry in std::fs::read_dir(fixtures).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.extension().is_none_or(|extension| extension != "clef") {
+                continue;
+            }
+            let original = std::fs::read(&path).unwrap();
+            let Ok(project) = Project::decode(&mut original.as_slice()) else {
+                continue;
+            };
+            let metadata = &original
+                [16..16 + u32::from_le_bytes(original[8..12].try_into().unwrap()) as usize];
+            let state = &original[16 + metadata.len()..];
+            let mut written = Vec::new();
+            project.write(&mut written).unwrap();
+            let length = u32::from_le_bytes(written[8..12].try_into().unwrap()) as usize;
+            assert_eq!(&written[16 + length..], state, "{}", path.display());
+        }
     }
 }

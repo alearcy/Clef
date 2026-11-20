@@ -54,7 +54,10 @@ fn stereo_effect_workers_scan_process_restart_and_restore() {
         let deadline = Duration::from_secs(2);
         let mut source = [[0.0; 2]; BLOCK];
         source[0] = [0.5, -0.25];
-        let reply = audio.process_effect(0, &source, deadline).unwrap();
+        let reply = audio
+            .process_effect(0, &source, deadline)
+            .unwrap()
+            .expect("block answered on time");
         assert_eq!(reply.latency, 0, "{name}");
         assert_eq!(reply.frames[0], [0.25, -0.125], "{name}");
 
@@ -62,7 +65,10 @@ fn stereo_effect_workers_scan_process_restart_and_restore() {
         let wait = Instant::now() + Duration::from_secs(8);
         let zeros: [Frame; BLOCK] = [[0.0; 2]; BLOCK];
         loop {
-            let reply = audio.process_effect(position, &zeros, deadline).unwrap();
+            let reply = audio
+                .process_effect(position, &zeros, deadline)
+                .unwrap()
+                .expect("block answered on time");
             position += BLOCK as u64;
             if reply.restart {
                 assert_eq!(audio.reconfigure(&control).unwrap(), 257, "{name}");
@@ -89,6 +95,7 @@ fn stereo_effect_workers_scan_process_restart_and_restore() {
                 audio
                     .process_effect(frames.len() as u64, input, deadline)
                     .unwrap()
+                    .expect("block answered on time")
                     .frames,
             );
         }

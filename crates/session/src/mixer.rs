@@ -75,7 +75,34 @@ impl Session {
                 .preview
                 .filter(|preview| preview.epoch == self.view.project_epoch)
                 .map(|p| (p.target, p.control, p.value));
+            // A send drag is applied to the published mix only; the project keeps its level.
+            let send = self
+                .send_preview
+                .filter(|preview| preview.epoch == self.view.project_epoch)
+                .and_then(|preview| {
+                    let slot = self
+                        .view
+                        .project
+                        .tracks
+                        .iter_mut()
+                        .find(|track| track.id == preview.track)?
+                        .sends
+                        .iter_mut()
+                        .find(|send| send.id == preview.id)?;
+                    Some((preview, std::mem::replace(&mut slot.level, preview.level)))
+                });
             engine.set_mix(&self.view.project, preview);
+            if let Some((preview, level)) = send
+                && let Some(slot) = self
+                    .view
+                    .project
+                    .tracks
+                    .iter_mut()
+                    .find(|track| track.id == preview.track)
+                    .and_then(|track| track.sends.iter_mut().find(|send| send.id == preview.id))
+            {
+                slot.level = level;
+            }
         }
     }
 
@@ -125,11 +152,14 @@ impl Session {
                 self.mixer.master.meter.clipped = false;
                 self.view.master_meter.clipped = false;
             }
-            Target::Track(id) => {
+            Target::Track(id) | Target::Bus(id) => {
                 for track in &engine.clock.tracks {
                     if track.id.load(Ordering::Acquire) == id {
                         track.take_meter();
                     }
+                }
+                if matches!(target, Target::Bus(_)) {
+                    let _ = engine.bus_meters();
                 }
                 if let Some(reading) = self.mixer.tracks.get_mut(&id) {
                     reading.meter.clipped = false;
@@ -170,6 +200,9 @@ impl Session {
             if id != 0 {
                 current.insert(id, track.take_meter());
             }
+        }
+        for (id, peak) in engine.bus_meters() {
+            current.insert(id, peak);
         }
         self.mixer
             .tracks

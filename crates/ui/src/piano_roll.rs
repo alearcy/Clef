@@ -1890,7 +1890,10 @@ mod tests {
             mix: Default::default(),
             inserts: Vec::new(),
             take_lanes: Default::default(),
-            state: Vec::new(),
+            kind: Default::default(),
+            output: None,
+            sends: Vec::new(),
+            state: Default::default(),
         });
         view.project.tracks.push(Track {
             id: 2,
@@ -1902,7 +1905,10 @@ mod tests {
             mix: Default::default(),
             inserts: Vec::new(),
             take_lanes: Default::default(),
-            state: Vec::new(),
+            kind: Default::default(),
+            output: None,
+            sends: Vec::new(),
+            state: Default::default(),
         });
         let model = std::sync::Arc::make_mut(&mut view.project.midi);
         let note = |tick, key| Event {
@@ -2043,7 +2049,10 @@ mod tests {
                 mix: Default::default(),
                 inserts: Vec::new(),
                 take_lanes: Default::default(),
-                state: Vec::new(),
+                kind: Default::default(),
+                output: None,
+                sends: Vec::new(),
+                state: Default::default(),
             },
             clef_model::project::Track {
                 id: 2,
@@ -2055,7 +2064,10 @@ mod tests {
                 mix: Default::default(),
                 inserts: Vec::new(),
                 take_lanes: Default::default(),
-                state: Vec::new(),
+                kind: Default::default(),
+                output: None,
+                sends: Vec::new(),
+                state: Default::default(),
             },
         ];
         let model = std::sync::Arc::make_mut(&mut view.project.midi);

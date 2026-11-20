@@ -6,7 +6,7 @@ use clef_plugin_host::{
 use std::{
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -19,6 +19,47 @@ pub struct Effect {
     control: ControlConnection,
     latency: AtomicU32,
     error: Mutex<Option<String>>,
+    failed: AtomicBool,
+    // A latency or restart request is served by a helper thread holding `audio`; the
+    // stage outputs its delay-aligned dry signal until the helper publishes the result.
+    reconfiguring: AtomicBool,
+    reconfigured: AtomicBool,
+    late: LateBlocks,
+}
+
+/// Blocks in one late-share window: about 2 s of processed audio.
+const LATE_WINDOW: u32 = (2 * RATE).div_ceil(BLOCK as u32);
+/// A window with more than this share of late blocks (per mille) marks the effect Late.
+const LATE_LIMIT: u32 = 100;
+
+/// Late-block share of the last completed window. The counters are written only by the
+/// processing thread; the share is published once per window for the session to read.
+#[derive(Default)]
+struct LateBlocks {
+    blocks: AtomicU32,
+    late: AtomicU32,
+    share: AtomicU32,
+}
+
+impl LateBlocks {
+    fn record(&self, late: bool) {
+        let blocks = self.blocks.load(Ordering::Relaxed) + 1;
+        let count = self.late.load(Ordering::Relaxed) + u32::from(late);
+        if blocks < LATE_WINDOW {
+            self.blocks.store(blocks, Ordering::Relaxed);
+            self.late.store(count, Ordering::Relaxed);
+            return;
+        }
+        self.share.store(count * 1000 / blocks, Ordering::Relaxed);
+        self.blocks.store(0, Ordering::Relaxed);
+        self.late.store(0, Ordering::Relaxed);
+    }
+
+    /// The last window's late share in percent, when it is above the limit.
+    fn percent(&self) -> Option<u8> {
+        let share = self.share.load(Ordering::Relaxed);
+        (share > LATE_LIMIT).then(|| share.div_ceil(10).min(100) as u8)
+    }
 }
 
 impl Effect {
@@ -29,6 +70,10 @@ impl Effect {
             control: worker.control_connection(),
             latency: AtomicU32::new(worker.latency),
             error: Mutex::new(None),
+            failed: AtomicBool::new(false),
+            reconfiguring: AtomicBool::new(false),
+            reconfigured: AtomicBool::new(false),
+            late: LateBlocks::default(),
         }))
     }
 
@@ -36,8 +81,47 @@ impl Effect {
         self.error.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// The share of late blocks in percent while the effect is Late: more than 10 % of the
+    /// blocks in the last window of about 2 s missed their deadline. Late is not a failure.
+    pub fn late_percent(&self) -> Option<u8> {
+        self.late.percent()
+    }
+
     fn fail(&self, error: String) {
         *self.error.lock().unwrap_or_else(|e| e.into_inner()) = Some(error);
+        self.failed.store(true, Ordering::Release);
+    }
+
+    /// Restart the plugin off the processing thread. Lifecycle limits are 1 s per step.
+    fn begin_reconfigure(self: &Arc<Self>) {
+        if self.reconfiguring.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let effect = Arc::clone(self);
+        let spawned = std::thread::Builder::new()
+            .name("clef-insert-reconfigure".into())
+            .spawn(move || {
+                let result = {
+                    let mut audio = effect.audio.lock().unwrap_or_else(|e| e.into_inner());
+                    audio
+                        .as_mut()
+                        .map(|audio| audio.reconfigure(&effect.control))
+                };
+                match result {
+                    Some(Ok(latency)) => {
+                        effect.latency.store(latency, Ordering::Release);
+                        effect.reconfigured.store(true, Ordering::Release);
+                    }
+                    Some(Err(error)) => effect.fail(error.to_string()),
+                    // Deactivated meanwhile; the next activation starts fresh.
+                    None => {}
+                }
+                effect.reconfiguring.store(false, Ordering::Release);
+            });
+        if spawned.is_err() {
+            self.fail("could not start the insert reconfiguration thread".into());
+            self.reconfiguring.store(false, Ordering::Release);
+        }
     }
 
     pub fn deactivate(&self, worker: &mut Instrument) -> Result<()> {
@@ -49,10 +133,12 @@ impl Effect {
         Ok(())
     }
 
+    /// Capture state while the effect stays attached to its processing thread. The stage
+    /// outputs dry while the plugin is briefly stopped for `Save`.
     pub fn capture(&self, worker: &mut Instrument) -> Result<Vec<u8>> {
         let mut audio = self.audio.lock().unwrap_or_else(|e| e.into_inner());
         match audio.as_mut() {
-            Some(audio) => audio.with_stopped(&self.control, || worker.save()),
+            Some(audio) => audio.with_stopped(&self.control, || self.control.save()),
             None => worker.save(),
         }
     }
@@ -199,8 +285,27 @@ impl Processor {
         for (slot, stage) in chain.0.iter().zip(&mut self.stages) {
             let dry = frames.map(|frame| stage.dry.apply(frame));
             stage.set_bypassed(slot.bypassed);
+            stage.failed |= slot.effect.failed.load(Ordering::Acquire);
+            if !stage.failed && slot.effect.reconfigured.swap(false, Ordering::AcqRel) {
+                let latency = slot.effect.latency.load(Ordering::Acquire);
+                let total = self.latency - stage.latency + latency;
+                if total > MAX_CHAIN_LATENCY {
+                    slot.effect
+                        .fail("Effect latency exceeds available delay compensation.".to_owned());
+                    stage.failed = true;
+                } else {
+                    stage.latency = latency;
+                    stage.dry = Delay::new(latency);
+                    self.latency = total;
+                    return true;
+                }
+            }
             let remaining = deadline.saturating_duration_since(Instant::now());
-            if stage.failed || remaining.is_zero() || stage.bypassed && stage.mix == 0.0 {
+            if stage.failed
+                || remaining.is_zero()
+                || stage.bypassed && stage.mix == 0.0
+                || slot.effect.reconfiguring.load(Ordering::Acquire)
+            {
                 *frames = dry;
                 continue;
             }
@@ -214,7 +319,13 @@ impl Processor {
             };
             let result = audio
                 .process_effect(position, frames, remaining.max(Duration::from_micros(100)))
-                .and_then(|reply| {
+                .map(|reply| {
+                    slot.effect.late.record(reply.is_none());
+                    // A late block keeps the connection; its reply is discarded on arrival.
+                    let Some(reply) = reply else {
+                        *frames = dry;
+                        return;
+                    };
                     if !reply.restart && reply.latency == stage.latency {
                         if stage.mix == 1.0 && stage.target == 1.0 {
                             frames.copy_from_slice(&reply.frames);
@@ -227,22 +338,15 @@ impl Processor {
                                 ];
                             }
                         }
-                        return Ok(false);
+                        return;
                     }
-                    let latency = audio.reconfigure(&slot.effect.control)?;
-                    let total = self.latency - stage.latency + latency;
-                    if total > MAX_CHAIN_LATENCY {
-                        return Err("Effect latency exceeds available delay compensation.".into());
-                    }
-                    slot.effect.latency.store(latency, Ordering::Release);
-                    stage.latency = latency;
-                    stage.dry = Delay::new(latency);
-                    self.latency = total;
-                    Ok(true)
+                    // Output dry while a helper restarts the plugin; the structural
+                    // restart follows when the helper publishes the new latency.
+                    *frames = dry;
+                    slot.effect.begin_reconfigure();
                 });
             match result {
-                Ok(false) => {}
-                Ok(true) => return true,
+                Ok(()) => {}
                 Err(error) => {
                     slot.effect.fail(error.to_string());
                     stage.failed = true;
@@ -259,6 +363,33 @@ mod tests {
     use super::*;
     use clef_plugin_host::protocol::Request;
     use std::{path::Path, sync::atomic::AtomicBool};
+
+    fn window(late: &LateBlocks, late_blocks: u32) {
+        for block in 0..LATE_WINDOW {
+            late.record(block < late_blocks);
+        }
+    }
+
+    #[test]
+    fn often_late_blocks_mark_the_effect_late_until_a_clean_window() {
+        let late = LateBlocks::default();
+        window(&late, 1);
+        assert_eq!(late.percent(), None, "a single late block is tolerated");
+        window(&late, LATE_WINDOW / 10);
+        assert_eq!(late.percent(), None, "exactly 10 % is not Late");
+        window(&late, LATE_WINDOW / 4);
+        assert_eq!(late.percent(), Some(25));
+        for _ in 0..LATE_WINDOW - 1 {
+            late.record(false);
+        }
+        assert_eq!(
+            late.percent(),
+            Some(25),
+            "the state holds until the window ends"
+        );
+        late.record(false);
+        assert_eq!(late.percent(), None, "a clean window clears Late");
+    }
 
     #[test]
     #[ignore = "requires the built Clef worker, CLAP insert fixture and macOS WindowServer"]
@@ -455,5 +586,111 @@ mod tests {
         assert!(last_fx.error().is_none());
         assert_eq!(output[257], [0.25, -0.125]);
         assert_eq!(output.iter().filter(|&&frame| frame != [0.0; 2]).count(), 1);
+    }
+
+    fn fixture_effect() -> (Instrument, Arc<Effect>, Processor) {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut worker = Instrument::load_effect(
+            &root.join("target/debug/clef"),
+            Path::new("@fixture"),
+            "",
+            RATE,
+            None,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let effect = Effect::activate(&mut worker).unwrap();
+        let mut processor = Processor::default();
+        processor.set_chain(Some(Arc::new(
+            Chain::prepare(vec![Slot {
+                effect: effect.clone(),
+                bypassed: false,
+            }])
+            .unwrap(),
+        )));
+        (worker, effect, processor)
+    }
+
+    fn impulse() -> [Frame; BLOCK] {
+        let mut frames = [[0.0; 2]; BLOCK];
+        frames[0] = [0.5, -0.25];
+        frames
+    }
+
+    #[test]
+    #[ignore = "requires the built Clef worker and macOS WindowServer"]
+    fn a_late_block_outputs_dry_and_keeps_the_effect_running() {
+        let (mut worker, effect, mut processor) = fixture_effect();
+        worker
+            .call(Request::FixtureDelay { micros: 30_000 })
+            .unwrap();
+        let mut frames = impulse();
+        let started = Instant::now();
+        assert!(!processor.process(0, &mut frames, started + Duration::from_millis(2)));
+        assert!(started.elapsed() < Duration::from_millis(20));
+        assert_eq!(frames[0], [0.5, -0.25], "a late block is dry");
+        worker.call(Request::FixtureDelay { micros: 0 }).unwrap();
+        std::thread::sleep(Duration::from_millis(60));
+        let mut frames = impulse();
+        assert!(!processor.process(
+            BLOCK as u64,
+            &mut frames,
+            Instant::now() + Duration::from_secs(2)
+        ));
+        assert_eq!(frames[0], [0.25, -0.125], "the next block is processed");
+        assert!(effect.error().is_none());
+        assert!(!worker.exited());
+    }
+
+    #[test]
+    #[ignore = "requires the built Clef worker and macOS WindowServer"]
+    fn a_restart_request_is_served_off_the_processing_thread() {
+        let (mut worker, effect, mut processor) = fixture_effect();
+        worker.call(Request::FixtureRestart).unwrap();
+        let started = Instant::now();
+        let mut position = 0;
+        let mut dry_blocks = 0;
+        loop {
+            assert!(
+                started.elapsed() < Duration::from_secs(4),
+                "reconfiguration did not finish"
+            );
+            let mut frames = impulse();
+            let block_started = Instant::now();
+            let restart = processor.process(
+                position,
+                &mut frames,
+                block_started + Duration::from_millis(5),
+            );
+            assert!(block_started.elapsed() < Duration::from_millis(50));
+            position += BLOCK as u64;
+            if restart {
+                break;
+            }
+            assert_eq!(frames[0], [0.5, -0.25], "dry while reconfiguring");
+            dry_blocks += 1;
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(dry_blocks >= 1);
+        let mut frames = impulse();
+        assert!(!processor.process(
+            position,
+            &mut frames,
+            Instant::now() + Duration::from_secs(2)
+        ));
+        assert_eq!(frames[0], [0.25, -0.125]);
+        assert!(effect.error().is_none());
+    }
+
+    #[test]
+    #[ignore = "requires the built Clef worker and macOS WindowServer"]
+    fn capture_saves_state_while_the_effect_stays_attached() {
+        let (mut worker, effect, mut processor) = fixture_effect();
+        worker.call(Request::FixtureEdit { value: 42 }).unwrap();
+        assert_eq!(effect.capture(&mut worker).unwrap(), vec![42]);
+        let mut frames = impulse();
+        assert!(!processor.process(0, &mut frames, Instant::now() + Duration::from_secs(2)));
+        assert_eq!(frames[0], [0.25, -0.125]);
+        assert!(effect.error().is_none());
     }
 }

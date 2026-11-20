@@ -27,8 +27,9 @@ when the button is enabled, and the accessible name identifies the channel and p
 For an instrument track the power is the Plugin slot's power: it bypasses the instrument
 while its worker stays online, muting its output before Gain and the effect chain. The
 Plugin slot's context menu also exposes the separate Offline state, which releases the
-worker; Offline disables this power control. Evidence: the T12/T35 gallery states in
-[mixer](../views/mixer.md#clef-t35).
+worker; Offline disables this power control. The same `clef_ui::primitives::inserts::bypass`
+glyph is used at 14×20 for insert slots and 14×16 for the compact send row. Evidence: the
+T12/T35 gallery states in [mixer](../views/mixer.md#clef-t35).
 
 ## Purpose
 On/off (bypass) for inserts, sends, racks, nodes, Monitor FX slots and the sidechain.
@@ -44,7 +45,7 @@ pointer, the shared glyph hover. The LookAndFeel creates it for every `IncDecBut
 stepper is never two joined text buttons.
 
 ## Metrics
-Channel strip column 26; mixer insert 16, mixer send 14.
+Channel strip column 26; mixer insert and mixer send 14.
 
 ## Behaviour
 A registry command or session edit, one undo step. A node's power button is mappable to a macro.
