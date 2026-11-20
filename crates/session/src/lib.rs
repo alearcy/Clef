@@ -4286,6 +4286,16 @@ mod tests {
             .unwrap();
         let send = session.view.project.tracks[1].sends[0].id;
         assert!(session.view.project.tracks[1].sends[0].enabled);
+        for enabled in [false, true] {
+            session
+                .apply(Action::Send {
+                    epoch,
+                    track: 2,
+                    edit: SendEdit::SetEnabled { id: send, enabled },
+                })
+                .unwrap();
+            assert_eq!(session.view.project.tracks[1].sends[0].enabled, enabled);
+        }
         let silence = session.view.project.tracks[1].sends[0].level;
         session
             .apply(Action::Send {

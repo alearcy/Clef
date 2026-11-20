@@ -310,7 +310,7 @@ mod tests {
     }
 
     #[test]
-    fn stop_fades_out_and_keeps_the_requested_stop_frame() {
+    fn stop_keeps_the_output_open_and_a_second_stop_is_a_panic() {
         let timeline = Timeline {
             looping: true,
             loop_range: [960, 1920],
@@ -323,6 +323,17 @@ mod tests {
         control.send(Command::Stop).unwrap();
         advance(&mut renderer, 0);
         assert_eq!(control.view().phase, Phase::Stopped);
+        assert_eq!(renderer.frame, before);
+        // Tails ring out: Stop neither fades nor closes the output.
+        for _ in 0..480 {
+            renderer.sample();
+            assert_eq!(renderer.gain(), 1.0);
+        }
+        assert_eq!(renderer.panics(), 0);
+
+        control.send(Command::Stop).unwrap();
+        advance(&mut renderer, 0);
+        assert_eq!(renderer.panics(), 1);
         let mut previous = renderer.gain();
         for _ in 0..240 {
             renderer.sample();
@@ -330,18 +341,27 @@ mod tests {
             assert!(gain <= previous + f32::EPSILON, "{gain} > {previous}");
             previous = gain;
         }
-        assert_eq!(renderer.phase, Phase::Stopped);
-        assert_eq!(renderer.frame, before);
         assert!(renderer.gain() <= f32::EPSILON);
         for _ in 0..240 {
             renderer.sample();
         }
-        assert_eq!(renderer.gain(), 0.0);
+        assert_eq!(renderer.gain(), 0.0, "the panic keeps the output closed");
+        assert_eq!(renderer.frame, before);
         renderer.resume_gate();
         for _ in 0..240 {
             renderer.sample();
         }
         assert_eq!(renderer.gain(), 1.0);
+
+        control.send(Command::Stop).unwrap();
+        advance(&mut renderer, 0);
+        control.send(Command::Play).unwrap();
+        advance(&mut renderer, 0);
+        assert_eq!(
+            renderer.gain(),
+            1.0,
+            "Play reopens the output after a panic"
+        );
     }
 
     #[test]
@@ -553,9 +573,8 @@ pub(crate) struct Renderer {
     generation: u64,
     recording: bool,
     stopped_recording: bool,
-    stopping: bool,
-    stop_pending: u32,
-    stop_frame: u64,
+    /// Counts panics (Stop while stopped); the engine releases every voice on a change.
+    panics: u64,
     declick_gain: f32,
     declick_target: f32,
     declick_step: f32,
@@ -590,9 +609,7 @@ impl Renderer {
             generation: 0,
             recording: false,
             stopped_recording: false,
-            stopping: false,
-            stop_pending: 0,
-            stop_frame: frame,
+            panics: 0,
             declick_gain: 1.0,
             declick_target: 1.0,
             declick_step: 0.0,
@@ -638,12 +655,7 @@ impl Renderer {
         }
         self.phase = Phase::Stopped;
         self.count = None;
-        self.stopping = false;
-        self.stop_pending = 0;
-        self.declick_gain = 0.0;
-        self.declick_target = 0.0;
-        self.declick_step = 0.0;
-        self.declick_remaining = 0;
+        // The output stays open so instrument and effect tails ring out (T15 Stop and Tails).
         self.prepare_position();
     }
 
@@ -665,24 +677,25 @@ impl Renderer {
     }
 
     fn request_stop(&mut self) {
-        if self.phase == Phase::Stopped || self.stopping {
+        if self.phase != Phase::Stopped {
+            self.stop();
             return;
         }
-        // Capture the record end at the stop request, not after the short fade.
-        self.stopped_recording |= self.recording;
-        self.recording = false;
-        self.stop_frame = self.frame;
-        self.stopping = true;
-        self.stop_pending = (self.settings.map.rate / 200).max(1);
-        self.fade_to(0.0, self.stop_pending);
+        // A second Stop is a panic: fade the output out and keep it closed until Play or
+        // live audition; the engine releases every voice.
+        self.panics = self.panics.wrapping_add(1);
+        self.fade_to(0.0, (self.settings.map.rate / 200).max(1));
+    }
+
+    pub(crate) fn panics(&self) -> u64 {
+        self.panics
     }
 
     pub(crate) fn gain(&self) -> f32 {
         self.declick_gain
     }
 
-    /// Reopen the output gate for live audition after a stop. It stays closed
-    /// for sequenced audio so a release tail cannot be unmuted by the fade.
+    /// Reopen the output gate for live audition after a panic closed it.
     pub(crate) fn resume_gate(&mut self) {
         if self.phase == Phase::Stopped && self.declick_gain < 1.0 {
             self.fade_to(1.0, (self.settings.map.rate / 200).max(1));
@@ -690,10 +703,6 @@ impl Renderer {
     }
 
     fn play(&mut self, record: bool, hold: u64) {
-        if self.stopping {
-            self.frame = self.stop_frame;
-            self.stop();
-        }
         if self.phase != Phase::Stopped {
             return;
         }
@@ -817,13 +826,6 @@ impl Renderer {
     }
 
     pub(crate) fn sample(&mut self) -> f32 {
-        if self.stopping && (self.hold > 0 || self.count.is_some()) {
-            // Count-in and the initial hold are already silent or click-only;
-            // finish the stop without extending them by the fade window.
-            self.frame = self.stop_frame;
-            self.stop();
-            return 0.0;
-        }
         if self.hold > 0 {
             self.hold -= 1;
             return 0.0;
@@ -873,27 +875,12 @@ impl Renderer {
             self.prepare_span();
         }
         self.advance_declick();
-        if self.stopping {
-            self.stop_pending -= 1;
-            if self.stop_pending == 0 {
-                self.frame = self.stop_frame;
-                self.stop();
-            }
-        }
         sample
     }
 
     pub(crate) fn publish(&self, latency_frames: u64) {
-        let phase = if self.stopping {
-            Phase::Stopped
-        } else {
-            self.phase
-        };
-        let frame = if self.stopping {
-            self.stop_frame
-        } else {
-            self.frame
-        };
+        let phase = self.phase;
+        let frame = self.frame;
         let audible = if phase == Phase::Playing {
             let projected = self.origin + self.elapsed.saturating_sub(latency_frames);
             match self.settings.range {

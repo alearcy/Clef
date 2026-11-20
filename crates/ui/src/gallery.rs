@@ -1292,6 +1292,62 @@ mod tests {
     }
 
     #[test]
+    fn t15_send_bypass_glyph_click_reaches_the_session() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut app = App::new(ctx.clone(), PathBuf::new());
+        routing_fixture(&mut app, "buses");
+        app.mixer_ui.open = true;
+        let render = |app: &mut App, events| {
+            ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1024.0, 900.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| app.main_surface(ui, &ctx),
+            )
+        };
+        let _ = render(&mut app, vec![]);
+        let tree = render(&mut app, vec![])
+            .platform_output
+            .accesskit_update
+            .unwrap();
+        let glyph = tree
+            .nodes
+            .iter()
+            .find_map(|(_, node)| {
+                node.label()
+                    .is_some_and(|label| label.contains("Bypass Send to"))
+                    .then(|| node.bounds())
+                    .flatten()
+            })
+            .expect("send bypass glyph");
+        let pos = egui::pos2(
+            (glyph.x0 + glyph.x1) as f32 / 2.0,
+            (glyph.y0 + glyph.y1) as f32 / 2.0,
+        );
+        app.actions_in_flight = 0;
+        app.busy_since = None;
+        let _ = render(&mut app, vec![egui::Event::PointerMoved(pos)]);
+        for pressed in [true, false] {
+            let _ = render(
+                &mut app,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+        }
+        assert_eq!(app.actions_in_flight, 1, "the bypass click sends one edit");
+    }
+
+    #[test]
     fn t15_add_send_menu_can_create_a_bus_or_pick_an_existing_one() {
         let ctx = egui::Context::default();
         ctx.enable_accesskit();

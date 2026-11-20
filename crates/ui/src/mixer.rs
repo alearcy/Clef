@@ -645,106 +645,7 @@ impl App {
             self.select_mixer(target);
         }
         match event {
-            Some(Event::FocusInsert(target, id)) if enabled => {
-                self.mixer_ui.insert_focus = Some((target, id));
-            }
-            Some(Event::FocusInstrument(id)) if enabled => {
-                self.mixer_ui.instrument_focus = Some(id);
-            }
-            Some(Event::Instrument(command, id)) if enabled => {
-                self.mixer_ui.instrument_focus = Some(id);
-                self.run_instrument_command(command, id, ui.ctx());
-            }
-            Some(Event::Insert(command, target, id)) if enabled => {
-                self.run_insert_command(command, target, id, ui.ctx());
-            }
-            Some(Event::DropInsert(target, id, before)) if enabled => {
-                self.send_insert(target, InsertAction::Move { id, before });
-            }
-            Some(Event::SendAdd { track, target }) if enabled => {
-                self.send(Action::Send {
-                    epoch: self.view.project_epoch,
-                    track,
-                    edit: SendEdit::Add { target },
-                });
-            }
-            Some(Event::SendNewBus { track }) if enabled => {
-                self.send(Action::AddBusSend { track });
-            }
-            Some(Event::SendRemove { track, id }) if enabled => {
-                self.send(Action::Send {
-                    epoch: self.view.project_epoch,
-                    track,
-                    edit: SendEdit::Remove { id },
-                });
-            }
-            Some(Event::SendPre { track, id, pre }) if enabled => {
-                self.send(Action::Send {
-                    epoch: self.view.project_epoch,
-                    track,
-                    edit: SendEdit::SetPre { id, pre },
-                });
-            }
-            Some(Event::SendEnabled { track, id, enabled }) if enabled => {
-                self.send(Action::Send {
-                    epoch: self.view.project_epoch,
-                    track,
-                    edit: SendEdit::SetEnabled { id, enabled },
-                });
-            }
-            Some(Event::SendTarget { track, id, target }) if enabled => {
-                self.send(Action::Send {
-                    epoch: self.view.project_epoch,
-                    track,
-                    edit: SendEdit::SetTarget { id, target },
-                });
-            }
-            Some(Event::SendAdjust {
-                track,
-                id,
-                adjustment,
-            }) if enabled => {
-                self.adjust_send(track, id, adjustment);
-                ui.ctx().request_repaint();
-            }
-            Some(Event::Output { track, output }) if enabled => {
-                self.send(Action::SetOutput {
-                    epoch: self.view.project_epoch,
-                    track,
-                    output,
-                });
-            }
-            Some(Event::NewBus { track }) if enabled => {
-                self.send(Action::AddBus {
-                    assign: Some(track),
-                });
-            }
-            Some(Event::AddBus) if enabled => {
-                self.send(Action::AddBus { assign: None });
-            }
-            Some(Event::Focus(target)) if enabled => self.focus_mixer(target),
-            Some(Event::Command(command, target)) if enabled => {
-                self.run_mixer_command(command, target)
-            }
-            Some(Event::Adjust(target, control, controls::Adjustment::Commit(value)))
-                if enabled =>
-            {
-                self.release_mixer(self.make_change(target, control, value));
-            }
-            Some(Event::Adjust(target, control, controls::Adjustment::Drag { origin, value }))
-                if enabled =>
-            {
-                let change = self.make_change(target, control, value);
-                if self.mixer_ui.gesture.is_none_or(|(previous, _)| {
-                    previous.value != value
-                        || previous.control != control
-                        || previous.target != target
-                }) {
-                    let _ = self.backend.send.send(Action::PreviewMix(Some(change)));
-                }
-                self.mixer_ui.gesture = Some((change, origin));
-                ui.ctx().request_repaint();
-            }
+            Some(event) if enabled => self.mixer_event(event, ui.ctx()),
             _ => {
                 if !ui.input(|input| input.pointer.primary_down()) {
                     // A send drag released without a commit event (for example while the
@@ -765,6 +666,105 @@ impl App {
             }
         }
         self.show_effect_picker(ui.ctx());
+    }
+
+    fn mixer_event(&mut self, event: Event, ctx: &egui::Context) {
+        match event {
+            Event::FocusInsert(target, id) => {
+                self.mixer_ui.insert_focus = Some((target, id));
+            }
+            Event::FocusInstrument(id) => {
+                self.mixer_ui.instrument_focus = Some(id);
+            }
+            Event::Instrument(command, id) => {
+                self.mixer_ui.instrument_focus = Some(id);
+                self.run_instrument_command(command, id, ctx);
+            }
+            Event::Insert(command, target, id) => {
+                self.run_insert_command(command, target, id, ctx);
+            }
+            Event::DropInsert(target, id, before) => {
+                self.send_insert(target, InsertAction::Move { id, before });
+            }
+            Event::SendAdd { track, target } => {
+                self.send(Action::Send {
+                    epoch: self.view.project_epoch,
+                    track,
+                    edit: SendEdit::Add { target },
+                });
+            }
+            Event::SendNewBus { track } => {
+                self.send(Action::AddBusSend { track });
+            }
+            Event::SendRemove { track, id } => {
+                self.send(Action::Send {
+                    epoch: self.view.project_epoch,
+                    track,
+                    edit: SendEdit::Remove { id },
+                });
+            }
+            Event::SendPre { track, id, pre } => {
+                self.send(Action::Send {
+                    epoch: self.view.project_epoch,
+                    track,
+                    edit: SendEdit::SetPre { id, pre },
+                });
+            }
+            Event::SendEnabled { track, id, enabled } => {
+                self.send(Action::Send {
+                    epoch: self.view.project_epoch,
+                    track,
+                    edit: SendEdit::SetEnabled { id, enabled },
+                });
+            }
+            Event::SendTarget { track, id, target } => {
+                self.send(Action::Send {
+                    epoch: self.view.project_epoch,
+                    track,
+                    edit: SendEdit::SetTarget { id, target },
+                });
+            }
+            Event::SendAdjust {
+                track,
+                id,
+                adjustment,
+            } => {
+                self.adjust_send(track, id, adjustment);
+                ctx.request_repaint();
+            }
+            Event::Output { track, output } => {
+                self.send(Action::SetOutput {
+                    epoch: self.view.project_epoch,
+                    track,
+                    output,
+                });
+            }
+            Event::NewBus { track } => {
+                self.send(Action::AddBus {
+                    assign: Some(track),
+                });
+            }
+            Event::AddBus => {
+                self.send(Action::AddBus { assign: None });
+            }
+            Event::Focus(target) => self.focus_mixer(target),
+            Event::Command(command, target) => self.run_mixer_command(command, target),
+            Event::Adjust(target, control, controls::Adjustment::Commit(value)) => {
+                self.release_mixer(self.make_change(target, control, value));
+            }
+            Event::Adjust(target, control, controls::Adjustment::Drag { origin, value }) => {
+                let change = self.make_change(target, control, value);
+                if self.mixer_ui.gesture.is_none_or(|(previous, _)| {
+                    previous.value != value
+                        || previous.control != control
+                        || previous.target != target
+                }) {
+                    let _ = self.backend.send.send(Action::PreviewMix(Some(change)));
+                }
+                self.mixer_ui.gesture = Some((change, origin));
+                ctx.request_repaint();
+            }
+        }
     }
 
     fn mixer_strip(
@@ -1845,6 +1845,26 @@ mod tests {
         assert!(app.mixer_ui.send_gesture.is_none());
         assert_eq!(app.mixer_ui.send_level(1, &send), send.level);
         assert_eq!(app.actions_in_flight, 0);
+    }
+
+    #[test]
+    fn send_bypass_and_enable_both_reach_the_session() {
+        let ctx = egui::Context::default();
+        let mut app = app_with_two_inserts();
+        // Bypass (enabled: false) was dropped while its field shadowed the strip guard.
+        for enabled in [false, true] {
+            app.actions_in_flight = 0;
+            app.busy_since = None;
+            app.mixer_event(
+                Event::SendEnabled {
+                    track: 1,
+                    id: 9,
+                    enabled,
+                },
+                &ctx,
+            );
+            assert_eq!(app.actions_in_flight, 1, "enabled: {enabled}");
+        }
     }
 
     #[test]

@@ -31,7 +31,10 @@ sandboxing beyond the existing worker isolation.
 
 ## Open Questions
 
-- Scan-cache identity and invalidation. Evaluate fingerprints that detect updates to the
+- Scan-cache identity and invalidation. Observed 2026-11-20: the catalog is memory-only
+  (`Catalog::default()` at startup), so every app launch rescans all plugins on the first
+  instrument or insert picker open. The user decided to keep the cache inside T16 rather than
+  anticipate it. Evaluate fingerprints that detect updates to the
   executable inside a macOS bundle. Define a forced rescan path that still respects quarantine.
 - Which categories and metadata are reliable across VST3/CLAP.
 - Quarantine policy: user-visible, automatic retry, and how to clear it.

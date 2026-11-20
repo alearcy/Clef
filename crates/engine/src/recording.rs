@@ -919,6 +919,7 @@ pub(crate) struct Scheduler {
     active_keys: usize,
     cursor: Option<(u64, u64, u64)>,
     panic: Vec<Midi>,
+    reset: bool,
     mute: bool,
 }
 
@@ -935,6 +936,7 @@ impl Scheduler {
             active_keys: 0,
             cursor: None,
             panic: crate::sequence::panic_events(),
+            reset: false,
             mute: false,
         }
     }
@@ -950,6 +952,11 @@ impl Scheduler {
 
     pub(crate) fn release_live(&mut self) {
         self.timed.push(0, Kind::ClearLive);
+    }
+
+    /// Replace the next block's events with the panic set and forget every held voice.
+    pub(crate) fn panic(&mut self) {
+        self.reset = true;
     }
 
     pub(crate) fn schedule(
@@ -1105,7 +1112,7 @@ impl Scheduler {
                 }
             }
         }
-        if overflow {
+        if overflow || std::mem::take(&mut self.reset) {
             events.clear();
             events.extend_from_slice(&self.panic);
             self.live.held.fill(0);
@@ -1695,6 +1702,27 @@ mod tests {
         scheduler.release_live();
         scheduler.render(&mut events);
         assert!(events.iter().any(|event| event.bytes == [0x80, 61, 0]));
+    }
+
+    #[test]
+    fn panic_replaces_the_block_with_the_panic_set_and_forgets_held_voices() {
+        let mut scheduler = Scheduler::new();
+        let mut events = Vec::new();
+        scheduler.live(Midi {
+            offset: 0,
+            bytes: [0x90, 61, 92],
+        });
+        scheduler.render(&mut events);
+        events.clear();
+        scheduler.panic();
+        // A panic is not a dropped block.
+        assert!(!scheduler.render(&mut events));
+        assert_eq!(events, crate::sequence::panic_events());
+        events.clear();
+        // The held key is forgotten: a later release emits nothing for it.
+        scheduler.release_live();
+        scheduler.render(&mut events);
+        assert!(events.is_empty());
     }
 
     #[test]

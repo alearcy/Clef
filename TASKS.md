@@ -21,8 +21,6 @@ reference and remains a planning draft.
 
 | Task | Status | Specification | Next step / dependency |
 | --- | --- | --- | --- |
-| T36 — Audio, CPU, and Memory Audit Fixes | In Progress | [T36 specification](docs/specs/T36-audit-fixes.md) | P1. All fixes and automated evidence landed; GUI (P4, S2) and listening (E1–E3) checks pending. |
-| T15 — Buses, Sends, Groups, and Routing | In Progress | [T15 specification](docs/specs/T15-routing.md) | P1. Implementation and automated evidence landed; native bus-chain PDC and manual GUI/listening passes pending. |
 | T14 — Audio Tracks and Recording | Todo | [T14 specification](docs/specs/T14-audio-recording.md) | P1. After T05 and T11; media-storage decision required. |
 | T27 — Audio Comping and Take Lanes | Todo | [T27 specification](docs/specs/T27-audio-comping.md) | P2. After T14 and T26; T14 media-storage decision required. |
 | T28 — FX Rack and Virtual Cable Graph | Todo | [T28 specification](docs/specs/T28-fx-rack.md) | P2. After T12 and T15; audio and MIDI nodes connected by virtual cables. |

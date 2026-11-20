@@ -174,6 +174,8 @@ effects, and ARA (T29).
   The output gate then stays closed while stopped: reopening it after the fade would unmute the
   instrument release tail a few milliseconds later, producing a dip and return. Live audition
   explicitly reopens the gate through `Engine::audition`; Play reopens it immediately.
+  Superseded on 2026-11-21 by T15 [Stop and Tails](T15-routing.md#stop-and-tails-added-2026-11-21):
+  Stop keeps the output open and the streams contiguous; only a second Stop fades and closes it.
 - Chain latency is included in the track's reported latency and the maximum
   compensation delay. Master latency is added to the published transport latency. The
   prepared chain is rejected if total compensation exceeds the bounded capacity, and the

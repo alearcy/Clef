@@ -1,6 +1,6 @@
 # T36 — Audio, CPU, and Memory Audit Fixes
 
-Status: In Progress (started 2026-11-20)
+Status: Done — completed on 2026-11-21 (started 2026-11-20). See [Completion](#completion-2026-11-21).
 
 ## Goal
 
@@ -274,10 +274,6 @@ focused unit or integration test; items without a feasible automated test record
 
 ### Known Limits and Remaining Evidence
 
-- GUI pending: P4 (edit an open VST3 editor while stopped, save, reopen) and S2 (send drag
-  during another action).
-- Listening pending: bus routing with a device buffer above 128 frames (E1/E2) and bus Gain
-  without inserts (E3).
 - A plugin that is often late alternates wet and dry blocks instead of being quarantined (P1);
   T37 keeps this by decision and adds a Late warning. See [T37](T37-audit-limits.md).
 - Instrument reconfigure in the track and live brokers stays synchronous (outside P2); moved
@@ -286,6 +282,14 @@ focused unit or integration test; items without a feasible automated test record
   [T37](T37-audit-limits.md) makes the release always commit.
 - With S8, closing after only scrolling or zooming did not prompt, so that view change was lost;
   [T37](T37-audit-limits.md) saves it silently when leaving a clean, saved project.
+
+## Completion (2026-11-21)
+
+The user confirmed on 2026-11-21 the remaining GUI evidence, P4 (edit an open VST3 editor
+while stopped, save, reopen) and S2 (send drag during another action), and the listening
+evidence, E1/E2 (bus routing with a device buffer above 128 frames) and E3 (bus Gain without
+inserts). Workspace at closure: `cargo test --locked` 227 passed, 26 ignored; clippy and
+`cargo fmt --all --check` clean.
 
 ## Open Questions
 

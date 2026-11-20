@@ -1,6 +1,6 @@
 # T15 — Buses, Sends, Groups, and Routing
 
-**Status:** In progress — specification and written UI proposal approved on 2026-11-20; model, engine, session and mixer implementation landed with automated evidence. Native bus-chain PDC and the manual GUI/listening passes remain.
+**Status:** Done — completed on 2026-11-21. Specification and written UI proposal approved on 2026-11-20; Stop and Tails added and approved on 2026-11-21. See [Completion](#completion-2026-11-21).
 **Priority:** P1.
 **Date:** 2026-11-20.
 **Task:** [T15](../../TASKS.md)
@@ -209,6 +209,75 @@ only applies the prepared matrices and send gains.
   apply.
 - A direct-to-Master path with no inserts keeps its current zero-routing-latency behaviour.
 
+## Stop and Tails (added 2026-11-21)
+
+Approved by the user on 2026-11-21, implemented and confirmed by listening the same day.
+
+Raised in the listening pass: Stop cut the reverb tail of a bus. Decisions taken with the user
+on 2026-11-21:
+
+- **Stop lets tails ring.** Instrument release tails and every effect tail (track inserts, bus
+  inserts, master inserts) keep sounding after Stop until they decay. Stop releases held clip
+  notes (the scheduler's existing clip clear on a generation change) and stops scheduling new
+  clip events; it no longer fades or closes the output.
+- **A second Stop is a panic.** Stop while already stopped fades the output to silence over
+  5 ms, sends the panic MIDI events (all notes off, sustain off) to every instrument, and
+  keeps the output gate closed until Play, Record or live audition.
+- **Play over a tail.** Play while a tail is ringing does not cut it; the tail decays under the
+  new playback.
+- Tracked inside T15.
+
+Cause and design. Stop did two things that cut tails: the transport faded and closed the output
+gate, and the engine advanced the packet-validity generation, so track and routing packets
+already rendered ahead (up to the scheduling lead) were discarded. The discard left a gap of
+about one lead, after which the decaying tail returned; the T12/T35 "Stop crackle" was that
+dip and return, and the closed gate hid it. The engine already keeps the validity generation
+unchanged on Play from stopped. The change:
+
+1. The callback advances the packet-validity generation only for a discontinuity while
+   playing (Locate or a loop/range change during playback), not on the transition to
+   stopped. Track, bus and master streams then stay contiguous through Stop and through a
+   following Play.
+2. A Stop request while playing no longer fades or closes the gate. Record end and stop frame
+   are still captured at the request.
+3. Stop while stopped (panic) keeps the existing 5 ms fade and closed gate and adds the panic
+   MIDI to every track worker.
+
+Accepted consequences and limits:
+
+- Audio already rendered ahead of the Stop (at most the scheduling lead, about 21 ms with a
+  256-frame buffer) still plays, including clip content in that window; then notes release.
+- The panic does not reset plugin internal state. If Play follows the panic while a long effect
+  tail is still decaying inside the plugin, its remainder can be heard when the gate reopens.
+- Locate during playback keeps its existing bounded transition.
+
+Acceptance:
+
+- Automated: Stop while playing keeps the transport gain at 1 and leaves the validity
+  generation unchanged; packets rendered before the Stop are consumed without a gap (a
+  continuous track tone through Stop produces no zero run); bus/master routing packets stay
+  matched through Stop; Stop while stopped fades to 0, queues the panic and keeps the gate
+  closed until Play or audition; Locate while playing still discards stale packets; no
+  callback allocation.
+- Listening (user, `T12-listening-v2`): the bus reverb tail and an instrument release ring
+  out after Stop with no click, dip or return; a second Stop silences everything; Play during
+  a tail keeps the tail under the new playback.
+
+Implementation: `Renderer::request_stop` stops at once without a fade; while stopped it counts
+a panic and fades to 0 (`Renderer::panics`). `Stop` no longer closes the gate; Play and
+audition reopen it after a panic. The callback publishes the panic count on
+`Clock::panics`, and each track worker calls `Scheduler::panic`, which replaces the next block
+with the panic MIDI set and forgets held voices. The callback advances the packet-validity
+generation only when both the previous and the new projection are playing.
+
+Automated evidence (2026-11-21): `stop_keeps_the_output_open_and_a_second_stop_is_a_panic`
+(replaces `stop_fades_out_and_keeps_the_requested_stop_frame`),
+`only_a_discontinuity_while_playing_discards_rendered_audio`,
+`recording_clock_and_stop_keep_rendered_tail_packets_without_allocating` (replaces
+`recording_clock_and_stop_flush_old_packets_without_allocating`; the pre-Stop block now plays,
+no callback allocation), `panic_replaces_the_block_with_the_panic_set_and_forgets_held_voices`.
+Full suite: 227 passed, 26 ignored; clippy and fmt clean.
+
 ## Persistence and Undo
 
 - Output assignment, send add/remove/level/pre-post/bypass/destination, bus creation and bus
@@ -397,12 +466,52 @@ returns consumed buffers through a free ring. No audio-callback path constructs 
 `routing_handoff_fits_on_a_small_audio_thread_stack` (64 KiB stack), and the existing
 allocation-free callback tests.
 
-## Known Gaps Before Closure
+## Listening Pass Findings (2026-11-20)
+
+- **Send bypass ignored.** In the mixer event dispatch, the `SendEnabled { enabled }` field
+  shadowed the strip's `enabled` guard, so a bypass click (`enabled: false`) fell through and
+  was dropped; only re-enabling worked. Fix: the strip guard now wraps the whole dispatch
+  (`mixer_event`), and no event arm carries its own guard. Regression:
+  `send_bypass_and_enable_both_reach_the_session`.
+  Retest after that fix: the user still reports that bypass does not work. Added evidence:
+  `t15_send_bypass_glyph_click_reaches_the_session` (a pointer click on the rendered glyph
+  dispatches one edit) and a `SetEnabled` false/true round trip in
+  `buses_outputs_sends_and_bus_removal_refusal_round_trip_without_workers`; the engine maps a
+  disabled send to gain 0 and skips it. Open: what the user hears on bypass (a reverb tail
+  continuing on the bus is expected; the send input stops), and whether the retest used a
+  build after the fix. Rebuilt `target/debug/clef` on 2026-11-21 for the retest.
+- **Send to a bus with a reverb insert.** Resolved by the user: the send works. The reported
+  problem is the Stop behaviour: Stop fades the whole master output over 5 ms and keeps the
+  output gate closed until Play or audition (a T12/T35 decision that removed a Stop crackle),
+  so bus effect tails are cut. The user expects effect tails to continue after Stop; see
+  [Stop and Tails](#stop-and-tails-added-2026-11-21-draft-awaiting-approval).
+
+## Completion (2026-11-21)
+
+The user confirmed on 2026-11-21, with `validation-output/T12-listening-v2.clef`:
+
+- Listening: effect and instrument tails ring out after Stop; the send bypass works on the
+  rebuilt binary.
+- The remaining manual GUI pass (mixer, Output menu, solo states) and listening pass
+  (pre/post, solo returns, bus PDC) were confirmed by the user at closure.
+
+Automated evidence at completion: `cargo test --locked` 227 passed, 26 ignored; clippy and
+`cargo fmt --all --check` clean.
+
+Known limits carried forward (not blocking closure, by the user's decision):
+
+- No native effect-fixture regression for bus-chain PDC; the routing math and dry handoff
+  have unit coverage only.
+- Send budget rejection at the project bound and a direct v1/v2 bus-shaped project test are
+  untested.
+- The full keyboard/accessibility interaction matrix for send controls, the Output menu and
+  the dB popup is not covered beyond presence and bounds.
+- The gaps listed below remain as recorded.
+
+## Known Gaps at Closure
 
 - Bus-chain PDC has unit coverage for the routing math and dry handoff, but no native
   effect-fixture regression yet. The T12 ignored native effect tests remain the model.
-- The manual GUI pass and the listening pass (pre/post, solo, bus PDC) have not been
-  recorded.
 - The track context menu still lacks dedicated **Output…**, **Sends…** and **Route to New
   Bus** entries; the mixer exposes the same actions. The command registry has **Add Bus**.
 - Bus strips show the number of sources, not their names.
@@ -441,7 +550,7 @@ Automated evidence recorded on 2026-11-20:
   [long sends](../UI/snapshots/egui/t15-long-sends-1024.png),
   [empty](../UI/snapshots/egui/t15-empty-1024.png).
 
-Remaining verification (not yet recorded):
+Verification not recorded at closure (see Completion for the user's decision):
 
 - Native bus-chain PDC with the effect fixture: different track and bus chain latencies,
   direct and bus paths landing on the same sample, total-latency transition on a graph

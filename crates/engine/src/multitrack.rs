@@ -119,6 +119,8 @@ pub struct Clock {
     bus_count: AtomicU64,
     master_delay: AtomicU32,
     audition_activity: AtomicBool,
+    /// Transport panic count; track workers release every voice when it changes.
+    panics: AtomicU64,
 }
 impl Clock {
     pub fn take_master_meter(&self) -> Frame {
@@ -202,6 +204,7 @@ impl Clock {
             controls: std::array::from_fn(|_| AtomicU32::new(0)),
             insert_chains: Mutex::default(),
             routing_mix: Mutex::new(Arc::new(PreparedMix::default())),
+            panics: AtomicU64::new(0),
             bus_ids: std::array::from_fn(|_| AtomicU64::new(0)),
             bus_meters: std::array::from_fn(|_| MeterPeak::default()),
             bus_count: AtomicU64::new(0),
@@ -734,6 +737,9 @@ impl Mix {
             if self.clock.audition_activity.swap(false, Ordering::AcqRel) {
                 transport.resume_gate();
             }
+            self.clock
+                .panics
+                .store(transport.panics(), Ordering::Release);
             let timeline = transport.projection(self.position);
             if let Some(previous) = self
                 .clock
@@ -741,9 +747,13 @@ impl Mix {
                 .get()
                 .filter(|previous| *previous != timeline)
             {
+                // Only a discontinuity during playback (Locate, range change) discards
+                // audio rendered ahead. Stop and Play keep the streams contiguous so
+                // instrument and effect tails ring through them.
                 if scheduled
                     && previous.start != u64::MAX
                     && previous.limit > 0
+                    && timeline.start != u64::MAX
                     && previous.generation != timeline.generation
                 {
                     playback_generation = timeline.generation;
@@ -1578,6 +1588,7 @@ impl Engine {
             let mut plan_revision = 0;
             let mut plan = None;
             let mut audition: Option<(u64, [u8; 3])> = None;
+            let mut panics = clock.panics.load(Ordering::Acquire);
             let mut instrument_latency = initial_latency;
             let result: Result<()> = (|| {
                 let _ = crate::threading::audio_priority(true);
@@ -1604,6 +1615,12 @@ impl Engine {
                     if next_revision != revision || release_live {
                         revision = next_revision;
                         scheduler.release_live();
+                        audition = None;
+                    }
+                    let next_panics = clock.panics.load(Ordering::Acquire);
+                    if next_panics != panics {
+                        panics = next_panics;
+                        scheduler.panic();
                         audition = None;
                     }
                     let next_plan = clock.plan_revision.load(Ordering::Acquire);
@@ -2610,7 +2627,45 @@ mod callback_proof {
         }
     }
     #[test]
-    fn recording_clock_and_stop_flush_old_packets_without_allocating() {
+    fn only_a_discontinuity_while_playing_discards_rendered_audio() {
+        use crate::transport::Command;
+        let timing = Timeline::default();
+        let (mut control, renderer) = Renderer::new(Prepared::new(&timing, 48_000).unwrap(), 0);
+        let mut mix = prepared(&[0]);
+        mix.lead = 512;
+        mix.readers.clear();
+        mix.transport = Some(renderer);
+        mix.clock.capture_target.store(1, Ordering::Release);
+        let mut output = [0.0; 64 * 4];
+        let validity = |mix: &Mix| mix.clock.playback_generation.load(Ordering::Acquire);
+        mix.fill(&mut output, 17);
+        let stopped = validity(&mix);
+        control.send(Command::Play).unwrap();
+        for _ in 0..16 {
+            mix.fill(&mut output, 17);
+        }
+        assert_eq!(validity(&mix), stopped, "Play keeps stopped tails");
+        control.send(Command::Locate(960)).unwrap();
+        mix.fill(&mut output, 17);
+        let located = validity(&mix);
+        assert!(
+            located > stopped,
+            "Locate while playing discards stale audio"
+        );
+        for _ in 0..16 {
+            mix.fill(&mut output, 17);
+        }
+        control.send(Command::Stop).unwrap();
+        mix.fill(&mut output, 17);
+        assert_eq!(validity(&mix), located, "Stop keeps rendered tails");
+        control.send(Command::Stop).unwrap();
+        mix.fill(&mut output, 17);
+        assert_eq!(mix.clock.panics.load(Ordering::Acquire), 1);
+        assert_eq!(validity(&mix), located);
+    }
+
+    #[test]
+    fn recording_clock_and_stop_keep_rendered_tail_packets_without_allocating() {
         use crate::transport::Command;
         let timing = Timeline::default();
         let (mut control, renderer) = Renderer::new(Prepared::new(&timing, 48_000).unwrap(), 0);
@@ -2656,6 +2711,7 @@ mod callback_proof {
             next: None,
             stats: track,
         });
+        let validity = mix.clock.playback_generation.load(Ordering::Acquire);
         COUNT.with(|counter| counter.set(Some(0)));
         let stop = mix.position;
         mix.fill(&mut output, 17);
@@ -2663,11 +2719,23 @@ mod callback_proof {
         assert_eq!(allocations, 0);
         assert_eq!(recording.start, 512 + 2 * BLOCK as u64);
         assert_eq!(mix.clock.record_end.load(Ordering::Acquire), stop - 17);
+        // Stop keeps the stream contiguous: the block rendered before it still plays.
+        assert_eq!(
+            mix.clock.playback_generation.load(Ordering::Acquire),
+            validity
+        );
+        assert!(
+            output
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|frame| frame[2] != 0.0 && frame[3] != 0.0),
+            "the pre-Stop block is played, not flushed"
+        );
         let mut fade = vec![0.0; 1024 * 4];
         mix.fill(&mut fade, 17);
         let mut settle = vec![0.0; 256 * 4];
         mix.fill(&mut settle, 17);
-        assert!(mix.clock.playback_generation.load(Ordering::Acquire) > old_generation);
         assert!(settle.iter().all(|sample| *sample == 0.0));
     }
 
