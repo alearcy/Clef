@@ -12,7 +12,7 @@ use clef_model::{
     timeline::{MAX_TICK, QUARTER, Timeline},
 };
 use eframe::egui::{self, Id, Key, Modifiers, Pos2, Rect, Ui};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 #[derive(Clone, Copy)]
 enum NoteDrag {
@@ -57,6 +57,8 @@ pub struct PianoRoll {
     bend_source: Option<EventId>,
     split: f32,
     focus_lane: bool,
+    takes: BTreeMap<ClipId, u64>,
+    take_lane: Option<usize>,
 }
 
 impl Default for PianoRoll {
@@ -89,6 +91,8 @@ impl Default for PianoRoll {
             bend_source: None,
             split: 0.34,
             focus_lane: false,
+            takes: BTreeMap::new(),
+            take_lane: None,
         }
     }
 }
@@ -175,6 +179,33 @@ impl PianoRoll {
         self.activate(id);
         self.offset = clip.start;
         self.focus_lane = true;
+        self.takes.clear();
+        self.take_lane = None;
+    }
+
+    pub fn open_take_lane(&mut self, clips: &[(ClipId, u64)], lane: usize) {
+        self.takes = clips.iter().copied().collect();
+        self.take_lane = Some(lane);
+        if let Some(&(clip, _)) = clips.first() {
+            self.activate(clip);
+        }
+        self.focus_lane = true;
+    }
+
+    pub fn close_take(&mut self) {
+        self.takes.clear();
+        self.take_lane = None;
+    }
+
+    pub fn reveal(&mut self, tick: u64) {
+        self.offset = tick;
+    }
+
+    fn clip_events(&self, clip: &Clip, visible: [u64; 2]) -> Vec<RollEvent> {
+        self.takes.get(&clip.id()).map_or_else(
+            || clip.roll_events(visible),
+            |take| clip.roll_take_events(*take, visible),
+        )
     }
 
     pub fn split_height(&self, height: f32) -> f32 {
@@ -232,6 +263,18 @@ impl PianoRoll {
                 clip.layer(),
             )
         });
+        if !self.takes.is_empty() {
+            let current: BTreeSet<ClipId> = clips.iter().map(|(_, clip)| clip.id()).collect();
+            let missing = self.takes.iter().any(|(id, take)| {
+                clips
+                    .iter()
+                    .find(|(_, clip)| clip.id() == *id)
+                    .is_none_or(|(_, clip)| !clip.takes.iter().any(|item| item.id == *take))
+            });
+            if current != self.takes.keys().copied().collect() || missing {
+                self.close_take();
+            }
+        }
         if let Some((_, first)) = clips.first()
             && self.active.is_none_or(|id| !selected.contains(&id))
         {
@@ -248,6 +291,26 @@ impl PianoRoll {
         let max_offset = right.max(self.offset);
         ui.horizontal_wrapped(|ui| {
             draw::heading(ui, "Piano Roll");
+            if let Some(lane) = self.take_lane {
+                let name = clips
+                    .first()
+                    .and_then(|(track, _)| {
+                        view.project.tracks.iter().find(|item| item.id == *track)
+                    })
+                    .map(|track| track.take_lanes.name(lane))
+                    .unwrap_or_else(|| format!("Take {}", lane + 1));
+                ui.colored_label(
+                    colors::ACCENT,
+                    format!(
+                        "Editing Take {} · {name} · {} clips",
+                        lane + 1,
+                        self.takes.len()
+                    ),
+                );
+                if draw::button(ui, "Back to Comp", true) {
+                    self.close_take();
+                }
+            }
             timeline::snap_control(ui, &mut self.snap);
             draw::toggle(ui, "Follow", &mut self.follow);
             draw::toggle(ui, "MIDI Functions", &mut self.functions);
@@ -280,6 +343,10 @@ impl PianoRoll {
                 timeline::Viewport::with_snap(timeline, self.offset, self.zoom, width, self.snap);
         }
         draw::ruler(ui, &time, width, playhead, timeline);
+        if let (Some(lane), Some(take)) = (self.take_lane, self.takes.get(&active.id()).copied()) {
+            let _ = lane;
+            draw::comp_strip(ui, &time, width, &active.take_active_ranges(take), playhead);
+        }
         let mut active_context = LaneContext {
             time: &time,
             timeline,
@@ -403,6 +470,7 @@ impl PianoRoll {
         Some(Action::EditClips {
             expected: view.project.midi.clone(),
             edit: ClipEdit::EditEvents {
+                take: self.takes.get(&clip).copied(),
                 clip,
                 label,
                 changes,
@@ -463,7 +531,7 @@ impl PianoRoll {
             lane.time.tick_at(lane.width).saturating_add(1),
         ];
         draw::repeat_markers(ui, grid.grid, lane.time, clip, window);
-        let events = clip.roll_events(window);
+        let events = self.clip_events(clip, window);
         let notes = events
             .iter()
             .filter_map(|event| {
@@ -483,6 +551,7 @@ impl PianoRoll {
                 grid.grid,
                 area,
                 selected,
+                event.active,
                 selected && primary == Some(event.id),
                 false,
             );
@@ -741,7 +810,15 @@ impl PianoRoll {
                     let shift = event.tick as i64 - copy.source.tick as i64;
                     let tick = copy.tick.saturating_add_signed(shift);
                     let end = (tick + end - event.tick).min(clip_end);
-                    draw::paint_note(ui, grid.grid, grid.note(tick, end, key), true, false, true);
+                    draw::paint_note(
+                        ui,
+                        grid.grid,
+                        grid.note(tick, end, key),
+                        true,
+                        true,
+                        false,
+                        true,
+                    );
                 }
             }
         }
@@ -802,7 +879,7 @@ impl PianoRoll {
 
     fn picked(&self, clip: &Clip) -> Vec<RollEvent> {
         let mut seen = BTreeSet::new();
-        clip.roll_events([clip.start, clip.end])
+        self.clip_events(clip, [clip.start, clip.end])
             .into_iter()
             .filter(|event| self.selected.contains(&event.id) && seen.insert(event.id))
             .collect()
@@ -841,8 +918,8 @@ impl PianoRoll {
             }
         };
         if consume(Modifiers::COMMAND, Key::A) {
-            self.selected = clip
-                .roll_events([clip.start, clip.end])
+            self.selected = self
+                .clip_events(clip, [clip.start, clip.end])
                 .into_iter()
                 .filter(on_lane)
                 .map(|event| event.id)
@@ -1063,8 +1140,7 @@ impl PianoRoll {
         let name = controller.map_or_else(|| "Velocity".into(), |(_, cc)| draw::cc_name(cc));
         let (rect, response) = draw::value_lane(ui, &name, lane.width, lane.enabled);
         let events =
-            lane.clip
-                .roll_events([lane.clip.start, lane.clip.end])
+            self.clip_events(lane.clip, [lane.clip.start, lane.clip.end])
                 .into_iter()
                 .filter(|event| {
                     if let Some((channel, cc)) = controller {
@@ -1808,14 +1884,24 @@ mod tests {
             id: 1,
             name: "Strings".into(),
             plugin: None,
+            instrument_bypassed: false,
+            instrument_offline: false,
+            record_mode: Default::default(),
             mix: Default::default(),
+            inserts: Vec::new(),
+            take_lanes: Default::default(),
             state: Vec::new(),
         });
         view.project.tracks.push(Track {
             id: 2,
             name: "Piano".into(),
             plugin: None,
+            instrument_bypassed: false,
+            instrument_offline: false,
+            record_mode: Default::default(),
             mix: Default::default(),
+            inserts: Vec::new(),
+            take_lanes: Default::default(),
             state: Vec::new(),
         });
         let model = std::sync::Arc::make_mut(&mut view.project.midi);
@@ -1951,14 +2037,24 @@ mod tests {
                 id: 1,
                 name: "One".into(),
                 plugin: None,
+                instrument_bypassed: false,
+                instrument_offline: false,
+                record_mode: Default::default(),
                 mix: Default::default(),
+                inserts: Vec::new(),
+                take_lanes: Default::default(),
                 state: Vec::new(),
             },
             clef_model::project::Track {
                 id: 2,
                 name: "Two".into(),
                 plugin: None,
+                instrument_bypassed: false,
+                instrument_offline: false,
+                record_mode: Default::default(),
                 mix: Default::default(),
+                inserts: Vec::new(),
+                take_lanes: Default::default(),
                 state: Vec::new(),
             },
         ];
@@ -2194,5 +2290,42 @@ mod tests {
             events.len(),
             "every projected point needs its own focus id"
         );
+    }
+    #[test]
+    fn take_view_lists_inactive_events_and_returns_to_the_comp() {
+        use clef_model::midi::{Event, Message, Mode};
+        let note = |tick, end, key| Event {
+            tick,
+            order: 0,
+            message: Message::Note {
+                channel: 0,
+                key,
+                velocity: 90,
+                end,
+                release: 10,
+                release_order: key.into(),
+            },
+        };
+        let mut model = clef_model::midi::Arrangement::default();
+        model
+            .record(
+                1,
+                Mode::NewTake,
+                [0, 960],
+                vec![vec![note(100, 200, 60)], vec![note(500, 700, 62)]],
+                false,
+            )
+            .unwrap();
+        let clip = &model.clips(1)[0];
+        let first = clip.takes[0].id;
+        let mut roll = PianoRoll::default();
+        roll.open_take_lane(&[(clip.id(), first)], 0);
+        let events = roll.clip_events(clip, [0, 960]);
+        assert_eq!(events.len(), 1);
+        assert!(!events[0].active);
+        roll.close_take();
+        let events = roll.clip_events(clip, [0, 960]);
+        assert_eq!(events.len(), 1);
+        assert!(events[0].active);
     }
 }

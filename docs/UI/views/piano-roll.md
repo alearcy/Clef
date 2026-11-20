@@ -65,6 +65,15 @@ surface Piano Roll
   [empty clip at 760 points](../snapshots/egui/t10-empty-760.png), and
   [disabled MIDI functions at 1024 points](../snapshots/egui/t10-unavailable-1024.png).
 
+## Clef T26 Edit Take
+
+Opening a take from a lane (double-click on its clip, or Edit Take) adds a banner reading
+“Editing Take n · m clips” with a **Back to Comp** action. Every event of the take is listed;
+events the comp does not play are painted at 35 % (50 % when selected). A 3-point `accent` strip
+under the ruler marks the ranges where the comp plays the take. Edits write into the take and never
+change the sections: a note moved out of its take's ranges stops playing. Selecting another clip,
+closing the roll, or deleting or flattening the take returns to the comp.
+
 ## Legacy anatomy
 - **Parts column** (with more than one open part): 160 wide (100–320, hideable), 26-pixel rows with
   a 3-pixel stripe, a visibility mark (dot shown, ring ghost, dash hidden), part and track name;

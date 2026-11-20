@@ -1,13 +1,16 @@
 use crate::{
-    Action, App, Command, Confirm,
+    Action, App, Command, Confirm, colors,
     primitives::timeline::{self, Viewport},
 };
 use clef_model::{
-    midi::{Arrangement, ClipEdit, ClipId, Snap},
-    project::{ArrangementView, Track},
+    midi::{Arrangement, Clip, ClipEdit, ClipId, CompEdit, Message, Snap},
+    project::{
+        ArrangementView, TAKE_LANE_MAX_HEIGHT as MODEL_MAX_HEIGHT,
+        TAKE_LANE_MIN_HEIGHT as MODEL_MIN_HEIGHT, TakeLanes, Track,
+    },
     timeline::{MAX_TICK, Timeline},
 };
-use eframe::egui::{self, Id, Key, Modifiers, Pos2, Rect, Sense, Ui};
+use eframe::egui::{self, Color32, Id, Key, Modifiers, Pos2, Rect, Sense, Ui};
 use std::{collections::BTreeSet, sync::Arc};
 
 pub const CLIP_MENU: [Command; 3] = [
@@ -54,6 +57,12 @@ pub struct ArrangementUi {
     create_at: Option<(u64, u64)>,
     drag: Option<Drag>,
     pub pending: Option<ClipEdit>,
+    pub focused_lane: Option<(u64, usize)>,
+    pub focused_take_clip: Option<ClipId>,
+    lane_rename: Option<(u64, usize)>,
+    lane_name: String,
+    take_drag: Option<TakeDrag>,
+    pub lane_height_preview: Option<(u64, usize, u16)>,
 }
 
 pub struct LaneInput<'a> {
@@ -702,7 +711,12 @@ mod tests {
                     id,
                     name: format!("Track {id}"),
                     plugin: None,
+                    instrument_bypassed: false,
+                    instrument_offline: false,
+                    record_mode: Default::default(),
                     mix: Default::default(),
+                    inserts: Vec::new(),
+                    take_lanes: Default::default(),
                     state: vec![],
                 })
                 .collect();
@@ -871,5 +885,1436 @@ mod tests {
         assert!(
             matches!(edit, ClipEdit::Move { destinations, delta: 960 } if destinations == vec![(id, 2)])
         );
+    }
+    #[test]
+    fn take_lane_menu_opens_with_the_shared_popup() {
+        use clef_model::midi::{Event, Message, Mode};
+        use egui::{RawInput, pos2, vec2};
+        let mut model = Arrangement::default();
+        let note = |tick, key| Event {
+            tick,
+            order: 0,
+            message: Message::Note {
+                channel: 0,
+                key,
+                velocity: 90,
+                end: tick + 100,
+                release: 12,
+                release_order: 1,
+            },
+        };
+        model
+            .record(
+                1,
+                Mode::NewTake,
+                [0, 960],
+                vec![vec![note(100, 60)], vec![note(500, 62)]],
+                false,
+            )
+            .unwrap();
+        let track = Track {
+            id: 1,
+            name: "Strings".into(),
+            plugin: None,
+            instrument_bypassed: false,
+            instrument_offline: false,
+            record_mode: Default::default(),
+            mix: Default::default(),
+            inserts: Vec::new(),
+            take_lanes: TakeLanes {
+                visible: true,
+                lanes: Vec::new(),
+            },
+            state: Vec::new(),
+        };
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let mut editor = ArrangementUi::default();
+        let timeline = Timeline::default();
+        let viewport = Viewport::with_snap(&timeline, 0, 96.0, 480.0, Snap::Off);
+        let header = Rect::from_min_size(pos2(0.0, 100.0), vec2(160.0, 40.0));
+        let band = Rect::from_min_size(pos2(170.0, 100.0), vec2(480.0, 40.0));
+        let point = pos2(header.right() - 15.0, header.center().y);
+        let mut labels = Vec::new();
+        for (events, capture) in [
+            (vec![egui::Event::PointerMoved(point)], false),
+            (
+                vec![egui::Event::PointerButton {
+                    pos: point,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Modifiers::NONE,
+                }],
+                false,
+            ),
+            (
+                vec![egui::Event::PointerButton {
+                    pos: point,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Modifiers::NONE,
+                }],
+                true,
+            ),
+            (Vec::new(), true),
+        ] {
+            let output = context.run_ui(
+                RawInput {
+                    events,
+                    modifiers: Modifiers::NONE,
+                    ..Default::default()
+                },
+                |ui| {
+                    let _ = editor.take_lane(
+                        ui,
+                        TakeLaneInput {
+                            viewport: &viewport,
+                            timeline: &timeline,
+                            arrangement: &model,
+                            track: &track,
+                            row: TakeLaneRow {
+                                track: 1,
+                                lane: 0,
+                                header,
+                                band,
+                            },
+                            enabled: true,
+                        },
+                    );
+                },
+            );
+            if capture && let Some(tree) = output.platform_output.accesskit_update {
+                labels.extend(tree.nodes.iter().filter_map(|(_, node)| {
+                    node.label()
+                        .or_else(|| node.value())
+                        .map(|label| label.to_owned())
+                }));
+            }
+        }
+        assert!(
+            labels.iter().any(|label| label == "Use whole take"),
+            "take menu did not open: {labels:?}"
+        );
+    }
+
+    #[test]
+    fn take_lane_draws_note_marks_for_the_take() {
+        use clef_model::midi::{Event, Message, Mode};
+        use egui::{pos2, vec2};
+        let mut model = Arrangement::default();
+        let note = |tick, key| Event {
+            tick,
+            order: 0,
+            message: Message::Note {
+                channel: 0,
+                key,
+                velocity: 90,
+                end: tick + 100,
+                release: 12,
+                release_order: 1,
+            },
+        };
+        model
+            .record(
+                1,
+                Mode::NewTake,
+                [0, 960],
+                vec![vec![note(100, 60), note(300, 72)], vec![note(500, 62)]],
+                false,
+            )
+            .unwrap();
+        let clip = &model.clips(1)[0];
+        let timeline = Timeline::default();
+        let viewport = Viewport::with_snap(&timeline, 0, 96.0, 480.0, Snap::Off);
+        let band = Rect::from_min_size(pos2(170.0, 100.0), vec2(480.0, 40.0));
+        let first = take_note_rects(clip, 0, band, &viewport);
+        assert_eq!(first.len(), 2);
+        assert!(!first[0].1, "the inactive take stays dimmed");
+        assert!(
+            (first[0].0.center().y - first[1].0.center().y).abs() > 15.0,
+            "pitch spread should follow the take's notes"
+        );
+        let second = take_note_rects(clip, 1, band, &viewport);
+        assert_eq!(second.len(), 1);
+        assert!(second[0].1, "the comp take is drawn active");
+        assert!(band.contains_rect(first[0].0));
+        assert!(band.contains_rect(second[0].0));
+    }
+
+    #[test]
+    fn double_clicking_a_lane_clip_opens_that_take() {
+        use clef_model::midi::{Event, Message, Mode};
+        use egui::{RawInput, pos2, vec2};
+        let mut model = Arrangement::default();
+        let note = |tick, key| Event {
+            tick,
+            order: 0,
+            message: Message::Note {
+                channel: 0,
+                key,
+                velocity: 90,
+                end: tick + 100,
+                release: 12,
+                release_order: 1,
+            },
+        };
+        model
+            .record(
+                1,
+                Mode::NewTake,
+                [0, 960],
+                vec![vec![note(100, 60)], vec![note(500, 62)]],
+                false,
+            )
+            .unwrap();
+        let id = model.clips(1)[0].id();
+        let track = Track {
+            id: 1,
+            name: "Strings".into(),
+            plugin: None,
+            instrument_bypassed: false,
+            instrument_offline: false,
+            record_mode: Default::default(),
+            mix: Default::default(),
+            inserts: Vec::new(),
+            take_lanes: TakeLanes {
+                visible: true,
+                lanes: Vec::new(),
+            },
+            state: Vec::new(),
+        };
+        let context = egui::Context::default();
+        let mut editor = ArrangementUi::default();
+        let timeline = Timeline::default();
+        let viewport = Viewport::with_snap(&timeline, 0, 96.0, 480.0, Snap::Off);
+        let header = Rect::from_min_size(pos2(0.0, 100.0), vec2(160.0, 40.0));
+        let band = Rect::from_min_size(pos2(170.0, 100.0), vec2(480.0, 40.0));
+        let point = pos2(band.left() + viewport.x(600), 120.0);
+        let mut action = None;
+        let mut frame = |events: Vec<egui::Event>, action: &mut Option<TakeAction>| {
+            let _ = context.run_ui(
+                RawInput {
+                    events,
+                    modifiers: Modifiers::NONE,
+                    ..Default::default()
+                },
+                |ui| {
+                    *action = editor.take_lane(
+                        ui,
+                        TakeLaneInput {
+                            viewport: &viewport,
+                            timeline: &timeline,
+                            arrangement: &model,
+                            track: &track,
+                            row: TakeLaneRow {
+                                track: 1,
+                                lane: 0,
+                                header,
+                                band,
+                            },
+                            enabled: true,
+                        },
+                    );
+                },
+            );
+        };
+        frame(vec![egui::Event::PointerMoved(point)], &mut action);
+        for _ in 0..2 {
+            for pressed in [true, false] {
+                frame(
+                    vec![egui::Event::PointerButton {
+                        pos: point,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Modifiers::NONE,
+                    }],
+                    &mut action,
+                );
+            }
+        }
+        assert!(matches!(
+            action,
+            Some(TakeAction::EditTake {
+                track: 1,
+                lane: 0,
+                clip: Some(clip),
+            }) if clip == id
+        ));
+    }
+
+    #[test]
+    fn take_lane_cut_drag_moves_the_cut() {
+        use clef_model::midi::{Event, Message, Mode};
+        use egui::{RawInput, pos2, vec2};
+        let mut model = Arrangement::default();
+        let note = |tick, key| Event {
+            tick,
+            order: 0,
+            message: Message::Note {
+                channel: 0,
+                key,
+                velocity: 90,
+                end: tick + 100,
+                release: 12,
+                release_order: 1,
+            },
+        };
+        model
+            .record(
+                1,
+                Mode::NewTake,
+                [0, 960],
+                vec![vec![note(100, 60)], vec![note(500, 62)]],
+                false,
+            )
+            .unwrap();
+        model
+            .comp(
+                1,
+                0,
+                CompEdit::SelectRange { start: 0, end: 300 },
+                [1].into_iter(),
+            )
+            .unwrap();
+        let track = Track {
+            id: 1,
+            name: "Strings".into(),
+            plugin: None,
+            instrument_bypassed: false,
+            instrument_offline: false,
+            record_mode: Default::default(),
+            mix: Default::default(),
+            inserts: Vec::new(),
+            take_lanes: TakeLanes {
+                visible: true,
+                lanes: Vec::new(),
+            },
+            state: Vec::new(),
+        };
+        let context = egui::Context::default();
+        let mut editor = ArrangementUi::default();
+        editor.settings.snap = Snap::Off;
+        let timeline = Timeline::default();
+        let viewport = Viewport::with_snap(&timeline, 0, 96.0, 480.0, Snap::Off);
+        let header = Rect::from_min_size(pos2(0.0, 100.0), vec2(160.0, 40.0));
+        let band = Rect::from_min_size(pos2(170.0, 100.0), vec2(480.0, 40.0));
+        let from = pos2(band.left() + viewport.x(300), 120.0);
+        let to = pos2(band.left() + viewport.x(600), 120.0);
+        let mut action = None;
+        let mut frame =
+            |events: Vec<egui::Event>, modifiers: Modifiers, action: &mut Option<TakeAction>| {
+                let _ = context.run_ui(
+                    RawInput {
+                        events,
+                        modifiers,
+                        ..Default::default()
+                    },
+                    |ui| {
+                        *action = editor.take_lane(
+                            ui,
+                            TakeLaneInput {
+                                viewport: &viewport,
+                                timeline: &timeline,
+                                arrangement: &model,
+                                track: &track,
+                                row: TakeLaneRow {
+                                    track: 1,
+                                    lane: 0,
+                                    header,
+                                    band,
+                                },
+                                enabled: true,
+                            },
+                        );
+                    },
+                );
+            };
+        frame(
+            vec![egui::Event::PointerMoved(from)],
+            Modifiers::NONE,
+            &mut action,
+        );
+        frame(
+            vec![egui::Event::PointerButton {
+                pos: from,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            }],
+            Modifiers::NONE,
+            &mut action,
+        );
+        frame(
+            vec![egui::Event::PointerMoved(to)],
+            Modifiers::NONE,
+            &mut action,
+        );
+        frame(
+            vec![egui::Event::PointerButton {
+                pos: to,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            }],
+            Modifiers::NONE,
+            &mut action,
+        );
+        assert!(matches!(
+            action,
+            Some(TakeAction::Comp {
+                track: 1,
+                lane: 0,
+                edit: CompEdit::MoveCut {
+                    from: 300,
+                    to: 600,
+                    ..
+                }
+            })
+        ));
+    }
+
+    #[test]
+    fn take_lane_drag_makes_one_comp_range_action() {
+        use clef_model::midi::{Event, Message, Mode};
+        use egui::{RawInput, pos2, vec2};
+        let mut model = Arrangement::default();
+        let note = |tick, key| Event {
+            tick,
+            order: 0,
+            message: Message::Note {
+                channel: 0,
+                key,
+                velocity: 90,
+                end: tick + 100,
+                release: 12,
+                release_order: 1,
+            },
+        };
+        model
+            .record(
+                1,
+                Mode::NewTake,
+                [0, 960],
+                vec![vec![note(100, 60)], vec![note(500, 62)]],
+                false,
+            )
+            .unwrap();
+        let track = Track {
+            id: 1,
+            name: "Strings".into(),
+            plugin: None,
+            instrument_bypassed: false,
+            instrument_offline: false,
+            record_mode: Default::default(),
+            mix: Default::default(),
+            inserts: Vec::new(),
+            take_lanes: TakeLanes {
+                visible: true,
+                lanes: Vec::new(),
+            },
+            state: Vec::new(),
+        };
+        let context = egui::Context::default();
+        let mut editor = ArrangementUi::default();
+        editor.settings.snap = Snap::Off;
+        let timeline = Timeline::default();
+        let viewport = Viewport::with_snap(&timeline, 0, 96.0, 480.0, Snap::Off);
+        let header = Rect::from_min_size(pos2(0.0, 100.0), vec2(160.0, 40.0));
+        let band = Rect::from_min_size(pos2(170.0, 100.0), vec2(480.0, 40.0));
+        let from = pos2(band.left() + viewport.x(100), 120.0);
+        let to = pos2(band.left() + viewport.x(480), 120.0);
+        let mut action = None;
+        let mut frame =
+            |events: Vec<egui::Event>, modifiers: Modifiers, action: &mut Option<TakeAction>| {
+                let _ = context.run_ui(
+                    RawInput {
+                        events,
+                        modifiers,
+                        ..Default::default()
+                    },
+                    |ui| {
+                        *action = editor.take_lane(
+                            ui,
+                            TakeLaneInput {
+                                viewport: &viewport,
+                                timeline: &timeline,
+                                arrangement: &model,
+                                track: &track,
+                                row: TakeLaneRow {
+                                    track: 1,
+                                    lane: 0,
+                                    header,
+                                    band,
+                                },
+                                enabled: true,
+                            },
+                        );
+                    },
+                );
+            };
+        frame(
+            vec![egui::Event::PointerMoved(from)],
+            Modifiers::NONE,
+            &mut action,
+        );
+        frame(
+            vec![egui::Event::PointerButton {
+                pos: from,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            }],
+            Modifiers::NONE,
+            &mut action,
+        );
+        frame(
+            vec![egui::Event::PointerMoved(to)],
+            Modifiers::NONE,
+            &mut action,
+        );
+        frame(
+            vec![egui::Event::PointerButton {
+                pos: to,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            }],
+            Modifiers::NONE,
+            &mut action,
+        );
+        assert!(matches!(
+            action,
+            Some(TakeAction::Comp {
+                track: 1,
+                lane: 0,
+                edit: CompEdit::SelectRange {
+                    start: 100,
+                    end: 480
+                }
+            })
+        ));
+    }
+}
+
+const TAKE_LANE_HEIGHT_STEP: f32 = 4.0;
+const TAKE_LANE_SEAM: f32 = 4.0;
+const CUT_TARGET: f32 = 4.0;
+
+#[derive(Clone, Debug)]
+pub enum TakeAction {
+    Comp {
+        track: u64,
+        lane: usize,
+        edit: CompEdit,
+    },
+    TakeToNewTrack {
+        track: u64,
+        lane: usize,
+    },
+    View {
+        track: u64,
+        lanes: TakeLanes,
+    },
+    EditTake {
+        track: u64,
+        lane: usize,
+        clip: Option<ClipId>,
+    },
+}
+
+#[derive(Clone, Copy)]
+pub struct TakeLaneRow {
+    pub track: u64,
+    pub lane: usize,
+    pub header: Rect,
+    pub band: Rect,
+}
+
+pub struct TakeLaneInput<'a> {
+    pub viewport: &'a Viewport,
+    pub timeline: &'a Timeline,
+    pub arrangement: &'a Arrangement,
+    pub track: &'a Track,
+    pub row: TakeLaneRow,
+    pub enabled: bool,
+}
+
+#[derive(Clone, Copy)]
+enum TakeDrag {
+    Comp {
+        track: u64,
+        lane: usize,
+        anchor: u64,
+        current: u64,
+    },
+    Cut {
+        track: u64,
+        lane: usize,
+        clip: ClipId,
+        from: u64,
+        current: u64,
+        lower: u64,
+        upper: u64,
+    },
+    Height {
+        track: u64,
+        lane: usize,
+        start: f32,
+        height: u16,
+        pointer: f32,
+    },
+}
+
+impl ArrangementUi {
+    pub fn take_count(arrangement: &Arrangement, track: u64) -> usize {
+        arrangement
+            .clips(track)
+            .iter()
+            .map(|clip| clip.takes.len())
+            .max()
+            .unwrap_or(0)
+    }
+
+    pub fn focused_take_lane(&self) -> Option<(u64, usize)> {
+        self.focused_lane
+    }
+
+    pub fn take_lane_target(&self) -> Option<(u64, usize, Option<ClipId>)> {
+        self.focused_lane
+            .map(|(track, lane)| (track, lane, self.focused_take_clip))
+    }
+
+    pub fn begin_take_rename(&mut self, track: u64, lane: usize, name: String) {
+        self.focused_lane = Some((track, lane));
+        self.lane_rename = Some((track, lane));
+        self.lane_name = name;
+    }
+
+    pub fn take_lane(&mut self, ui: &mut Ui, input: TakeLaneInput<'_>) -> Option<TakeAction> {
+        let TakeLaneInput {
+            viewport,
+            timeline,
+            arrangement,
+            track,
+            row,
+            enabled,
+        } = input;
+        if self.take_drag.is_some() && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape))
+        {
+            self.take_drag = None;
+        }
+        let mut action = None;
+        let clips = arrangement.clips(row.track);
+        let name = track.take_lanes.name(row.lane);
+        let active_ranges: Vec<[u64; 2]> = clips
+            .iter()
+            .filter(|clip| row.lane < clip.takes.len())
+            .flat_map(|clip| clip.take_active_ranges(clip.takes[row.lane].id))
+            .collect();
+        let painter = ui.painter();
+        painter.rect_filled(row.header, 0.0, colors::PANEL);
+        for clip in clips {
+            if row.lane >= clip.takes.len() {
+                continue;
+            }
+            let left = row.band.left() + viewport.x(clip.start);
+            let right = row.band.left() + viewport.x(clip.end);
+            let clip_rect = Rect::from_min_max(
+                egui::pos2(left.max(row.band.left()), row.band.top() + 1.0),
+                egui::pos2(right.min(row.band.right()), row.band.bottom() - 1.0),
+            );
+            if !clip_rect.is_positive() {
+                continue;
+            }
+            painter.rect_filled(clip_rect, 2.0, colors::ACCENT.gamma_multiply(0.08));
+            painter.rect_stroke(
+                clip_rect,
+                2.0,
+                egui::Stroke::new(1.0_f32, colors::DIVIDER),
+                egui::StrokeKind::Inside,
+            );
+            let id = clip.takes[row.lane].id;
+            for section in &clip.sections {
+                if section.take != id {
+                    continue;
+                }
+                let start = section.start.max(clip.start);
+                let end = section.end.min(clip.end);
+                if start >= end {
+                    continue;
+                }
+                let rect = Rect::from_min_max(
+                    egui::pos2(
+                        (row.band.left() + viewport.x(start)).max(clip_rect.left()),
+                        clip_rect.top(),
+                    ),
+                    egui::pos2(
+                        (row.band.left() + viewport.x(end)).min(clip_rect.right()),
+                        clip_rect.bottom(),
+                    ),
+                );
+                if rect.is_positive() {
+                    painter.rect_filled(rect, 1.0, colors::ACCENT.gamma_multiply(0.24));
+                    painter.rect_stroke(
+                        rect,
+                        1.0,
+                        egui::Stroke::new(1.0_f32, colors::ACCENT),
+                        egui::StrokeKind::Inside,
+                    );
+                }
+            }
+            for pair in clip.sections.windows(2) {
+                if pair[0].take != id && pair[1].take != id {
+                    continue;
+                }
+                let x = row.band.left() + viewport.x(pair[1].start);
+                if x > row.band.left() && x < row.band.right() {
+                    dashed_line(
+                        painter,
+                        egui::pos2(x, row.band.top() + 1.0),
+                        egui::pos2(x, row.band.bottom() - 1.0),
+                        colors::ACCENT.gamma_multiply(0.6),
+                    );
+                }
+            }
+            for (rect, active) in take_note_rects(clip, row.lane, row.band, viewport) {
+                let color = if active {
+                    colors::TEXT
+                } else {
+                    colors::TEXT.gamma_multiply(0.28)
+                };
+                painter.rect_filled(rect, 1.0, color);
+            }
+        }
+        let band_response = ui.interact(
+            row.band,
+            ui.id().with(("take lane band", row.track, row.lane)),
+            if enabled {
+                Sense::click_and_drag()
+            } else {
+                Sense::hover()
+            },
+        );
+        band_response.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::WidgetType::Other,
+                enabled,
+                format!("{} take {} lane", track.name, row.lane + 1),
+            )
+        });
+        let clip_at = |x: f32| {
+            clips.iter().find(|clip| {
+                row.lane < clip.takes.len()
+                    && x >= row.band.left() + viewport.x(clip.start)
+                    && x < row.band.left() + viewport.x(clip.end)
+            })
+        };
+        let pointer = ui.input(|i| i.pointer.interact_pos());
+        if band_response.hovered()
+            && let Some(pos) = pointer
+        {
+            if let Some(target) = cut_at(
+                timeline, clips, row.track, row.lane, row.band, viewport, pos,
+            ) {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                painter.rect_filled(
+                    Rect::from_min_max(
+                        egui::pos2(target.x - 1.0, row.band.top()),
+                        egui::pos2(target.x + 1.0, row.band.bottom()),
+                    ),
+                    0.0,
+                    colors::ACCENT,
+                );
+            } else if let Some(clip) = clip_at(pos.x) {
+                self.focused_take_clip = Some(clip.id());
+            }
+        }
+        if band_response.drag_started_by(egui::PointerButton::Primary)
+            && enabled
+            && let Some(pos) = pointer
+        {
+            let origin = ui
+                .input(|input| input.pointer.press_origin())
+                .unwrap_or(pos);
+            self.focused_lane = Some((row.track, row.lane));
+            if let Some(clip) = clip_at(origin.x) {
+                self.focused_take_clip = Some(clip.id());
+            }
+            let raw = viewport.tick_at((origin.x - row.band.left()).max(0.0));
+            if let Some(cut) = cut_at(
+                timeline, clips, row.track, row.lane, row.band, viewport, origin,
+            ) {
+                let index = cut.section;
+                let clip = clips
+                    .iter()
+                    .find(|clip| clip.id() == cut.clip)
+                    .cloned()
+                    .unwrap();
+                let sections = &clip.sections;
+                let lower = if index >= 2 {
+                    sections[index - 2].end
+                } else {
+                    clip.start
+                };
+                let upper = sections
+                    .get(index + 1)
+                    .map_or(clip.source_end(), |section| section.start);
+                self.take_drag = Some(TakeDrag::Cut {
+                    track: row.track,
+                    lane: row.lane,
+                    clip: cut.clip,
+                    from: cut.tick,
+                    current: cut.tick,
+                    lower,
+                    upper,
+                });
+            } else {
+                let anchor = snap(self.settings.snap, timeline, raw);
+                self.take_drag = Some(TakeDrag::Comp {
+                    track: row.track,
+                    lane: row.lane,
+                    anchor,
+                    current: anchor,
+                });
+            }
+        }
+        if let Some(drag) = self.take_drag
+            && band_response.dragged_by(egui::PointerButton::Primary)
+            && let Some(pos) = pointer
+        {
+            let raw = viewport.tick_at((pos.x - row.band.left()).max(0.0));
+            match drag {
+                TakeDrag::Comp {
+                    track,
+                    lane,
+                    anchor,
+                    ..
+                } => {
+                    let current = snap(self.settings.snap, timeline, raw);
+                    self.take_drag = Some(TakeDrag::Comp {
+                        track,
+                        lane,
+                        anchor,
+                        current,
+                    });
+                    let start = anchor.min(current);
+                    let end = anchor.max(current);
+                    if start < end {
+                        let rect = Rect::from_min_max(
+                            egui::pos2(row.band.left() + viewport.x(start), row.band.top() + 1.0),
+                            egui::pos2(row.band.left() + viewport.x(end), row.band.bottom() - 1.0),
+                        );
+                        painter.rect_filled(rect, 1.0, colors::ACCENT.gamma_multiply(0.16));
+                        painter.rect_stroke(
+                            rect,
+                            1.0,
+                            egui::Stroke::new(1.0_f32, colors::ACCENT),
+                            egui::StrokeKind::Inside,
+                        );
+                        let at = timeline.position(end);
+                        readout(
+                            painter,
+                            pos,
+                            &format!("Comp take · {}.{}.{:03}", at.bar, at.beat, at.tick),
+                        );
+                    }
+                }
+                TakeDrag::Cut {
+                    track,
+                    lane,
+                    clip,
+                    from,
+                    lower,
+                    upper,
+                    ..
+                } => {
+                    let step = if ui.input(|input| input.modifiers.alt) {
+                        1
+                    } else {
+                        self.settings.snap.step(timeline, from).max(1)
+                    };
+                    let mut current = if step == 1 {
+                        raw
+                    } else {
+                        self.settings.snap.nearest(timeline, raw)
+                    };
+                    let low = lower.saturating_add(step);
+                    let high = upper.saturating_sub(step);
+                    if low <= high {
+                        current = current.clamp(low, high);
+                    }
+                    self.take_drag = Some(TakeDrag::Cut {
+                        track,
+                        lane,
+                        clip,
+                        from,
+                        current,
+                        lower,
+                        upper,
+                    });
+                    let x = row.band.left() + viewport.x(current);
+                    painter.rect_filled(
+                        Rect::from_min_max(
+                            egui::pos2(x - 1.0, row.band.top()),
+                            egui::pos2(x + 1.0, row.band.bottom()),
+                        ),
+                        0.0,
+                        colors::ACCENT,
+                    );
+                    let at = timeline.position(current);
+                    readout(
+                        painter,
+                        pos,
+                        &format!("Cut {}.{}.{:03}", at.bar, at.beat, at.tick),
+                    );
+                }
+                TakeDrag::Height { .. } => {}
+            }
+        }
+        if band_response.drag_stopped() {
+            match self.take_drag.take() {
+                Some(TakeDrag::Comp {
+                    track,
+                    lane,
+                    anchor,
+                    current,
+                }) => {
+                    let start = anchor.min(current);
+                    let end = anchor.max(current);
+                    if start < end {
+                        action = Some(TakeAction::Comp {
+                            track,
+                            lane,
+                            edit: CompEdit::SelectRange { start, end },
+                        });
+                    }
+                }
+                Some(TakeDrag::Cut {
+                    track,
+                    lane,
+                    clip,
+                    from,
+                    current,
+                    ..
+                }) if current != from => {
+                    action = Some(TakeAction::Comp {
+                        track,
+                        lane,
+                        edit: CompEdit::MoveCut {
+                            clip,
+                            from,
+                            to: current,
+                        },
+                    });
+                }
+                _ => {}
+            }
+        }
+        if band_response.double_clicked() {
+            let clip = pointer
+                .and_then(|pos| clip_at(pos.x).map(Clip::id))
+                .or(self.focused_take_clip);
+            self.focused_lane = Some((row.track, row.lane));
+            self.focused_take_clip = clip;
+            action = Some(TakeAction::EditTake {
+                track: row.track,
+                lane: row.lane,
+                clip,
+            });
+        } else if band_response.clicked()
+            && let Some(pos) = pointer
+        {
+            self.focused_lane = Some((row.track, row.lane));
+            if let Some(clip) = clip_at(pos.x) {
+                self.focused_take_clip = Some(clip.id());
+            }
+        }
+        let header_response = ui.interact(
+            row.header,
+            ui.id().with(("take lane header", row.track, row.lane)),
+            if enabled {
+                Sense::click()
+            } else {
+                Sense::hover()
+            },
+        );
+        header_response.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::WidgetType::SelectableLabel,
+                enabled,
+                format!(
+                    "Take {}, {}",
+                    row.lane + 1,
+                    plays_summary(timeline, &active_ranges)
+                ),
+            )
+        });
+        let stripe =
+            Rect::from_min_size(row.header.left_top(), egui::vec2(2.0, row.header.height()));
+        painter.rect_filled(stripe, 0.0, colors::ACCENT);
+        let name_rect = Rect::from_min_size(
+            egui::pos2(row.header.left() + 8.0, row.header.top() + 5.0),
+            egui::vec2((row.header.width() - 44.0).max(20.0), 16.0),
+        );
+        if self.lane_rename == Some((row.track, row.lane)) {
+            let edit = ui.put(
+                name_rect,
+                egui::TextEdit::singleline(&mut self.lane_name)
+                    .id_salt(("take lane name", row.track, row.lane))
+                    .desired_width(name_rect.width()),
+            );
+            if !edit.has_focus() {
+                edit.request_focus();
+            }
+            let commit = ui.input(|i| i.key_pressed(Key::Enter));
+            let cancel = ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape));
+            if commit || (edit.lost_focus() && !cancel) {
+                let mut lanes = track.take_lanes.clone();
+                let value: String = self.lane_name.trim().chars().take(256).collect();
+                lanes.set_name(row.lane, (!value.is_empty()).then_some(value));
+                self.lane_rename = None;
+                action = Some(TakeAction::View {
+                    track: row.track,
+                    lanes,
+                });
+            } else if cancel {
+                self.lane_rename = None;
+            }
+        } else {
+            painter.text(
+                name_rect.left_center(),
+                egui::Align2::LEFT_CENTER,
+                &name,
+                egui::FontId::proportional(11.0),
+                colors::TEXT,
+            );
+            if row.header.height() >= 32.0 {
+                painter.text(
+                    egui::pos2(name_rect.left(), row.header.top() + 24.0),
+                    egui::Align2::LEFT_CENTER,
+                    plays_summary(timeline, &active_ranges),
+                    egui::FontId::proportional(10.0),
+                    colors::SECONDARY,
+                );
+            }
+            let name_hit = Rect::from_min_max(
+                name_rect.left_top(),
+                egui::pos2(
+                    name_rect.left()
+                        + ui.fonts_mut(|fonts| {
+                            fonts
+                                .layout_no_wrap(
+                                    name.clone(),
+                                    egui::FontId::proportional(11.0),
+                                    colors::TEXT,
+                                )
+                                .size()
+                                .x
+                        }),
+                    name_rect.bottom(),
+                ),
+            );
+            let name_response = ui.interact(
+                name_hit,
+                ui.id().with(("take lane name hit", row.track, row.lane)),
+                if enabled {
+                    Sense::click()
+                } else {
+                    Sense::hover()
+                },
+            );
+            if name_response.double_clicked() {
+                self.begin_take_rename(row.track, row.lane, name.clone());
+            } else {
+                let whole = Rect::from_min_max(
+                    egui::pos2(name_hit.right() + 4.0, row.header.top()),
+                    egui::pos2(
+                        row.header.right() - 30.0,
+                        row.header.bottom() - TAKE_LANE_SEAM,
+                    ),
+                );
+                if enabled
+                    && ui
+                        .interact(
+                            whole,
+                            ui.id().with(("take lane whole", row.track, row.lane)),
+                            Sense::click(),
+                        )
+                        .clicked()
+                {
+                    self.focused_lane = Some((row.track, row.lane));
+                    action = Some(TakeAction::Comp {
+                        track: row.track,
+                        lane: row.lane,
+                        edit: CompEdit::UseWholeTake,
+                    });
+                }
+            }
+            let menu_rect = Rect::from_center_size(
+                egui::pos2(row.header.right() - 15.0, row.header.center().y),
+                egui::vec2(26.0, 24.0),
+            );
+            let menu_response = ui.interact(
+                menu_rect,
+                ui.id().with(("take lane menu", row.track, row.lane)),
+                if enabled {
+                    Sense::click()
+                } else {
+                    Sense::hover()
+                },
+            );
+            if enabled && menu_response.hovered() {
+                ui.painter().rect_filled(menu_rect, 2.0, colors::FIELD);
+            }
+            paint_kebab(ui, menu_rect);
+            menu_response.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, "Take lane menu")
+            });
+            menu_response.clone().on_hover_text("Take lane menu");
+            if menu_response.clicked() {
+                self.focused_lane = Some((row.track, row.lane));
+            }
+            if enabled {
+                egui::Popup::menu(&menu_response).show(|ui| {
+                    if ui.button("Rename…").clicked() {
+                        self.begin_take_rename(row.track, row.lane, name.clone());
+                        ui.close();
+                    }
+                    if ui.button("Edit in editor").clicked() {
+                        self.focused_lane = Some((row.track, row.lane));
+                        action = Some(TakeAction::EditTake {
+                            track: row.track,
+                            lane: row.lane,
+                            clip: self.focused_take_clip,
+                        });
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui.button("Use whole take").clicked() {
+                        action = Some(TakeAction::Comp {
+                            track: row.track,
+                            lane: row.lane,
+                            edit: CompEdit::UseWholeTake,
+                        });
+                        ui.close();
+                    }
+                    if ui.button("Delete take").clicked() {
+                        action = Some(TakeAction::Comp {
+                            track: row.track,
+                            lane: row.lane,
+                            edit: CompEdit::DeleteTake,
+                        });
+                        ui.close();
+                    }
+                    if ui.button("Flatten comp").clicked() {
+                        action = Some(TakeAction::Comp {
+                            track: row.track,
+                            lane: row.lane,
+                            edit: CompEdit::Flatten,
+                        });
+                        ui.close();
+                    }
+                    if ui.button("Take to new track").clicked() {
+                        action = Some(TakeAction::TakeToNewTrack {
+                            track: row.track,
+                            lane: row.lane,
+                        });
+                        ui.close();
+                    }
+                });
+            }
+        }
+        let seam = Rect::from_min_max(
+            egui::pos2(row.header.left(), row.band.bottom() - TAKE_LANE_SEAM),
+            egui::pos2(row.band.right(), row.band.bottom()),
+        );
+        let seam_response = ui.interact(
+            seam,
+            ui.id().with(("take lane seam", row.track, row.lane)),
+            if enabled {
+                Sense::drag()
+            } else {
+                Sense::hover()
+            },
+        );
+        if seam_response.hovered() || matches!(self.take_drag, Some(TakeDrag::Height { .. })) {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+        }
+        if seam_response.drag_started()
+            && let Some(pos) = pointer
+        {
+            self.take_drag = Some(TakeDrag::Height {
+                track: row.track,
+                lane: row.lane,
+                start: track.take_lanes.height(row.lane) as f32,
+                height: track.take_lanes.height(row.lane),
+                pointer: pos.y,
+            });
+        }
+        if seam_response.dragged()
+            && let Some(TakeDrag::Height {
+                track,
+                lane,
+                start,
+                pointer: anchor,
+                ..
+            }) = self.take_drag
+            && let Some(pos) = pointer
+        {
+            let height = quantize_height(start + pos.y - anchor);
+            self.lane_height_preview = Some((track, lane, height));
+            self.take_drag = Some(TakeDrag::Height {
+                track,
+                lane,
+                start,
+                height,
+                pointer: anchor,
+            });
+        }
+        if seam_response.drag_stopped()
+            && let Some(TakeDrag::Height {
+                track: _track_id,
+                lane,
+                height,
+                ..
+            }) = self.take_drag.take()
+        {
+            self.lane_height_preview = None;
+            let mut lanes = track.take_lanes.clone();
+            lanes.set_height(lane, height);
+            action = Some(TakeAction::View {
+                track: row.track,
+                lanes,
+            });
+        }
+        action
+    }
+}
+
+pub(crate) fn paint_kebab(ui: &Ui, rect: Rect) {
+    let center = rect.center();
+    for offset in [-4.0, 0.0, 4.0] {
+        ui.painter().circle_filled(
+            egui::pos2(center.x, center.y + offset),
+            1.4,
+            colors::SECONDARY,
+        );
+    }
+}
+
+fn take_note_rects(clip: &Clip, lane: usize, band: Rect, viewport: &Viewport) -> Vec<(Rect, bool)> {
+    let Some(take) = clip.takes.get(lane) else {
+        return Vec::new();
+    };
+    let mut notes = Vec::new();
+    for event in &take.events {
+        let Message::Note { key, end, .. } = event.message else {
+            continue;
+        };
+        if event.tick >= clip.end || end <= clip.start {
+            continue;
+        }
+        let active = clip.sections.iter().any(|section| {
+            section.take == take.id && section.start <= event.tick && event.tick < section.end
+        });
+        notes.push((event.tick.max(clip.start), end.min(clip.end), key, active));
+    }
+    if notes.is_empty() {
+        return Vec::new();
+    }
+    let use_active = notes.iter().any(|note| note.3);
+    let (low, high) = notes
+        .iter()
+        .filter(|note| !use_active || note.3)
+        .fold((127_u8, 0_u8), |(low, high), note| {
+            (low.min(note.2), high.max(note.2))
+        });
+    let midpoint = (f32::from(low) + f32::from(high)) * 0.5;
+    let half = ((f32::from(high) - f32::from(low)) * 0.5 + 1.0).max(6.0);
+    let [pitch_low, pitch_high] = [midpoint - half, midpoint + half];
+    let top = band.top() + 4.0;
+    let bottom = band.bottom() - 4.0;
+    let mut rects = Vec::new();
+    for (start, end, key, active) in notes {
+        let left = (band.left() + viewport.x(start)).clamp(band.left(), band.right());
+        let right = (band.left() + viewport.x(end)).clamp(band.left(), band.right());
+        if right <= left {
+            continue;
+        }
+        let position = (f32::from(key) - pitch_low) / (pitch_high - pitch_low);
+        let y = (bottom - position * (bottom - top)).clamp(top, bottom - 2.0);
+        rects.push((
+            Rect::from_min_max(egui::pos2(left, y), egui::pos2(right, y + 2.0)),
+            active,
+        ));
+    }
+    rects
+}
+
+fn snap(snap: Snap, timeline: &Timeline, tick: u64) -> u64 {
+    if snap == Snap::Off {
+        tick
+    } else {
+        snap.nearest(timeline, tick)
+    }
+}
+
+fn quantize_height(height: f32) -> u16 {
+    let step = TAKE_LANE_HEIGHT_STEP;
+    let clamped = height.clamp(MODEL_MIN_HEIGHT as f32, MODEL_MAX_HEIGHT as f32);
+    (clamped / step).round() as u16 * step as u16
+}
+
+fn plays_summary(timeline: &Timeline, ranges: &[[u64; 2]]) -> String {
+    match ranges {
+        [] => "Not in comp".into(),
+        [range] => {
+            let start = timeline.position(range[0]);
+            let end = timeline.position(range[1]);
+            format!(
+                "Plays {}.{}–{}.{}",
+                start.bar, start.beat, end.bar, end.beat
+            )
+        }
+        ranges => format!("Plays {} ranges", ranges.len()),
+    }
+}
+
+fn readout(painter: &egui::Painter, pos: Pos2, text: &str) {
+    let galley = painter.layout_no_wrap(
+        text.to_owned(),
+        egui::FontId::proportional(10.0),
+        colors::TEXT,
+    );
+    let rect = Rect::from_min_size(
+        egui::pos2(pos.x + 12.0, pos.y - 20.0),
+        galley.size() + egui::vec2(10.0, 4.0),
+    );
+    painter.rect_filled(rect, 2.0, colors::FIELD);
+    painter.rect_stroke(
+        rect,
+        2.0,
+        egui::Stroke::new(1.0_f32, colors::DIVIDER),
+        egui::StrokeKind::Inside,
+    );
+    painter.galley(rect.min + egui::vec2(5.0, 2.0), galley, colors::TEXT);
+}
+
+fn dashed_line(painter: &egui::Painter, from: Pos2, to: Pos2, color: Color32) {
+    let length = (to.y - from.y).abs();
+    let mut offset = 0.0;
+    while offset < length {
+        let end = (offset + 3.0).min(length);
+        painter.line_segment(
+            [
+                egui::pos2(from.x, from.y + offset),
+                egui::pos2(to.x, from.y + end),
+            ],
+            egui::Stroke::new(1.0_f32, color),
+        );
+        offset += 6.0;
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Cut {
+    section: usize,
+    clip: ClipId,
+    tick: u64,
+    x: f32,
+}
+
+fn cut_at(
+    _timeline: &Timeline,
+    clips: &[Clip],
+    _track: u64,
+    lane: usize,
+    band: Rect,
+    viewport: &Viewport,
+    pos: Pos2,
+) -> Option<Cut> {
+    let mut best: Option<(f32, usize, ClipId, u64)> = None;
+    for clip in clips {
+        if lane >= clip.takes.len() {
+            continue;
+        }
+        let take = clip.takes[lane].id;
+        for (section, pair) in clip.sections.windows(2).enumerate() {
+            if pair[0].take != take && pair[1].take != take {
+                continue;
+            }
+            let x = band.left() + viewport.x(pair[1].start);
+            let distance = (pos.x - x).abs();
+            if distance <= CUT_TARGET && best.is_none_or(|(closest, _, _, _)| distance < closest) {
+                best = Some((distance, section + 1, clip.id(), pair[1].start));
+            }
+        }
+    }
+    best.map(|(_, section, clip, tick)| Cut {
+        section,
+        clip,
+        tick,
+        x: band.left() + viewport.x(tick),
+    })
+}
+
+impl App {
+    pub(crate) fn apply_take_action(&mut self, action: TakeAction) {
+        let track = match &action {
+            TakeAction::Comp { track, .. }
+            | TakeAction::TakeToNewTrack { track, .. }
+            | TakeAction::View { track, .. }
+            | TakeAction::EditTake { track, .. } => *track,
+        };
+        if self.view.selected != Some(track) {
+            self.select_track(track);
+        }
+        match action {
+            TakeAction::Comp { track, lane, edit } => {
+                self.send(Action::CompEdit {
+                    expected: self.view.project.midi.clone(),
+                    track,
+                    lane,
+                    edit,
+                });
+            }
+            TakeAction::TakeToNewTrack { track, lane } => {
+                self.send(Action::TakeToNewTrack {
+                    expected: self.view.project.midi.clone(),
+                    track,
+                    lane,
+                });
+            }
+            TakeAction::View { track, lanes } => {
+                self.send(Action::TrackView { track, lanes });
+            }
+            TakeAction::EditTake { track, lane, clip } => {
+                let arrangement = &self.view.project.midi;
+                let ids: Vec<(ClipId, u64)> = match clip {
+                    Some(clip) => arrangement
+                        .find_clip(clip)
+                        .filter(|(owner, clip)| *owner == track && lane < clip.takes.len())
+                        .map(|(_, clip)| vec![(clip.id(), clip.takes[lane].id)])
+                        .unwrap_or_default(),
+                    None => arrangement
+                        .clips(track)
+                        .iter()
+                        .filter(|clip| lane < clip.takes.len())
+                        .map(|clip| (clip.id(), clip.takes[lane].id))
+                        .collect(),
+                };
+                if ids.is_empty() {
+                    return;
+                }
+                let start = arrangement
+                    .find_clip(ids[0].0)
+                    .map_or(0, |(_, clip)| clip.start);
+                self.arrangement_ui.selected = ids.iter().map(|(id, _)| *id).collect();
+                self.piano_roll.open_take_lane(&ids, lane);
+                self.piano_roll.reveal(start);
+                self.piano_roll_open = true;
+                self.select_track(track);
+            }
+        }
     }
 }

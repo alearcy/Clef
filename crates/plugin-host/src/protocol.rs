@@ -33,6 +33,8 @@ pub enum Request {
         position: u64,
         events: Vec<Midi>,
         frames: usize,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        input: Vec<Frame>,
     },
     Stop,
     SuspendAudio,

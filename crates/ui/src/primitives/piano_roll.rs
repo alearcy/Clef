@@ -250,15 +250,25 @@ pub fn labelled(response: &Response, enabled: bool, name: &str) {
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, enabled, name));
 }
 
-pub fn paint_note(ui: &Ui, grid: Rect, area: Rect, selected: bool, primary: bool, preview: bool) {
+pub fn paint_note(
+    ui: &Ui,
+    grid: Rect,
+    area: Rect,
+    selected: bool,
+    active: bool,
+    primary: bool,
+    preview: bool,
+) {
     if !area.intersects(grid) {
         return;
     }
     let painter = ui.painter_at(grid);
     let fill = if preview {
         colors::ACCENT.gamma_multiply(0.54)
-    } else {
+    } else if active {
         colors::PEACOCK
+    } else {
+        colors::PEACOCK.gamma_multiply(if selected { 0.5 } else { 0.35 })
     };
     painter.rect_filled(area, theme::ROLL_RADIUS, fill);
     if selected || preview {
@@ -281,6 +291,30 @@ pub fn paint_note(ui: &Ui, grid: Rect, area: Rect, selected: bool, primary: bool
             );
         }
     }
+}
+
+pub fn comp_strip(ui: &mut Ui, time: &Viewport, width: f32, ranges: &[[u64; 2]], playhead: u64) {
+    let rect = Rect::from_min_size(ui.cursor().min, Vec2::new(width, 3.0));
+    ui.allocate_space(rect.size());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 0.0, colors::CANVAS);
+    for [start, end] in ranges {
+        let left = rect.left() + time.x(*start);
+        let right = rect.left() + time.x(*end);
+        painter.rect_filled(
+            Rect::from_min_max(
+                egui::pos2(left.max(rect.left()), rect.top()),
+                egui::pos2(right.min(rect.right()), rect.bottom()),
+            ),
+            0.0,
+            colors::ACCENT.gamma_multiply(0.7),
+        );
+    }
+    painter.vline(
+        rect.left() + time.x(playhead),
+        rect.y_range(),
+        Stroke::new(1.0_f32, colors::TEXT),
+    );
 }
 
 pub fn paint_marker(ui: &Ui, rect: Rect, time: &Viewport, tick: u64, color: egui::Color32) {
@@ -538,6 +572,11 @@ pub fn paint_values(
             colors::ACCENT
         } else {
             colors::PEACOCK
+        };
+        let color = if event.active {
+            color
+        } else {
+            color.gamma_multiply(0.35)
         };
         if cc.is_none() {
             let [start, end] = value_span(rect, time, event.tick, event.end, value(event));

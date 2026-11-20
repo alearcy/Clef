@@ -15,7 +15,12 @@ struct NativeMidi {
 
 unsafe extern "C" {
     fn clef_vst_error() -> *const c_char;
-    fn clef_vst_load(path: *const c_char, selected: *const c_char, out: *mut *mut c_void) -> i32;
+    fn clef_vst_load(
+        path: *const c_char,
+        selected: *const c_char,
+        effect: i32,
+        out: *mut *mut c_void,
+    ) -> i32;
     fn clef_vst_destroy(plugin: *mut c_void) -> i32;
     fn clef_vst_name(plugin: *mut c_void) -> *const c_char;
     fn clef_vst_activate(plugin: *mut c_void, offline: i32, rate: f64, latency: *mut u32) -> i32;
@@ -26,6 +31,7 @@ unsafe extern "C" {
         events: *const NativeMidi,
         count: usize,
         frames: usize,
+        input: *const f32,
         output: *mut f32,
     ) -> i32;
     fn clef_vst_suspend(plugin: *mut c_void) -> i32;
@@ -87,12 +93,19 @@ pub struct VstMain {
 }
 
 impl VstMain {
-    pub fn load(path: &Path, selected: &str, sample_rate: u32) -> Result<Self> {
+    pub fn load(path: &Path, selected: &str, sample_rate: u32, effect: bool) -> Result<Self> {
         use std::os::unix::ffi::OsStrExt;
         let path = CString::new(path.as_os_str().as_bytes())?;
         let selected = CString::new(selected)?;
         let mut pointer = std::ptr::null_mut();
-        check(unsafe { clef_vst_load(path.as_ptr(), selected.as_ptr(), &mut pointer) })?;
+        check(unsafe {
+            clef_vst_load(
+                path.as_ptr(),
+                selected.as_ptr(),
+                effect.into(),
+                &mut pointer,
+            )
+        })?;
         let pointer = NonNull::new(pointer).ok_or("SDK returned null plugin")?;
         let owner = Arc::new(Owner {
             pointer,
@@ -186,8 +199,17 @@ pub struct VstAudio {
     owner: Arc<Owner>,
 }
 impl VstAudio {
-    pub fn process(&mut self, position: u64, events: &[Midi], frames: usize) -> Result<Vec<Frame>> {
+    pub fn process(
+        &mut self,
+        position: u64,
+        events: &[Midi],
+        frames: usize,
+        input: &[Frame],
+    ) -> Result<Vec<Frame>> {
         validate_block(frames, events)?;
+        if !input.is_empty() && input.len() != frames {
+            return Err("invalid VST3 input length".into());
+        }
         let midi: Vec<_> = events
             .iter()
             .map(|m| NativeMidi {
@@ -203,6 +225,11 @@ impl VstAudio {
                 midi.as_ptr(),
                 midi.len(),
                 frames,
+                if input.is_empty() {
+                    std::ptr::null()
+                } else {
+                    input.as_ptr().cast()
+                },
                 output.as_mut_ptr().cast(),
             )
         })?;

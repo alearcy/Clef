@@ -152,10 +152,11 @@ pub struct ClapMain {
     pub gui: Option<PluginGui>,
     pub gui_open: bool,
     sample_rate: u32,
+    input_ports: Vec<usize>,
 }
 
 impl ClapMain {
-    pub fn load(path: &Path, selected: &str, sample_rate: u32) -> Result<Self> {
+    pub fn load(path: &Path, selected: &str, sample_rate: u32, effect: bool) -> Result<Self> {
         // Native code is loaded only inside the disposable plugin worker.
         let entry = unsafe { PluginEntry::load(path) }.map_err(|e| e.to_string())?;
         let factory = entry
@@ -207,28 +208,49 @@ impl ClapMain {
         let handle = instance.plugin_handle();
         let ports = handle
             .get_extension::<PluginAudioPorts>()
-            .ok_or("CLAP instrument has no audio-port extension")?;
+            .ok_or("CLAP plugin has no audio-port extension")?;
         let mut buffer = AudioPortInfoBuffer::new();
         let output = ports
             .get(&handle, 0, false, &mut buffer)
-            .ok_or("CLAP instrument has no output")?;
+            .ok_or("CLAP plugin has no output")?;
+        let input_count = ports.count(&handle, true);
         if ports.count(&handle, false) != 1
             || output.channel_count != 2
-            || ports.count(&handle, true) != 0
+            || (!effect && input_count != 0)
+            || (effect && !(1..=32).contains(&input_count))
         {
-            return Err(
-                "T02 currently requires a zero-input, single-stereo-output CLAP instrument".into(),
-            );
+            return Err("unsupported CLAP audio port layout".into());
         }
-        let notes = handle
-            .get_extension::<PluginNotePorts>()
-            .ok_or("CLAP instrument has no note input")?;
-        let mut note_buffer = NotePortInfoBuffer::new();
-        let note = notes
-            .get(&handle, 0, true, &mut note_buffer)
-            .ok_or("CLAP instrument has no note input")?;
-        if !note.supported_dialects.contains(NoteDialects::MIDI) {
-            return Err("T02 requires MIDI 1.0 on CLAP note port 0".into());
+        let mut input_ports = Vec::new();
+        for index in 0..input_count {
+            let input = ports
+                .get(&handle, index, true, &mut buffer)
+                .ok_or("CLAP effect has an unavailable input port")?;
+            if index == 0 && input.channel_count != 2
+                || index != 0
+                    && (input
+                        .flags
+                        .contains(clack_extensions::audio_ports::AudioPortFlags::IS_MAIN)
+                        || !(1..=2).contains(&input.channel_count))
+            {
+                return Err(
+                    "CLAP effect requires a stereo main input and mono or stereo auxiliary inputs"
+                        .into(),
+                );
+            }
+            input_ports.push(input.channel_count as usize);
+        }
+        if !effect {
+            let notes = handle
+                .get_extension::<PluginNotePorts>()
+                .ok_or("CLAP instrument has no note input")?;
+            let mut note_buffer = NotePortInfoBuffer::new();
+            let note = notes
+                .get(&handle, 0, true, &mut note_buffer)
+                .ok_or("CLAP instrument has no note input")?;
+            if !note.supported_dialects.contains(NoteDialects::MIDI) {
+                return Err("T02 requires MIDI 1.0 on CLAP note port 0".into());
+            }
         }
         let gui = handle.get_extension::<PluginGui>();
         Ok(Self {
@@ -238,6 +260,7 @@ impl ClapMain {
             gui,
             gui_open: false,
             sample_rate,
+            input_ports,
         })
     }
 
@@ -272,6 +295,9 @@ impl ClapMain {
             processor: processor.into(),
             events: EventBuffer::with_capacity(MAX_EVENTS),
             outputs: AudioPorts::with_capacity(2, 1),
+            inputs: AudioPorts::with_capacity(2 * self.input_ports.len(), self.input_ports.len()),
+            input_channels: vec![[[0.0; BLOCK]; 2]; self.input_ports.len()],
+            input_ports: self.input_ports.clone(),
             channels: [vec![0.0; BLOCK], vec![0.0; BLOCK]],
             steady: 0,
             sample_rate: self.sample_rate,
@@ -368,6 +394,9 @@ pub struct ClapAudio {
     pub processor: PluginAudioProcessor<Host>,
     events: EventBuffer,
     outputs: AudioPorts,
+    inputs: AudioPorts,
+    input_channels: Vec<[[f32; BLOCK]; 2]>,
+    input_ports: Vec<usize>,
     channels: [Vec<f32>; 2],
     steady: u64,
     sample_rate: u32,
@@ -377,12 +406,24 @@ pub struct ClapAudio {
 
 impl ClapAudio {
     pub fn stop(&mut self) -> Result<()> {
-        let cleanup = crate::protocol::panic_events();
-        self.process(0, &cleanup, BLOCK)?;
+        if self.input_ports.is_empty() {
+            let cleanup = crate::protocol::panic_events();
+            self.process(0, &cleanup, BLOCK, &[])?;
+        }
         self.processor.ensure_processing_stopped();
         Ok(())
     }
-    pub fn process(&mut self, position: u64, events: &[Midi], frames: usize) -> Result<Vec<Frame>> {
+    pub fn process(
+        &mut self,
+        position: u64,
+        events: &[Midi],
+        frames: usize,
+        input: &[Frame],
+    ) -> Result<Vec<Frame>> {
+        let effect = !self.input_ports.is_empty();
+        if (effect && input.len() != frames) || (!effect && !input.is_empty()) {
+            return Err("wrong CLAP input role or length".into());
+        }
         let _ = self.signals.audio_thread.set(std::thread::current().id());
         self.events.clear();
         for event in events {
@@ -396,7 +437,33 @@ impl ClapAudio {
         for channel in &mut self.channels {
             channel.fill(0.0);
         }
-        let inputs = InputAudioBuffers::empty();
+        let inputs = if effect {
+            for (i, frame) in input.iter().enumerate() {
+                self.input_channels[0][0][i] = frame[0];
+                self.input_channels[0][1][i] = frame[1];
+            }
+            self.inputs.with_input_buffers(
+                self.input_channels
+                    .iter_mut()
+                    .zip(&self.input_ports)
+                    .enumerate()
+                    .map(|(index, (channels, &count))| AudioPortBuffer {
+                        latency: 0,
+                        channels: AudioPortBufferType::f32_input_only(
+                            channels[..count].iter_mut().map(move |channel| {
+                                if index == 0 {
+                                    InputChannel::variable(&mut channel[..frames])
+                                } else {
+                                    channel[..frames].fill(0.0);
+                                    InputChannel::constant(&mut channel[..frames])
+                                }
+                            }),
+                        ),
+                    }),
+            )
+        } else {
+            InputAudioBuffers::empty()
+        };
         let mut outputs = self.outputs.with_output_buffers([AudioPortBuffer {
             latency: 0,
             channels: AudioPortBufferType::f32_output_only(

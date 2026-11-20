@@ -13,22 +13,14 @@ identifier and is not renumbered when a task is inserted. T26–T29 were added o
 decisions already taken in the external Composer DAW project; each specification cites the
 reference and remains a planning draft.
 
-## In Progress
+## Open work
 
 | Task | Status | Specification | Next step / dependency |
 | --- | --- | --- | --- |
-| T11 — Mixer and Master Section | In Progress | [T11 specification](docs/specs/T11-mixer.md) | P1. Two-instrument listening verification pending. |
-
-## Todo
-
-| Task | Status | Specification | Next step / dependency |
-| --- | --- | --- | --- |
-| T26 — MIDI Comping and Take Lanes | Todo | [T26 specification](docs/specs/T26-midi-comping.md) | P2. After T10; extends the MIDI take and comp model shared with T27. |
-| T12 — Insert Effects Hosting | Todo | [T12 specification](docs/specs/T12-effect-hosting.md) | P1. After T04 and T11. |
 | T13 — Export and Bounce | Todo | [T13 specification](docs/specs/T13-export.md) | P1. After T11; include T12 effects if present. |
+| T15 — Buses, Sends, Groups, and Routing | Todo | [T15 specification](docs/specs/T15-routing.md) | P2. After T13; does not wait for T14 because MIDI instrument tracks can already be grouped and sent. |
 | T14 — Audio Tracks and Recording | Todo | [T14 specification](docs/specs/T14-audio-recording.md) | P1. After T05 and T11; media-storage decision required. |
 | T27 — Audio Comping and Take Lanes | Todo | [T27 specification](docs/specs/T27-audio-comping.md) | P2. After T14 and T26; T14 media-storage decision required. |
-| T15 — Buses, Sends, Groups, and Routing | Todo | [T15 specification](docs/specs/T15-routing.md) | P2. After T11 and T12; not required for first mixes. |
 | T28 — FX Rack and Virtual Cable Graph | Todo | [T28 specification](docs/specs/T28-fx-rack.md) | P2. After T12 and T15; audio and MIDI nodes connected by virtual cables. |
 | T16 — Plugin Management and Hosting Robustness | Todo | [T16 specification](docs/specs/T16-plugin-management.md) | P2. After T12; compatibility target required. |
 | T17 — Device Resilience and Preferences | Todo | [T17 specification](docs/specs/T17-device-resilience.md) | P2. After T04; extends T03 device handling. |

@@ -52,6 +52,100 @@ instrument selection with the sequencer. Selecting Master retains the instrument
 Evidence at [760 points](../snapshots/egui/t11-playing-760.png) and
 [1024 points](../snapshots/egui/t11-long-bank-1024.png).
 
+## Clef T12
+
+T12 adds one ordered insert chain to every instrument strip and to Master. The provisional
+egui UI keeps the T11 strip layout and places the chain between Gain and Pan/Width:
+
+```text
+strip
+  Gain
+  Inserts
+    Plugin slot + Power (instrument tracks only)
+    5-pixel insertion gap, then Effect slot + Power
+    more Effect slots + Power
+    Add effect…
+  Pan / Width (Master: Pan)
+  Fader and meter
+  Mute / Solo (track) · Output (Master)
+  Name
+```
+
+T35 adds the fixed **Plugin** row before the effect chain on instrument tracks. Master has no
+Plugin row: its effects and Add effect start directly under the Inserts caption, and the
+reserved alignment space sits below them so the lower controls stay aligned (see
+[T35](#clef-t35)).
+
+The chain has no fixed slot count. **Add effect…** appends an effect and remains visible on
+an empty chain. Hovering the gap between two populated slots draws a 3-point `accent`
+insertion line; clicking the gap opens the effect picker for that position, so choosing an
+effect between `A` and `B` produces `A → new → B` without changing either existing slot.
+The picker is a modal list of `catalog.effects` with a live search field, a Rescan action and
+Cancel; cancelling leaves the project unchanged.
+
+Each slot shows the plugin name truncated to the column, with the full name and state in the
+tooltip and accessible name. Activating the slot opens the original plugin editor through the
+existing hosted-editor path. The power glyph bypasses the slot. Active slots use the peacock
+fill with `accent` power; bypassed slots dim the name and use `secondary` power; missing and
+failed slots use the field surface, with a `danger` edge and cause on failure. The menu on a
+slot provides **Insert Effect After…**, **Move Up**, **Move Down** and **Remove**; dragging
+reorders slots. Every action is available through the shared insert commands, and each
+edit is one undo step.
+
+The insert area reserves up to four rows across the bank and Master: the Plugin row, up to two
+effects and Add effect. Pan, fader, meter and name stay aligned across strips. Longer chains
+scroll vertically inside
+that area; the whole mixer still scrolls vertically when the window is too short, as in T11.
+Keyboard focus on a slot targets the insert commands in the command palette; Enter or Space
+opens the focused slot and toggles its power. The gap and slots have channel-and-plugin
+accessible names.
+
+Evidence at [1024 points](../snapshots/egui/t12-populated-1024.png) and
+[760 points](../snapshots/egui/t12-populated-760.png); the full state set is
+[empty](../snapshots/egui/t12-empty-1024.png),
+[hovered insertion gap](../snapshots/egui/t12-insertion-1024.png),
+[bypassed](../snapshots/egui/t12-bypassed-1024.png),
+[missing](../snapshots/egui/t12-missing-1024.png),
+[failed](../snapshots/egui/t12-failed-1024.png) and
+[long chain](../snapshots/egui/t12-long-chain-760.png). The `t12_gallery` example regenerates
+them at both review widths.
+
+## Clef T35
+
+The first row of an instrument strip's Inserts section is the fixed **Plugin** slot. It is the
+track's source, not an effect: it cannot be removed, reordered, or preceded by an effect. Master
+has no Plugin row; its effect rows start directly under Inserts and the equivalent alignment
+space is below them, so Pan, fader, meter and name still align with the instrument strips.
+
+```text
+Plugin slot                     active: name + power (accent)
+                                bypassed: dim name + secondary power
+                                offline: field surface, dim name, disabled power
+                                empty: "No instrument", opens the picker
+```
+
+Activating the Plugin slot opens the original instrument editor. An empty slot opens the
+instrument picker. The context menu provides **Open Instrument Editor**, **Replace
+Instrument…**, **Bypass Instrument** / **Enable Instrument**, and **Take Instrument Offline** /
+**Bring Instrument Online**; the same state commands are in the command registry for the focused
+channel.
+
+Power is normal plugin bypass: the instrument worker stays online and processes MIDI and state,
+but its output is replaced with silence before Gain and the effect chain. Effect tails may
+continue. **Offline** is separate: the worker is released after its state is captured into the
+project, the track does not load on open, selection, Enable Audio, playback or record preparation,
+and the saved identity and state are retained. Bring Online reloads from that state. Both flags
+persist and each change is one undo step.
+
+The insert area reserves the Plugin row, up to two effect rows and the Add row: four rows. All
+strips reserve that height; longer effect chains scroll inside the effect area while the Plugin
+row stays visible. Evidence: [online](../snapshots/egui/t12-populated-1024.png),
+[VI bypassed](../snapshots/egui/t12-vi-bypassed-1024.png),
+[VI offline](../snapshots/egui/t12-vi-offline-1024.png),
+[empty VI](../snapshots/egui/t12-vi-empty-1024.png), and
+[long chain](../snapshots/egui/t12-long-chain-760.png). The `t12_gallery` example regenerates
+the states at 1024 and 760 points.
+
 ## Legacy reference
 
 ## Search row

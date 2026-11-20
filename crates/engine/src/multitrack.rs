@@ -1,5 +1,6 @@
 //! Independent bounded worker paths sharing one device callback and sample clock.
-use crate::mixer::{MeterPeak, PreparedMix, Ramp, accumulate};
+use crate::inserts::{Chain, MAX_CHAIN_LATENCY, Processor};
+use crate::mixer::{Matrix, MeterPeak, PreparedMix, Ramp, accumulate};
 use crate::transport::SampleMap;
 use crate::{
     live::{Configuration, channel_message},
@@ -13,7 +14,7 @@ use crate::{
     transport::{Control, Prepared, Renderer},
 };
 use clef_audio_io::{self as audio_io, MidiInputConnection, Stream, StreamTrait};
-use clef_model::{midi::Arrangement, timeline::Timeline};
+use clef_model::{midi::Arrangement, mixer::Target, timeline::Timeline};
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::time::{Duration, Instant};
 use std::{
@@ -59,9 +60,12 @@ pub struct TrackStats {
     pub midi_dropped: AtomicU64,
     pub playback_dropped: AtomicU64,
     pub playback_blocks: AtomicU64,
+    pub error: std::sync::Mutex<Option<String>>,
     release: AtomicBool,
     audition: AtomicU32,
     mute_recording: AtomicBool,
+    trim: AtomicU32,
+    bypass: AtomicBool,
 }
 impl TrackStats {
     pub fn take_meter(&self) -> Frame {
@@ -101,6 +105,9 @@ pub struct Clock {
     has_plans: AtomicBool,
     plans: Mutex<HashMap<u64, Arc<Plan>>>,
     controls: [AtomicU32; CONTROLS],
+    insert_chains: Mutex<HashMap<Target, Arc<Chain>>>,
+    master_delay: AtomicU32,
+    audition_activity: AtomicBool,
 }
 impl Clock {
     pub fn take_master_meter(&self) -> Frame {
@@ -143,6 +150,9 @@ impl Clock {
             has_plans: AtomicBool::new(false),
             plans: Mutex::new(HashMap::new()),
             controls: std::array::from_fn(|_| AtomicU32::new(0)),
+            insert_chains: Mutex::default(),
+            master_delay: AtomicU32::new(0),
+            audition_activity: AtomicBool::new(false),
         }
     }
     fn event_position(&self, now_ns: u64, rate: u32) -> Option<(u64, u64)> {
@@ -199,6 +209,19 @@ impl Clock {
             self.epoch.fetch_add(1, Ordering::AcqRel);
         }
     }
+
+    fn chain(&self, target: Target) -> Option<Arc<Chain>> {
+        self.insert_chains
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&target)
+            .cloned()
+    }
+
+    fn total_latency(&self) -> u64 {
+        u64::from(self.latency.load(Ordering::Acquire))
+            + u64::from(self.master_delay.load(Ordering::Acquire))
+    }
 }
 #[derive(Default)]
 struct ChannelMix {
@@ -213,6 +236,201 @@ struct DeviceMix {
     master: Ramp,
     ramp_samples: u32,
 }
+
+#[derive(Clone, Copy, Default)]
+struct DrySample {
+    frame: Frame,
+    position: u64,
+    epoch: u64,
+    transport: u64,
+}
+
+struct MasterInput {
+    lead: u64,
+    bound: usize,
+    input: Producer<Packet>,
+    output: Consumer<Packet>,
+    next: Option<Packet>,
+    pending: [Frame; BLOCK],
+    capture: Option<(u64, u64)>,
+    dry: Vec<DrySample>,
+}
+
+impl MasterInput {
+    fn process(
+        &mut self,
+        source: Frame,
+        position: u64,
+        epoch: u64,
+        transport: u64,
+        clock: &Clock,
+    ) -> Frame {
+        let delay = u64::from(clock.master_delay.load(Ordering::Acquire));
+        if delay == 0 {
+            self.capture = None;
+            return source;
+        }
+        let capacity = self.dry.len() as u64;
+        self.dry[(position % capacity) as usize] = DrySample {
+            frame: source,
+            position,
+            epoch,
+            transport,
+        };
+        let offset = position as usize % BLOCK;
+        if offset == 0 {
+            self.capture = Some((epoch, transport));
+        }
+        if self.capture == Some((epoch, transport)) {
+            self.pending[offset] =
+                source.map(|sample| if sample.is_finite() { sample } else { 0.0 });
+            if offset == BLOCK - 1 {
+                let _ = self.input.push(Packet {
+                    at: position - offset as u64,
+                    epoch,
+                    token: 0,
+                    transport,
+                    frames: self.pending,
+                });
+            }
+        } else {
+            self.capture = None;
+        }
+        if offset == 0 {
+            for _ in 0..=self.bound {
+                if self.next.is_none() {
+                    self.next = self.output.pop().ok();
+                }
+                match &self.next {
+                    Some(packet)
+                        if packet.epoch != epoch
+                            || packet.transport != transport
+                            || packet.at < position =>
+                    {
+                        self.next = None
+                    }
+                    _ => break,
+                }
+            }
+        }
+        if let Some(packet) = &self.next
+            && packet.epoch == epoch
+            && packet.transport == transport
+            && packet.at == position - offset as u64
+        {
+            return packet.frames[offset];
+        }
+
+        if position >= self.lead && offset == 0 {
+            clock.transitions.fetch_add(BLOCK as u64, Ordering::Relaxed);
+        }
+        position.checked_sub(delay).map_or([0.0; 2], |at| {
+            let dry = self.dry[(at % capacity) as usize];
+            if dry.position == at && dry.epoch == epoch && dry.transport == transport {
+                dry.frame
+            } else {
+                [0.0; 2]
+            }
+        })
+    }
+}
+
+struct MasterBroker {
+    stop: Arc<AtomicBool>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+impl MasterBroker {
+    fn start(clock: Arc<Clock>, bound: usize, lead: u64, rate: u32) -> Result<(Self, MasterInput)> {
+        let (input, mut receive) = RingBuffer::<Packet>::new(bound);
+        let (mut send, output) = RingBuffer::new(bound);
+        let mut dry = Vec::new();
+        let capacity = MAX_CHAIN_LATENCY as usize + lead as usize + 1;
+        dry.try_reserve_exact(capacity)?;
+        dry.resize(capacity, DrySample::default());
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopping = stop.clone();
+        let worker = std::thread::Builder::new()
+            .name("Clef master inserts".into())
+            .spawn(move || {
+                let mut inserts = Processor::default();
+                let budget =
+                    Duration::from_secs_f64((lead - BLOCK as u64) as f64 / f64::from(rate));
+                let mut enabled = false;
+                while !stopping.load(Ordering::Acquire) {
+                    let chain = clock.chain(Target::Master);
+                    enabled = if inserts.set_chain(chain.clone()) {
+                        let active = chain.is_some();
+                        let delay = if active {
+                            lead as u32 + inserts.latency()
+                        } else {
+                            0
+                        };
+                        clock.master_delay.store(delay, Ordering::Release);
+                        clock.epoch.fetch_add(2, Ordering::AcqRel);
+                        active
+                    } else {
+                        enabled
+                    };
+                    let Ok(mut packet) = receive.pop() else {
+                        std::thread::sleep(Duration::from_micros(100));
+                        continue;
+                    };
+                    let epoch = clock.epoch.load(Ordering::Acquire);
+                    if !enabled || packet.epoch != epoch || !epoch.is_multiple_of(2) {
+                        continue;
+                    }
+                    let now = clock.played.load(Ordering::Acquire);
+                    if packet.at + lead + BLOCK as u64 <= now {
+                        continue;
+                    }
+                    if inserts.process(
+                        crate::sequence::START + packet.at,
+                        &mut packet.frames,
+                        Instant::now() + budget,
+                    ) {
+                        clock
+                            .master_delay
+                            .store(lead as u32 + inserts.latency(), Ordering::Release);
+                        clock.epoch.fetch_add(2, Ordering::AcqRel);
+                        continue;
+                    }
+                    packet.at += lead;
+                    let _ = send.push(packet);
+                }
+            })?;
+        Ok((
+            Self {
+                stop,
+                worker: Some(worker),
+            },
+            MasterInput {
+                lead,
+                bound,
+                input,
+                output,
+                next: None,
+                pending: [[0.0; 2]; BLOCK],
+                capture: None,
+                dry,
+            },
+        ))
+    }
+
+    fn stop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+impl Drop for MasterBroker {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
 struct Reader {
     mix: ChannelMix,
     used: bool,
@@ -233,6 +451,7 @@ struct Mix {
     bound: usize,
     lead: u64,
     transport: Option<Renderer>,
+    master_fx: Option<MasterInput>,
 }
 impl Mix {
     fn fill(&mut self, output: &mut [f32], output_latency: u64) {
@@ -293,6 +512,9 @@ impl Mix {
                 0
             };
             transport.begin_device_callback(hold);
+            if self.clock.audition_activity.swap(false, Ordering::AcqRel) {
+                transport.resume_gate();
+            }
             let timeline = transport.projection(self.position);
             if let Some(previous) = self
                 .clock
@@ -324,7 +546,10 @@ impl Mix {
         }
         for frame in output.chunks_exact_mut(self.channels) {
             let epoch = self.clock.epoch.load(Ordering::Acquire);
-            let click = self.transport.as_mut().map_or(0.0, Renderer::sample);
+            let (click, gain) = self.transport.as_mut().map_or((0.0, 1.0), |transport| {
+                let click = transport.sample();
+                (click, transport.gain())
+            });
             let mut sum = [click; 2];
             for reader in &mut self.readers {
                 if !reader.stats.active.load(Ordering::Acquire)
@@ -398,7 +623,14 @@ impl Mix {
                     }
                 }
             }
+            if let Some(master) = &mut self.master_fx {
+                if !epoch.is_multiple_of(2) {
+                    sum = [0.0; 2];
+                }
+                sum = master.process(sum, self.position, epoch, playback_generation, &self.clock);
+            }
             let sum = self.mixer.master.apply(sum);
+            let sum = [sum[0] * gain, sum[1] * gain];
             accumulate(&mut master_peak, sum);
             for channel in 0..2 {
                 if !sum[channel].is_finite() || sum[channel].abs() > 1.0 {
@@ -419,7 +651,11 @@ impl Mix {
                     Ordering::Release,
                 );
             }
-            transport.publish(output_latency.saturating_add(count));
+            transport.publish(
+                output_latency
+                    .saturating_add(count)
+                    .saturating_add(u64::from(self.clock.master_delay.load(Ordering::Acquire))),
+            );
         }
         self.clock.master_meter.publish(0, master_peak);
         for reader in &self.readers {
@@ -474,6 +710,7 @@ pub struct Engine {
     pub lead: u64,
     pub transport: Control,
     capture: Consumer<Captured>,
+    master: MasterBroker,
 }
 impl Engine {
     pub fn start(
@@ -595,6 +832,7 @@ impl Engine {
         )?;
         let (transport, renderer) = Renderer::new(timing, tick);
         let (mixer, incoming) = RingBuffer::new(2);
+        let (master, master_fx) = MasterBroker::start(clock.clone(), bound, lead, rate)?;
         let mut mix = Mix {
             mixer: DeviceMix {
                 incoming: Some(incoming),
@@ -609,6 +847,7 @@ impl Engine {
             bound,
             lead,
             transport: Some(renderer),
+            master_fx: Some(master_fx),
         };
         let errors = clock.clone();
         let stream = audio_io::timed_output_stream(
@@ -636,6 +875,7 @@ impl Engine {
             lead,
             transport,
             capture,
+            master,
         })
     }
     pub fn set_mix(
@@ -646,6 +886,10 @@ impl Engine {
         let settings = PreparedMix::new(project, preview);
         if self.desired_mix != settings {
             self.desired_mix = settings;
+            for stats in &self.clock.tracks {
+                let trim = self.desired_mix.trim(stats.id.load(Ordering::Acquire));
+                stats.trim.store(trim.to_bits(), Ordering::Release);
+            }
             self.mix_pending = true;
         }
         self.flush_mix();
@@ -654,6 +898,40 @@ impl Engine {
     pub fn flush_mix(&mut self) {
         if self.mix_pending && self.mixer.push(self.desired_mix.clone()).is_ok() {
             self.mix_pending = false;
+        }
+    }
+
+    pub fn set_instrument_bypass(&self, id: u64, bypass: bool) {
+        if let Some(stats) = self
+            .clock
+            .tracks
+            .iter()
+            .find(|stats| stats.id.load(Ordering::Acquire) == id)
+        {
+            stats.bypass.store(bypass, Ordering::Release);
+        }
+    }
+
+    pub fn set_insert_chain(&mut self, target: Target, chain: Option<Chain>) {
+        let mut chains = self
+            .clock
+            .insert_chains
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let structural = match (chains.get(&target), &chain) {
+            (Some(current), Some(next)) => !current.same_effects(next),
+            (None, None) => return,
+            _ => true,
+        };
+        if let Some(chain) = chain {
+            chains.insert(target, Arc::new(chain));
+        } else {
+            chains.remove(&target);
+        }
+        // A bypass-only replacement keeps the same stage topology, latency and
+        // compensation delay; the worker crossfades it without an epoch change.
+        if structural {
+            self.clock.epoch.fetch_add(2, Ordering::AcqRel);
         }
     }
 
@@ -771,6 +1049,7 @@ impl Engine {
     }
 
     pub fn audition(&self, id: u64, channel: u8, key: u8, velocity: u8) {
+        self.clock.audition_activity.store(true, Ordering::Release);
         if channel < 16
             && key < 128
             && (1..128).contains(&velocity)
@@ -817,7 +1096,14 @@ impl Engine {
         stats.audition.store(0, Ordering::Release);
         stats.mute_recording.store(false, Ordering::Release);
         stats.failed.store(false, Ordering::Release);
+        *stats
+            .error
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = None;
+        stats.bypass.store(false, Ordering::Release);
         stats.id.store(id, Ordering::Release);
+        let initial_trim = self.desired_mix.trim(id);
+        stats.trim.store(initial_trim.to_bits(), Ordering::Release);
         stats.latency.store(instrument.latency, Ordering::Release);
         let token = stats.token.fetch_add(1, Ordering::AcqRel) + 1;
         stats.meter.take(token);
@@ -834,6 +1120,7 @@ impl Engine {
         self.clock.refresh_latency();
         let clock = self.clock.clone();
         let lead = self.lead;
+        let rate = self.rate;
         let audition_frames = u64::from(self.rate) / 6;
         let stop = Arc::new(AtomicBool::new(false));
         let stopping = stop.clone();
@@ -843,6 +1130,12 @@ impl Engine {
                 clock.played.load(Ordering::Acquire).div_ceil(BLOCK as u64) * BLOCK as u64;
             let mut revision = clock.revision.load(Ordering::Acquire);
             let mut delay = crate::graph::Delay::new(0);
+            let mut inserts = Processor::default();
+            let mut trim = Ramp::default();
+            trim.reset(Matrix::trim(initial_trim));
+            let initial_bypass = report.bypass.load(Ordering::Acquire);
+            let mut bypass = Ramp::default();
+            bypass.reset(Matrix::trim(if initial_bypass { 0.0 } else { 1.0 }));
             let mut delay_epoch = u64::MAX;
             let mut pending = None;
             let mut events = Vec::with_capacity(MAX_EVENTS);
@@ -867,6 +1160,12 @@ impl Engine {
                     if !epoch.is_multiple_of(2) {
                         std::thread::yield_now();
                         continue;
+                    }
+                    if inserts.set_chain(clock.chain(Target::Track(id))) {
+                        report
+                            .latency
+                            .store(audio.latency + inserts.latency(), Ordering::Release);
+                        clock.refresh_latency();
                     }
                     events.clear();
                     let next_revision = clock.revision.load(Ordering::Acquire);
@@ -948,6 +1247,7 @@ impl Engine {
                         delay_epoch = epoch;
                     }
                     let started = Instant::now();
+                    let instrument_latency = audio.latency;
                     let reply = audio.process(crate::sequence::START + elapsed, &events, BLOCK)?;
                     report
                         .max_rpc_us
@@ -962,9 +1262,11 @@ impl Engine {
                         .flatten()
                         .fold(0.0_f32, |p, s| p.max(s.abs()));
                     report.peak.fetch_max(peak.to_bits(), Ordering::Relaxed);
-                    if reply.restart || reply.latency != report.latency.load(Ordering::Acquire) {
+                    if reply.restart || reply.latency != instrument_latency {
                         let latency = audio.reconfigure(&control)?;
-                        report.latency.store(latency, Ordering::Release);
+                        report
+                            .latency
+                            .store(latency + inserts.latency(), Ordering::Release);
                         clock.refresh_latency();
                         clock.epoch.fetch_add(2, Ordering::AcqRel);
                         elapsed += BLOCK as u64;
@@ -974,9 +1276,39 @@ impl Engine {
                         elapsed += BLOCK as u64;
                         continue;
                     }
-                    let mut frames = [[0.0; 2]; BLOCK];
-                    for (out, source) in frames.iter_mut().zip(reply.frames) {
-                        *out = delay.apply(source);
+                    let mut frames: [Frame; BLOCK] =
+                        reply.frames.try_into().map_err(|_| "wrong block size")?;
+                    let bypassed = report.bypass.load(Ordering::Acquire);
+                    bypass.set(
+                        Matrix::trim(if bypassed { 0.0 } else { 1.0 }),
+                        (rate / 200).max(1),
+                    );
+                    for frame in &mut frames {
+                        *frame = bypass.apply(*frame);
+                    }
+                    trim.set(
+                        Matrix::trim(f32::from_bits(report.trim.load(Ordering::Acquire))),
+                        (rate / 200).max(1),
+                    );
+                    for frame in &mut frames {
+                        *frame = trim.apply(*frame);
+                    }
+                    let budget = Duration::from_secs_f64(lead as f64 / f64::from(rate));
+                    if inserts.process(
+                        crate::sequence::START + elapsed,
+                        &mut frames,
+                        started + budget,
+                    ) {
+                        report
+                            .latency
+                            .store(audio.latency + inserts.latency(), Ordering::Release);
+                        clock.refresh_latency();
+                        clock.epoch.fetch_add(2, Ordering::AcqRel);
+                        elapsed += BLOCK as u64;
+                        continue;
+                    }
+                    for frame in &mut frames {
+                        *frame = delay.apply(*frame);
                     }
                     output
                         .push(Packet {
@@ -993,7 +1325,11 @@ impl Engine {
                 audio.suspend()?;
                 Ok(())
             })();
-            if result.is_err() {
+            if let Err(error) = &result {
+                *report
+                    .error
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()) = Some(error.to_string());
                 report.failed.store(true, Ordering::Release);
             }
             Returned {
@@ -1041,7 +1377,7 @@ impl Engine {
             },
             self.clock.max_callback.load(Ordering::Relaxed),
             self.lead,
-            self.clock.latency.load(Ordering::Relaxed),
+            self.clock.total_latency(),
             self.clock.clipped.load(Ordering::Relaxed)
         )
     }
@@ -1058,6 +1394,7 @@ impl Drop for Broker {
 impl Drop for Engine {
     fn drop(&mut self) {
         let _ = self.stream.pause();
+        self.master.stop();
         self.midi.take();
     }
 }
@@ -1129,6 +1466,7 @@ mod tests {
         }
         let mut mix = Mix {
             mixer: DeviceMix::default(),
+            master_fx: None,
             readers,
             clock: clock.clone(),
             position: 0,
@@ -1168,6 +1506,7 @@ mod tests {
         .unwrap();
         let mut mix = Mix {
             mixer: DeviceMix::default(),
+            master_fx: None,
             readers: vec![Reader {
                 mix: ChannelMix::default(),
                 used: false,
@@ -1277,6 +1616,7 @@ mod callback_proof {
         }
         Mix {
             mixer: DeviceMix::default(),
+            master_fx: None,
             readers,
             clock,
             position: 0,
@@ -1322,6 +1662,48 @@ mod callback_proof {
     }
 
     #[test]
+    fn master_handoff_keeps_the_dry_signal_aligned_and_drops_late_wet_blocks() {
+        let clock = Clock::new();
+        let (input, _read) = RingBuffer::new(8);
+        let (mut write, output) = RingBuffer::new(8);
+        let lead = 2 * BLOCK as u64;
+        clock.master_delay.store(lead as u32 + 1, Ordering::Release);
+        let mut master = MasterInput {
+            lead,
+            bound: 8,
+            input,
+            output,
+            next: None,
+            pending: [[0.0; 2]; BLOCK],
+            capture: None,
+            dry: vec![DrySample::default(); lead as usize + BLOCK],
+        };
+        let mut heard = [[0.0; 2]; 4 * BLOCK];
+        COUNT.with(|counter| counter.set(Some(0)));
+        for (i, out) in heard.iter_mut().enumerate() {
+            if i as u64 == lead + 1 {
+                assert!(
+                    write
+                        .push(Packet {
+                            at: lead,
+                            epoch: 2,
+                            token: 0,
+                            transport: 1,
+                            frames: [[1.0; 2]; BLOCK],
+                        })
+                        .is_ok()
+                );
+            }
+            let source = if i == 0 { [0.5, -0.25] } else { [0.0; 2] };
+            *out = master.process(source, i as u64, 2, 1, &clock);
+        }
+        let allocations = COUNT.with(|counter| counter.replace(None).unwrap());
+        assert_eq!(allocations, 0);
+        assert_eq!(heard[lead as usize + 1], [0.5, -0.25]);
+        assert_eq!(heard.iter().filter(|&&frame| frame != [0.0; 2]).count(), 1);
+    }
+
+    #[test]
     fn mixed_aligned_tracks_publish_post_fader_peaks_without_allocating() {
         use clef_model::project::{Project, Track};
         let mut mix = prepared(&[0, 257]);
@@ -1334,6 +1716,11 @@ mod callback_proof {
                 id,
                 name: format!("Instrument {id}"),
                 plugin: None,
+                instrument_bypassed: false,
+                instrument_offline: false,
+                record_mode: Default::default(),
+                inserts: Vec::new(),
+                take_lanes: Default::default(),
                 mix: Default::default(),
                 state: vec![],
             });
@@ -1393,8 +1780,9 @@ mod callback_proof {
                 assert_eq!(output[wrapped * 4 + 2], 0.20);
             }
             control.send(Command::Stop).unwrap();
-            mix.fill(&mut output, 0);
-            assert!(output.iter().all(|sample| *sample == 0.0));
+            let mut fade = vec![0.0; 612 * 4];
+            mix.fill(&mut fade, 0);
+            assert!(fade[240 * 4..].iter().all(|sample| *sample == 0.0));
         }
     }
     #[test]
@@ -1451,8 +1839,12 @@ mod callback_proof {
         assert_eq!(allocations, 0);
         assert_eq!(recording.start, 512 + 2 * BLOCK as u64);
         assert_eq!(mix.clock.record_end.load(Ordering::Acquire), stop - 17);
+        let mut fade = vec![0.0; 1024 * 4];
+        mix.fill(&mut fade, 17);
+        let mut settle = vec![0.0; 256 * 4];
+        mix.fill(&mut settle, 17);
         assert!(mix.clock.playback_generation.load(Ordering::Acquire) > old_generation);
-        assert!(output.iter().all(|sample| *sample == 0.0));
+        assert!(settle.iter().all(|sample| *sample == 0.0));
     }
 
     #[test]

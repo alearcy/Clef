@@ -189,14 +189,15 @@ carries a control's shape; soft depth does, painted by the primitive helper
 - **One body height.** Raised and recessed controls share `controlBody`, 2 px shorter than the
   bounds, in every state; the strip under a raised body holds its shadow and stays empty under a
   recessed one, so buttons and fields side by side line up.
-- **Hover** adds the 1-pixel `controlEdge` edge (1.81:1); keyboard focus keeps its `accent` edge.
+- **Hover** lifts the body to `field` and never adds a border; keyboard focus keeps its `accent`
+  edge.
 - **Lit** fills (peacock, oxblood mute, solo, accent) and pressed buttons keep the body and its
   shadow and drop the top light, so they read as pushed in without changing size. **Disabled** is flat `panel` with a `divider` edge.
-- Checkboxes keep their `controlEdge` box; knobs keep their cap shadow with a `divider` rim
-  (`controlEdge` on hover). Glyph-only buttons (tools, power, arm, monitor, tap) stay bare glyphs.
+- Checkboxes keep their `controlEdge` box; knobs keep their cap shadow with a `divider` rim.
+  Glyph-only buttons (tools, power, arm, monitor, tap) stay bare glyphs.
 
 Trade-off, accepted by the user: at rest the cues reach 1.54:1 (top light) and 1.38:1 (shadow
-against the body), below the always-on edge's 1.81:1; the label, the depth and the hover edge carry
+against the body), below the always-on edge's 1.81:1; the label, the depth and the hover fill carry
 the target. Depth is a control's own, never a region rule or a card.
 
 ## Separation
@@ -226,7 +227,7 @@ and the 2-pixel pinned-block seam.
 
 Contrast (tested): primary and secondary text at least 4.5:1 on every surface, text on `peacock` at
 least 4.5:1, active non-text glyphs at least 3:1, `disabled` at least 3.5:1 on `field` (readable but
-clearly below `secondary`), and the hover edge at least 1.8:1 on `panel`.
+clearly below `secondary`), and the hover `field` body distinguishable from `panel`.
 
 ## Pointer
 

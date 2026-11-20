@@ -1,6 +1,6 @@
 use crate::{DEFAULT_BLOCK_SIZE as BLOCK, DEFAULT_SAMPLE_RATE as RATE, MAX_STATE, Plugin, Result};
 use crate::{
-    midi::{Arrangement, Snap},
+    midi::{Arrangement, Mode, Snap},
     timeline::{MAX_TICK, Timeline},
 };
 use serde::{Deserialize, Serialize};
@@ -58,14 +58,174 @@ impl Default for AudioSettings {
         }
     }
 }
+pub const TAKE_LANE_DEFAULT_HEIGHT: u16 = 40;
+pub const TAKE_LANE_MIN_HEIGHT: u16 = 24;
+pub const TAKE_LANE_MAX_HEIGHT: u16 = 320;
+const TAKE_LANE_HEIGHT_STEP: u16 = 4;
+const MAX_TAKE_LANES: usize = 4096;
+const MAX_TAKE_NAME: usize = 256;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TrackMode {
+    #[default]
+    Global,
+    Merge,
+    Replace,
+    NewTake,
+}
+
+impl TrackMode {
+    pub const ALL: [Self; 4] = [Self::Global, Self::Merge, Self::Replace, Self::NewTake];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Global => "Global",
+            Self::Merge => "Merge",
+            Self::Replace => "Replace",
+            Self::NewTake => "New take",
+        }
+    }
+
+    pub fn effective(self, global: Mode) -> Mode {
+        match self {
+            Self::Global => global,
+            Self::Merge => Mode::Merge,
+            Self::Replace => Mode::Replace,
+            Self::NewTake => Mode::NewTake,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TakeLane {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(
+        default = "default_take_lane_height",
+        skip_serializing_if = "is_default_take_lane_height"
+    )]
+    pub height: u16,
+}
+
+impl Default for TakeLane {
+    fn default() -> Self {
+        Self {
+            name: None,
+            height: TAKE_LANE_DEFAULT_HEIGHT,
+        }
+    }
+}
+
+fn default_take_lane_height() -> u16 {
+    TAKE_LANE_DEFAULT_HEIGHT
+}
+
+fn is_default_take_lane_height(height: &u16) -> bool {
+    *height == TAKE_LANE_DEFAULT_HEIGHT
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TakeLanes {
+    #[serde(default)]
+    pub visible: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lanes: Vec<TakeLane>,
+}
+
+impl TakeLanes {
+    pub fn lane(&self, index: usize) -> Option<&TakeLane> {
+        self.lanes.get(index)
+    }
+
+    pub fn name(&self, index: usize) -> String {
+        self.lanes
+            .get(index)
+            .and_then(|lane| lane.name.clone())
+            .unwrap_or_else(|| format!("Take {}", index + 1))
+    }
+
+    pub fn height(&self, index: usize) -> u16 {
+        self.lanes
+            .get(index)
+            .map_or(TAKE_LANE_DEFAULT_HEIGHT, |lane| lane.height)
+    }
+
+    pub fn set_name(&mut self, index: usize, name: Option<String>) {
+        let lane = self.lane_mut(index);
+        lane.name = name;
+    }
+
+    pub fn set_height(&mut self, index: usize, height: u16) {
+        self.lane_mut(index).height = height;
+    }
+
+    pub fn remove(&mut self, index: usize) {
+        if index < self.lanes.len() {
+            self.lanes.remove(index);
+        }
+    }
+
+    fn lane_mut(&mut self, index: usize) -> &mut TakeLane {
+        while self.lanes.len() <= index {
+            self.lanes.push(TakeLane::default());
+        }
+        &mut self.lanes[index]
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.lanes.len() > MAX_TAKE_LANES {
+            return Err("invalid take lane count".into());
+        }
+        for lane in &self.lanes {
+            let height = lane.height;
+            if !(TAKE_LANE_MIN_HEIGHT..=TAKE_LANE_MAX_HEIGHT).contains(&height)
+                || !(height - TAKE_LANE_MIN_HEIGHT).is_multiple_of(TAKE_LANE_HEIGHT_STEP)
+            {
+                return Err("invalid take lane height".into());
+            }
+            if let Some(name) = &lane.name
+                && (name.trim().is_empty()
+                    || name.chars().count() > MAX_TAKE_NAME
+                    || name.contains('\0'))
+            {
+                return Err("invalid take lane name".into());
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Insert {
+    pub id: u64,
+    pub plugin: Plugin,
+    #[serde(default)]
+    pub bypassed: bool,
+    #[serde(skip)]
+    pub state: Arc<[u8]>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Track {
     pub id: u64,
     pub name: String,
     pub plugin: Option<Plugin>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub instrument_bypassed: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub instrument_offline: bool,
+    #[serde(default)]
+    pub record_mode: TrackMode,
+    #[serde(default)]
+    pub take_lanes: TakeLanes,
     #[serde(default, skip_serializing_if = "crate::mixer::Channel::is_default")]
     pub mix: crate::mixer::Channel,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inserts: Vec<Insert>,
     #[serde(skip)]
     pub state: Vec<u8>,
 }
@@ -79,11 +239,15 @@ pub struct Project {
     #[serde(default)]
     pub timeline: Timeline,
     #[serde(default)]
+    pub record_mode: Mode,
+    #[serde(default)]
     pub midi: Arc<Arrangement>,
     #[serde(default)]
     pub arrangement_view: ArrangementView,
     #[serde(default)]
     pub master: crate::mixer::Level,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub master_inserts: Vec<Insert>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,17 +285,25 @@ struct Metadata {
     audio: AudioSettings,
     #[serde(default)]
     timeline: Timeline,
+    #[serde(default, skip_serializing_if = "is_merge")]
+    record_mode: Mode,
     #[serde(default, skip_serializing_if = "Arrangement::is_default")]
     midi: Arc<Arrangement>,
     #[serde(default, skip_serializing_if = "default_arrangement_view")]
     arrangement_view: ArrangementView,
     #[serde(default, skip_serializing_if = "crate::mixer::Level::is_default")]
     master: crate::mixer::Level,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    master_inserts: Vec<Insert>,
     state_lengths: Vec<usize>,
 }
 
 fn default_arrangement_view(view: &ArrangementView) -> bool {
     *view == ArrangementView::default()
+}
+
+fn is_merge(mode: &Mode) -> bool {
+    *mode == Mode::Merge
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -149,19 +321,50 @@ struct LegacyProject {
 impl Default for Project {
     fn default() -> Self {
         Self {
-            version: 2,
+            version: 3,
             tracks: Vec::new(),
             next_id: 1,
             audio: AudioSettings::default(),
             timeline: Timeline::default(),
+            record_mode: Mode::Merge,
             midi: Arc::default(),
             arrangement_view: ArrangementView::default(),
             master: Default::default(),
+            master_inserts: Vec::new(),
         }
     }
 }
 
 impl Project {
+    pub fn inserts(&self, target: crate::mixer::Target) -> Option<&[Insert]> {
+        match target {
+            crate::mixer::Target::Master => Some(&self.master_inserts),
+            crate::mixer::Target::Track(id) => self
+                .tracks
+                .iter()
+                .find(|t| t.id == id)
+                .map(|track| track.inserts.as_slice()),
+        }
+    }
+
+    pub fn inserts_mut(&mut self, target: crate::mixer::Target) -> Option<&mut Vec<Insert>> {
+        match target {
+            crate::mixer::Target::Master => Some(&mut self.master_inserts),
+            crate::mixer::Target::Track(id) => self
+                .tracks
+                .iter_mut()
+                .find(|t| t.id == id)
+                .map(|track| &mut track.inserts),
+        }
+    }
+
+    fn all_inserts(&self) -> impl Iterator<Item = &Insert> {
+        self.tracks
+            .iter()
+            .flat_map(|track| &track.inserts)
+            .chain(&self.master_inserts)
+    }
+
     pub fn mix(&self, target: crate::mixer::Target) -> Result<crate::mixer::Channel> {
         match target {
             crate::mixer::Target::Master => Ok(crate::mixer::Channel {
@@ -212,7 +415,7 @@ impl Project {
         self.midi
             .validate(self.tracks.iter().map(|track| track.id))?;
         let valid_text = |text: &str| text.len() <= 4096 && !text.contains('\0');
-        if self.version != 2 {
+        if self.version != 3 {
             return Err("unsupported Clef project version".into());
         }
         if !(8000..=384000).contains(&self.audio.rate)
@@ -229,6 +432,20 @@ impl Project {
         }
         let mut ids = std::collections::HashSet::new();
         let mut total = 0usize;
+        let valid_plugin = |plugin: &Plugin| {
+            valid_text(&plugin.name)
+                && valid_text(&plugin.id)
+                && !plugin.id.is_empty()
+                && plugin.path.is_absolute()
+                && plugin.path.as_os_str().len() <= 16384
+                && matches!(
+                    (
+                        plugin.format.as_str(),
+                        plugin.path.extension().and_then(|s| s.to_str())
+                    ),
+                    ("VST3", Some("vst3")) | ("CLAP", Some("clap"))
+                )
+        };
         for track in &self.tracks {
             if track.id == 0 || track.id >= self.next_id || !ids.insert(track.id) {
                 return Err("invalid or duplicate track identity".into());
@@ -245,34 +462,45 @@ impl Project {
             {
                 return Err("invalid track name or state size".into());
             }
+            track.take_lanes.validate()?;
             if !track.mix.valid() {
                 return Err("Invalid track mixer settings.".into());
             }
             if let Some(plugin) = &track.plugin {
-                if !valid_text(&plugin.name)
-                    || !valid_text(&plugin.id)
-                    || plugin.id.is_empty()
-                    || !plugin.path.is_absolute()
-                    || plugin.path.as_os_str().len() > 16384
-                    || !matches!(
-                        (
-                            plugin.format.as_str(),
-                            plugin.path.extension().and_then(|s| s.to_str())
-                        ),
-                        ("VST3", Some("vst3")) | ("CLAP", Some("clap"))
-                    )
-                {
+                if !valid_plugin(plugin) {
                     return Err("invalid plugin identity".into());
                 }
             } else if !track.state.is_empty() {
                 return Err("state has no associated plugin".into());
             }
         }
+        for insert in self.all_inserts() {
+            if insert.id == 0
+                || insert.id >= self.next_id
+                || !ids.insert(insert.id)
+                || !valid_plugin(&insert.plugin)
+                || insert.state.len() > MAX_STATE
+            {
+                return Err("invalid insert identity or state size".into());
+            }
+            total = total
+                .checked_add(insert.state.len())
+                .ok_or("state size overflow")?;
+            if total > MAX_TOTAL_STATE {
+                return Err("combined state exceeds limit".into());
+            }
+        }
         Ok(())
     }
-    fn write(&self, writer: &mut impl Write) -> Result<()> {
-        self.validate()?;
-        let lengths: Vec<usize> = self.tracks.iter().map(|t| t.state.len()).collect();
+    fn state_lengths(&self) -> Vec<usize> {
+        self.tracks
+            .iter()
+            .map(|t| t.state.len())
+            .chain(self.all_inserts().map(|insert| insert.state.len()))
+            .collect()
+    }
+
+    fn encode_metadata(&self, state_lengths: Vec<usize>) -> Result<Vec<u8>> {
         let metadata = serde_json::to_vec(&Metadata {
             version: self.version,
             tracks: self
@@ -282,28 +510,51 @@ impl Project {
                     id: t.id,
                     name: t.name.clone(),
                     plugin: t.plugin.clone(),
+                    instrument_bypassed: t.instrument_bypassed,
+                    instrument_offline: t.instrument_offline,
+                    record_mode: t.record_mode,
                     mix: t.mix,
+                    take_lanes: t.take_lanes.clone(),
+                    inserts: t.inserts.clone(),
                     state: Vec::new(),
                 })
                 .collect(),
             next_id: self.next_id,
             audio: self.audio.clone(),
             timeline: self.timeline.clone(),
+            record_mode: self.record_mode,
             midi: self.midi.clone(),
             arrangement_view: self.arrangement_view,
             master: self.master,
-            state_lengths: lengths.clone(),
+            master_inserts: self.master_inserts.clone(),
+            state_lengths,
         })?;
         if metadata.len() > MAX_METADATA {
             return Err("project metadata exceeds limit".into());
         }
+        Ok(metadata)
+    }
+
+    pub fn validate_storage(&self) -> Result<()> {
+        self.validate()?;
+        self.encode_metadata(self.state_lengths())?;
+        Ok(())
+    }
+
+    fn write(&self, writer: &mut impl Write) -> Result<()> {
+        self.validate()?;
+        let lengths = self.state_lengths();
         let total: usize = lengths.iter().sum();
+        let metadata = self.encode_metadata(lengths)?;
         writer.write_all(MAGIC)?;
         writer.write_all(&(metadata.len() as u32).to_le_bytes())?;
         writer.write_all(&(total as u32).to_le_bytes())?;
         writer.write_all(&metadata)?;
         for track in &self.tracks {
             writer.write_all(&track.state)?;
+        }
+        for insert in self.all_inserts() {
+            writer.write_all(&insert.state)?;
         }
         Ok(())
     }
@@ -339,7 +590,12 @@ impl Project {
                     id: 1,
                     name: t.name,
                     plugin: t.plugin,
+                    instrument_bypassed: false,
+                    instrument_offline: false,
+                    record_mode: TrackMode::Global,
                     mix: Default::default(),
+                    take_lanes: TakeLanes::default(),
+                    inserts: Vec::new(),
                     state: Vec::new(),
                 })
                 .collect();
@@ -353,35 +609,50 @@ impl Project {
             };
             (
                 Self {
-                    version: 2,
+                    version: 3,
                     next_id: tracks.len() as u64 + 1,
                     tracks,
                     audio: legacy.audio,
                     timeline: Timeline::default(),
+                    record_mode: Mode::Merge,
                     midi: Arc::default(),
                     arrangement_view: ArrangementView::default(),
                     master: Default::default(),
+                    master_inserts: Vec::new(),
                 },
                 lengths,
             )
         } else {
             let metadata: Metadata = serde_json::from_slice(&metadata)?;
+            if !(2..=3).contains(&metadata.version) {
+                return Err("unsupported Clef project version".into());
+            }
+            let mut midi = metadata.midi;
+            let record_mode = if metadata.version == 2 {
+                let mode = midi.mode;
+                Arc::make_mut(&mut midi).mode = Mode::Merge;
+                mode
+            } else {
+                metadata.record_mode
+            };
             (
                 Self {
-                    version: metadata.version,
+                    version: 3,
                     tracks: metadata.tracks,
                     next_id: metadata.next_id,
                     audio: metadata.audio,
                     timeline: metadata.timeline,
-                    midi: metadata.midi,
+                    record_mode,
+                    midi,
                     arrangement_view: metadata.arrangement_view,
                     master: metadata.master,
+                    master_inserts: metadata.master_inserts,
                 },
                 metadata.state_lengths,
             )
         };
         project.validate()?;
-        if lengths.len() != project.tracks.len()
+        if lengths.len() != project.tracks.len() + project.all_inserts().count()
             || lengths.iter().any(|n| *n > MAX_STATE)
             || lengths
                 .iter()
@@ -390,12 +661,24 @@ impl Project {
         {
             return Err("invalid project state lengths".into());
         }
-        for (track, length) in project.tracks.iter_mut().zip(lengths) {
+        let mut lengths = lengths.into_iter();
+        for (track, length) in project.tracks.iter_mut().zip(&mut lengths) {
             if length != 0 && track.plugin.is_none() {
                 return Err("orphan plugin state".into());
             }
             track.state = vec![0; length];
             reader.read_exact(&mut track.state)?;
+        }
+        for (insert, length) in project
+            .tracks
+            .iter_mut()
+            .flat_map(|track| &mut track.inserts)
+            .chain(&mut project.master_inserts)
+            .zip(lengths)
+        {
+            let mut state = vec![0; length];
+            reader.read_exact(&mut state)?;
+            insert.state = state.into();
         }
         let mut extra = [0];
         if reader.read(&mut extra)? != 0 {
@@ -445,6 +728,60 @@ pub fn atomic_write(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn instrument_flags_round_trip_and_older_projects_default_online() {
+        let mut project = sample();
+        project.tracks[0].instrument_bypassed = true;
+        project.tracks[0].instrument_offline = true;
+        let mut bytes = Vec::new();
+        project.write(&mut bytes).unwrap();
+        let decoded = Project::decode(&mut bytes.as_slice()).unwrap();
+        assert!(decoded.tracks[0].instrument_bypassed);
+        assert!(decoded.tracks[0].instrument_offline);
+
+        let length = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+        let mut metadata: serde_json::Value =
+            serde_json::from_slice(&bytes[16..16 + length]).unwrap();
+        for track in metadata["tracks"].as_array_mut().unwrap() {
+            let track = track.as_object_mut().unwrap();
+            track.remove("instrument_bypassed");
+            track.remove("instrument_offline");
+        }
+        let old = container(
+            MAGIC,
+            &serde_json::to_vec(&metadata).unwrap(),
+            &bytes[16 + length..],
+        );
+        let online = Project::decode(&mut old.as_slice()).unwrap();
+        assert!(!online.tracks[0].instrument_bypassed);
+        assert!(!online.tracks[0].instrument_offline);
+    }
+
+    #[test]
+    fn insert_order_and_opaque_states_round_trip_after_track_states() {
+        let mut project = sample();
+        let mut bytes = Vec::new();
+        project.write(&mut bytes).unwrap();
+        let older = Project::decode(&mut bytes.as_slice()).unwrap();
+        assert!(older.tracks[0].inserts.is_empty() && older.master_inserts.is_empty());
+
+        let plugin = project.tracks[0].plugin.clone().unwrap();
+        let insert = |id: u64| Insert {
+            id,
+            plugin: plugin.clone(),
+            bypassed: id.is_multiple_of(2),
+            state: Arc::from(id.to_le_bytes()),
+        };
+        project.tracks[0].inserts = (2..11).rev().map(insert).collect();
+        project.master_inserts = vec![insert(11), insert(12)];
+        project.next_id = 13;
+        bytes.clear();
+        project.write(&mut bytes).unwrap();
+        assert_eq!(Project::decode(&mut bytes.as_slice()).unwrap(), project);
+        project.master_inserts[0].id = 2;
+        assert!(project.validate().is_err());
+    }
     fn sample() -> Project {
         Project {
             tracks: vec![Track {
@@ -456,7 +793,12 @@ mod tests {
                     name: "Piano".into(),
                     format: "VST3".into(),
                 }),
+                instrument_bypassed: false,
+                instrument_offline: false,
+                record_mode: TrackMode::Global,
                 mix: Default::default(),
+                inserts: Vec::new(),
+                take_lanes: TakeLanes::default(),
                 state: vec![0, 255, 1, 2],
             }],
             next_id: 2,
@@ -545,12 +887,12 @@ mod tests {
         assert!(project.validate().is_err());
     }
     #[test]
-    fn midi_modes_takes_and_sections_round_trip_and_remain_optional_in_old_v2() {
+    fn midi_modes_takes_and_sections_round_trip_and_migrate_v2() {
         use crate::midi::{Event, Message, Mode};
         let mut project = sample();
+        project.record_mode = Mode::NewTake;
         let track = project.tracks[0].id;
         let midi = Arc::make_mut(&mut project.midi);
-        midi.mode = Mode::NewTake;
         midi.record(
             track,
             Mode::NewTake,
@@ -569,10 +911,29 @@ mod tests {
         .unwrap();
         let mut bytes = Vec::new();
         project.write(&mut bytes).unwrap();
-        assert_eq!(Project::decode(&mut bytes.as_slice()).unwrap(), project);
+        let decoded = Project::decode(&mut bytes.as_slice()).unwrap();
+        assert_eq!(decoded, project);
+        assert_eq!(decoded.record_mode, Mode::NewTake);
         let length = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
         let mut metadata: serde_json::Value =
             serde_json::from_slice(&bytes[16..16 + length]).unwrap();
+        let object = metadata.as_object_mut().unwrap();
+        object.insert("version".into(), serde_json::json!(2));
+        object.remove("record_mode");
+        object["midi"]
+            .as_object_mut()
+            .unwrap()
+            .insert("mode".into(), serde_json::json!("NewTake"));
+        let old = container(
+            MAGIC,
+            &serde_json::to_vec(&metadata).unwrap(),
+            &bytes[16 + length..],
+        );
+        let migrated = Project::decode(&mut old.as_slice()).unwrap();
+        assert_eq!(migrated.version, 3);
+        assert_eq!(migrated.record_mode, Mode::NewTake);
+        assert_eq!(migrated.midi.mode, Mode::Merge);
+        assert_eq!(migrated.midi.clips(track), project.midi.clips(track));
         metadata.as_object_mut().unwrap().remove("midi").unwrap();
         let old = container(
             MAGIC,
@@ -595,7 +956,7 @@ mod tests {
         bytes[12..16].copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(Project::decode(&mut bytes.as_slice()).is_err());
         let mut project = sample();
-        project.version = 3;
+        project.version = 4;
         assert!(project.write(&mut Vec::new()).is_err());
     }
     #[test]
@@ -608,10 +969,10 @@ mod tests {
         changed.tracks.first_mut().unwrap().name = "Changed".into();
         assert!(changed.save(&path, false).is_err());
         assert_eq!(Project::read(&path).unwrap(), project);
-        changed.version = 3;
+        changed.version = 4;
         assert!(changed.save(&path, true).is_err());
         assert_eq!(Project::read(&path).unwrap(), project);
-        changed.version = 2;
+        changed.version = 3;
         changed.save(&path, true).unwrap();
         assert_eq!(Project::read(&path).unwrap(), changed);
         assert_eq!(std::fs::read_dir(&directory.0).unwrap().count(), 1);
@@ -650,7 +1011,7 @@ mod tests {
         let path = directory.0.join("Legacy.clef");
         std::fs::write(&path, &original).unwrap();
         let project = Project::read(&path).unwrap();
-        assert_eq!(project.version, 2);
+        assert_eq!(project.version, 3);
         assert_eq!(project.tracks[0].id, 1);
         assert_eq!(project.tracks[0].state, vec![0, 255, 42]);
         assert_eq!(std::fs::read(&path).unwrap(), original);
@@ -715,7 +1076,12 @@ mod tests {
                         id,
                         name: format!("Track {id}"),
                         plugin: None,
+                        instrument_bypassed: false,
+                        instrument_offline: false,
+                        record_mode: TrackMode::Global,
                         mix: Default::default(),
+                        inserts: Vec::new(),
+                        take_lanes: TakeLanes::default(),
                         state: vec![],
                     })
                     .collect(),
@@ -740,5 +1106,63 @@ mod tests {
         value["unknown"] = true.into();
         let bytes = container(MAGIC, &serde_json::to_vec(&value).unwrap(), &[1, 2, 3, 4]);
         assert!(Project::decode(&mut bytes.as_slice()).is_err());
+    }
+    #[test]
+    fn record_modes_and_take_lanes_round_trip_and_validate() {
+        let mut project = sample();
+        project.record_mode = Mode::Replace;
+        project.tracks[0].record_mode = TrackMode::NewTake;
+        project.tracks[0].take_lanes = TakeLanes {
+            visible: true,
+            lanes: vec![
+                TakeLane {
+                    name: Some("Close".into()),
+                    height: 64,
+                },
+                TakeLane::default(),
+            ],
+        };
+        let mut bytes = Vec::new();
+        project.write(&mut bytes).unwrap();
+        assert_eq!(Project::decode(&mut bytes.as_slice()).unwrap(), project);
+        project.tracks[0].take_lanes.lanes[0].height = 23;
+        assert!(project.validate().is_err());
+        project.tracks[0].take_lanes.lanes[0].height = 26;
+        assert!(project.validate().is_err());
+        project.tracks[0].take_lanes.lanes[0].height = 48;
+        assert!(project.validate().is_ok());
+        project.tracks[0].take_lanes.lanes[0].name = Some("   ".into());
+        assert!(project.validate().is_err());
+    }
+
+    #[test]
+    fn v2_without_take_fields_migrates_to_global_and_hidden_lanes() {
+        let project = sample();
+        let mut bytes = Vec::new();
+        project.write(&mut bytes).unwrap();
+        let length = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+        let mut metadata: serde_json::Value =
+            serde_json::from_slice(&bytes[16..16 + length]).unwrap();
+        let object = metadata.as_object_mut().unwrap();
+        object.insert("version".into(), serde_json::json!(2));
+        object.remove("record_mode");
+        for track in object["tracks"].as_array_mut().unwrap() {
+            let track = track.as_object_mut().unwrap();
+            track.remove("record_mode");
+            track.remove("take_lanes");
+        }
+        let old = container(
+            MAGIC,
+            &serde_json::to_vec(&metadata).unwrap(),
+            &bytes[16 + length..],
+        );
+        let migrated = Project::decode(&mut old.as_slice()).unwrap();
+        assert_eq!(migrated.version, 3);
+        assert_eq!(migrated.record_mode, Mode::Merge);
+        assert_eq!(migrated.tracks[0].record_mode, TrackMode::Global);
+        assert!(!migrated.tracks[0].take_lanes.visible);
+        assert!(migrated.tracks[0].take_lanes.lanes.is_empty());
+        assert!(migrated.tracks[0].inserts.is_empty());
+        assert!(migrated.master_inserts.is_empty());
     }
 }

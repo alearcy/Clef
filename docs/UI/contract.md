@@ -112,7 +112,7 @@ impl TextButton<'_> {
 | State | Fill | Edge | Text | Notes |
 | --- | --- | --- | --- | --- |
 | rest | field / peacock | top light + shadow | text / foreground_on(peacock) | |
-| hover | field lifted | `controlEdge` 1 px | unchanged | no new border beyond the edge |
+| hover | field lifted | none | unchanged | the body lifts to `field`; never a new border |
 | pressed | unchanged | drops top light | unchanged | reads pushed in, size unchanged |
 | focused | unchanged | `accent` 1 px | unchanged | keyboard only; click focus draws none |
 | disabled | `panel` | `divider` | `disabled` | semantically disabled; no pointer |

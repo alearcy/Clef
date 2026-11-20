@@ -3,8 +3,9 @@ use super::*;
 use std::thread::{self, ThreadId};
 
 const PARAM: u32 = 9000;
+pub(super) const EFFECT: bool = cfg!(feature = "clef-insert-fixture");
 struct Delay {
-    samples: [f32; 257],
+    samples: [[f32; 2]; 257],
     cursor: usize,
     elapsed: u64,
 }
@@ -32,7 +33,7 @@ impl Fixture {
             processing: AtomicBool::new(false),
             handler: Mutex::new(None),
             delay: Mutex::new(Delay {
-                samples: [0.0; 257],
+                samples: [[0.0; 2]; 257],
                 cursor: 0,
                 elapsed: 0,
             }),
@@ -53,7 +54,7 @@ impl Fixture {
         self.applied
             .store(self.requested.load(Ordering::Acquire), Ordering::Release);
         *self.delay.lock().unwrap() = Delay {
-            samples: [0.0; 257],
+            samples: [[0.0; 2]; 257],
             cursor: 0,
             elapsed: 0,
         };
@@ -150,8 +151,26 @@ impl Fixture {
         if left.is_null() || right.is_null() {
             return kInvalidArgument;
         }
-        let mut input = [0.0_f32; 128];
-        if let Some(events) = ComRef::from_raw(data.inputEvents) {
+        let mut input = [[0.0_f32; 2]; 128];
+        if EFFECT {
+            if data.numInputs != 1 || data.inputs.is_null() {
+                return kInvalidArgument;
+            }
+            let bus = &*data.inputs;
+            let channels = bus.__field0.channelBuffers32;
+            if bus.numChannels != 2 || channels.is_null() {
+                return kInvalidArgument;
+            }
+            for channel in 0..2 {
+                let source = *channels.add(channel);
+                if source.is_null() {
+                    return kInvalidArgument;
+                }
+                for (index, frame) in input[..data.numSamples as usize].iter_mut().enumerate() {
+                    frame[channel] = *source.add(index) * 0.5;
+                }
+            }
+        } else if let Some(events) = ComRef::from_raw(data.inputEvents) {
             let count = events.getEventCount();
             if !(0..=2048).contains(&count) {
                 return kInvalidArgument;
@@ -167,7 +186,7 @@ impl Fixture {
                     if event.sampleOffset < 0 || event.sampleOffset >= data.numSamples {
                         return kInvalidArgument;
                     }
-                    input[event.sampleOffset as usize] = 0.25;
+                    input[event.sampleOffset as usize] = [0.25; 2];
                 }
             }
         }
@@ -183,8 +202,8 @@ impl Fixture {
                 delay.cursor = (cursor + 1) % latency;
                 value
             };
-            *left.add(i) = value;
-            *right.add(i) = value;
+            *left.add(i) = value[0];
+            *right.add(i) = value[1];
         }
         delay.elapsed += data.numSamples as u64;
         if delay.elapsed >= 48_000

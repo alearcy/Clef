@@ -1,6 +1,6 @@
 # T11 — Mixer and Master Section
 
-**Status:** In Progress — implemented on 2026-11-19. Two-instrument listening verification is pending.
+**Status:** Complete — closed at the user's request on 2026-11-19.
 **Priority:** P1.
 **Date:** 2026-11-17
 **Task:** [T11](../../TASKS.md)
@@ -149,4 +149,5 @@ following the pinned bottom block in the arrangement reference.
   and diff checks passed. Graphify was refreshed after the code changes.
 - The isolated mixer commit passed 142 locked tests with 12 ignored. The gallery images were
   regenerated from the isolated mixer change on top of T34.
-- The two-instrument listening pass with a saved and reopened project remains open.
+- At closure, the two-instrument listening pass with a saved and reopened project remained
+  unverified.

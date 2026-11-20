@@ -1,4 +1,4 @@
-//! Deterministic impulse instrument with a real 0 -> 257 sample latency restart.
+//! Deterministic instrument or stereo effect with a real 0 -> 257 sample latency restart.
 use clack_extensions::{audio_ports::*, latency::*, note_ports::*, render::*, state::*};
 use clack_plugin::{
     events::spaces::CoreEventSpace,
@@ -10,6 +10,8 @@ use std::{
     sync::atomic::{AtomicBool, AtomicU32, Ordering},
     thread::{self, ThreadId},
 };
+
+const EFFECT: bool = cfg!(feature = "effect-fixture");
 
 pub struct Fixture;
 pub struct Shared<'a> {
@@ -27,7 +29,7 @@ pub struct Main<'a> {
 }
 pub struct Audio<'a> {
     shared: &'a Shared<'a>,
-    delay: [f32; 257],
+    delay: [[f32; 2]; 257],
     cursor: usize,
     elapsed: u64,
     expression: [u8; 16],
@@ -48,11 +50,13 @@ impl Plugin for Fixture {
 }
 impl DefaultPluginFactory for Fixture {
     fn get_descriptor() -> PluginDescriptor {
+        use clack_plugin::plugin::features::*;
+        if EFFECT {
+            return PluginDescriptor::new("dev.clef.insert-fixture", "Clef CLAP Insert Fixture")
+                .with_features([AUDIO_EFFECT, STEREO]);
+        }
         PluginDescriptor::new("dev.clef.latency-fixture", "Clef CLAP Latency Fixture")
-            .with_features([
-                clack_plugin::plugin::features::INSTRUMENT,
-                clack_plugin::plugin::features::STEREO,
-            ])
+            .with_features([INSTRUMENT, STEREO])
     }
     fn new_shared(host: HostSharedHandle<'_>) -> Result<Shared<'_>, PluginError> {
         Ok(Shared {
@@ -97,7 +101,7 @@ impl<'a> PluginAudioProcessor<'a, Shared<'a>, Main<'a>> for Audio<'a> {
         }
         Ok(Self {
             shared,
-            delay: [0.0; 257],
+            delay: [[0.0; 2]; 257],
             cursor: 0,
             elapsed: 0,
             expression: [127; 16],
@@ -126,6 +130,24 @@ impl<'a> PluginAudioProcessor<'a, Shared<'a>, Main<'a>> for Audio<'a> {
         if thread::current().id() == self.shared.main {
             return Err(PluginError::Message("process on main thread"));
         }
+        let mut input = [[0.0; 2]; 128];
+        if EFFECT {
+            let port = audio
+                .input_port(0)
+                .ok_or(PluginError::Message("missing effect input"))?;
+            let channels = port
+                .channels()?
+                .into_f32()
+                .ok_or(PluginError::Message("expected f32"))?;
+            for channel in 0..2 {
+                let samples = channels
+                    .channel(channel)
+                    .ok_or(PluginError::Message("missing effect channel"))?;
+                for (frame, &sample) in input.iter_mut().zip(samples) {
+                    frame[channel as usize] = sample * 0.5;
+                }
+            }
+        }
         let mut port = audio
             .output_port(0)
             .ok_or(PluginError::Message("missing output"))?;
@@ -140,7 +162,6 @@ impl<'a> PluginAudioProcessor<'a, Shared<'a>, Main<'a>> for Audio<'a> {
         if count > 128 {
             return Err(PluginError::Message("oversized block"));
         }
-        let mut input = [0.0; 128];
         for event in events.input {
             if let Some(CoreEventSpace::Midi(midi)) = event.as_core_event() {
                 let data = midi.data();
@@ -153,11 +174,11 @@ impl<'a> PluginAudioProcessor<'a, Shared<'a>, Main<'a>> for Audio<'a> {
                     if offset >= count {
                         return Err(PluginError::Message("invalid MIDI offset"));
                     }
-                    input[offset] = 0.25 * f32::from(self.expression[channel]) / 127.0;
+                    input[offset] = [0.25 * f32::from(self.expression[channel]) / 127.0; 2];
                 }
             }
         }
-        let mut output = [0.0; 128];
+        let mut output = [[0.0; 2]; 128];
         for (i, &sample) in input[..count].iter().enumerate() {
             output[i] = if self.latency == 0 {
                 sample
@@ -169,10 +190,12 @@ impl<'a> PluginAudioProcessor<'a, Shared<'a>, Main<'a>> for Audio<'a> {
             };
         }
         for channel in 0..2 {
-            channels
+            let destination = channels
                 .channel_mut(channel)
-                .ok_or(PluginError::Message("missing output channel"))?
-                .copy_from_slice(&output[..count]);
+                .ok_or(PluginError::Message("missing output channel"))?;
+            for (sample, frame) in destination.iter_mut().zip(&output[..count]) {
+                *sample = frame[channel as usize];
+            }
         }
         self.elapsed += count as u64;
         if self.elapsed >= 48_000
@@ -187,10 +210,10 @@ impl<'a> PluginAudioProcessor<'a, Shared<'a>, Main<'a>> for Audio<'a> {
 }
 impl PluginAudioPortsImpl for Main<'_> {
     fn count(&self, input: bool) -> u32 {
-        u32::from(!input)
+        u32::from(!input || EFFECT)
     }
     fn get(&self, index: u32, input: bool, writer: &mut AudioPortInfoWriter) {
-        if index == 0 && !input {
+        if index == 0 && (!input || EFFECT) {
             writer.set(&AudioPortInfo {
                 id: ClapId::new(0),
                 name: b"Stereo",
@@ -204,10 +227,10 @@ impl PluginAudioPortsImpl for Main<'_> {
 }
 impl PluginNotePortsImpl for Main<'_> {
     fn count(&self, input: bool) -> u32 {
-        u32::from(input)
+        u32::from(input && !EFFECT)
     }
     fn get(&self, index: u32, input: bool, writer: &mut NotePortInfoWriter) {
-        if index == 0 && input {
+        if index == 0 && input && !EFFECT {
             writer.set(&NotePortInfo {
                 id: ClapId::new(0),
                 name: b"MIDI",

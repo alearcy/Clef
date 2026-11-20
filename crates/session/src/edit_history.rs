@@ -1,7 +1,7 @@
 use clef_model::{
     Plugin, Result,
-    midi::{Clip, Event, Section, Take},
-    project::{Project, Track},
+    midi::{Clip, Event, Mode, Section, Take},
+    project::{Project, Track, TrackMode},
     timeline::Tempo,
 };
 use std::collections::VecDeque;
@@ -138,6 +138,12 @@ impl From<&Track> for InstrumentState {
 }
 
 pub(super) enum Edit {
+    Inserts {
+        target: clef_model::mixer::Target,
+        before: Vec<clef_model::project::Insert>,
+        after: Vec<clef_model::project::Insert>,
+        label: &'static str,
+    },
     Mix {
         target: clef_model::mixer::Target,
         control: clef_model::mixer::Control,
@@ -147,6 +153,28 @@ pub(super) enum Edit {
     Track {
         slot: Box<TrackSlot>,
         added: bool,
+    },
+    InstrumentBypass {
+        id: u64,
+        before: bool,
+        after: bool,
+    },
+    InstrumentOffline {
+        id: u64,
+        before: bool,
+        after: bool,
+    },
+    TakeToNewTrack {
+        slot: Box<TrackSlot>,
+    },
+    RecordMode {
+        before: Mode,
+        after: Mode,
+    },
+    TrackMode {
+        id: u64,
+        before: TrackMode,
+        after: TrackMode,
     },
     Move {
         id: u64,
@@ -215,12 +243,29 @@ fn clip_bytes(clips: &Vec<Clip>) -> usize {
             .sum::<usize>()
 }
 
+fn insert_bytes(slots: &[clef_model::project::Insert]) -> usize {
+    slots
+        .iter()
+        .map(|slot| {
+            size_of::<clef_model::project::Insert>()
+                + slot.state.len()
+                + plugin_bytes(Some(&slot.plugin))
+        })
+        .sum()
+}
+
 impl Edit {
     fn label(&self) -> &'static str {
         match self {
+            Self::Inserts { label, .. } => label,
             Self::Track { added: true, .. } => "Add Track",
             Self::Track { added: false, .. } => "Remove Track",
+            Self::InstrumentBypass { .. } => "Toggle Instrument Bypass",
+            Self::InstrumentOffline { .. } => "Toggle Instrument Offline",
+            Self::TakeToNewTrack { .. } => "Take to New Track",
             Self::Mix { control, .. } => control.label(),
+            Self::RecordMode { .. } => "Change Record Mode",
+            Self::TrackMode { .. } => "Change Track Record Mode",
             Self::Move { .. } => "Move Track",
             Self::Rename { .. } => "Rename Track",
             Self::Instrument { editor: true, .. } => "Edit Instrument State",
@@ -236,11 +281,13 @@ impl Edit {
     fn bytes(&self) -> usize {
         size_of::<(u64, Self, usize)>()
             + match self {
-                Self::Track { slot, .. } => {
+                Self::Inserts { before, after, .. } => insert_bytes(before) + insert_bytes(after),
+                Self::Track { slot, .. } | Self::TakeToNewTrack { slot } => {
                     size_of::<TrackSlot>()
                         + slot.track.name.capacity()
                         + slot.track.state.capacity()
                         + plugin_bytes(slot.track.plugin.as_ref())
+                        + insert_bytes(&slot.track.inserts)
                         + clip_bytes(&slot.clips)
                 }
                 Self::Rename { before, after, .. } => before.capacity() + after.capacity(),
@@ -261,13 +308,20 @@ impl Edit {
                 Self::Tempo { before, after } => {
                     (before.capacity() + after.capacity()) * size_of::<Tempo>()
                 }
-                Self::Move { .. } | Self::Loop { .. } | Self::Mix { .. } => 0,
+                Self::Move { .. }
+                | Self::Loop { .. }
+                | Self::RecordMode { .. }
+                | Self::TrackMode { .. }
+                | Self::InstrumentBypass { .. }
+                | Self::InstrumentOffline { .. }
+                | Self::Mix { .. } => 0,
             }
     }
 
     pub(super) fn worker_to_release(&self, forward: bool) -> Option<u64> {
         match self {
             Self::Track { slot, added } if *added != forward => Some(slot.track.id),
+            Self::InstrumentOffline { id, .. } => Some(*id),
             Self::Instrument { id, .. } => Some(*id),
             _ => None,
         }
@@ -275,7 +329,7 @@ impl Edit {
 
     pub(super) fn matches_state(&self, state: &[u8], forward: bool) -> bool {
         match self {
-            Self::Track { slot, .. } => state == slot.track.state,
+            Self::Track { slot, .. } | Self::TakeToNewTrack { slot } => state == slot.track.state,
             Self::Instrument { before, after, .. } => {
                 state == if forward { &before.state } else { &after.state }
             }
@@ -292,6 +346,26 @@ impl Edit {
                 .ok_or("History track is unavailable.")
         };
         match self {
+            Self::Inserts {
+                target,
+                before,
+                after,
+                ..
+            } => {
+                let chain = project
+                    .inserts_mut(*target)
+                    .ok_or("History mixer channel is unavailable.")?;
+                let states: std::collections::HashMap<_, _> = chain
+                    .iter()
+                    .map(|slot| (slot.id, slot.state.clone()))
+                    .collect();
+                *chain = if forward { after } else { before }.clone();
+                for slot in chain {
+                    if let Some(state) = states.get(&slot.id) {
+                        slot.state = state.clone();
+                    }
+                }
+            }
             Self::Track { slot, added } => {
                 if forward == *added {
                     project
@@ -310,6 +384,40 @@ impl Edit {
                         .remove(&slot.track.id);
                 }
             }
+            Self::TakeToNewTrack { slot } => {
+                if forward {
+                    project
+                        .tracks
+                        .insert(slot.index.min(project.tracks.len()), slot.track.clone());
+                    if !slot.clips.is_empty() {
+                        std::sync::Arc::make_mut(&mut project.midi)
+                            .tracks
+                            .insert(slot.track.id, slot.clips.clone());
+                    }
+                } else {
+                    let index = track_index(project, slot.track.id)?;
+                    project.tracks.remove(index);
+                    std::sync::Arc::make_mut(&mut project.midi)
+                        .tracks
+                        .remove(&slot.track.id);
+                }
+            }
+            Self::InstrumentBypass { id, before, after } => {
+                let track = project
+                    .tracks
+                    .iter_mut()
+                    .find(|track| track.id == *id)
+                    .ok_or("History track is unavailable.")?;
+                track.instrument_bypassed = if forward { *after } else { *before };
+            }
+            Self::InstrumentOffline { id, before, after } => {
+                let track = project
+                    .tracks
+                    .iter_mut()
+                    .find(|track| track.id == *id)
+                    .ok_or("History track is unavailable.")?;
+                track.instrument_offline = if forward { *after } else { *before };
+            }
             Self::Mix {
                 target,
                 control,
@@ -317,6 +425,13 @@ impl Edit {
                 after,
             } => {
                 project.set_mix(*target, *control, if forward { *after } else { *before })?;
+            }
+            Self::RecordMode { before, after } => {
+                project.record_mode = if forward { *after } else { *before };
+            }
+            Self::TrackMode { id, before, after } => {
+                let index = track_index(project, *id)?;
+                project.tracks[index].record_mode = if forward { *after } else { *before };
             }
             Self::Move { id, before, after } => {
                 let index = track_index(project, *id)?;

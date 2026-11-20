@@ -14,6 +14,8 @@ pub struct RollEvent {
     pub source: Event,
     pub tick: u64,
     pub end: u64,
+    /// True when the take's section plays this event in the comp.
+    pub active: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -41,6 +43,24 @@ impl Clip {
     }
 
     pub fn roll_events(&self, visible: [u64; 2]) -> Vec<RollEvent> {
+        self.roll_events_for(None, visible)
+    }
+
+    /// Lists every event of one take, marking the ones the comp plays.
+    pub fn roll_take_events(&self, take: u64, visible: [u64; 2]) -> Vec<RollEvent> {
+        self.roll_events_for(Some(take), visible)
+    }
+
+    /// Project-time ranges where the comp plays the given take.
+    pub fn take_active_ranges(&self, take: u64) -> Vec<[u64; 2]> {
+        self.sections
+            .iter()
+            .filter(|section| section.take == take)
+            .map(|section| [section.start, section.end])
+            .collect()
+    }
+
+    fn roll_events_for(&self, only: Option<u64>, visible: [u64; 2]) -> Vec<RollEvent> {
         let (takes, sections) = self
             .cycle
             .as_ref()
@@ -49,8 +69,12 @@ impl Clip {
             });
         let mut events = Vec::new();
         for take in takes {
+            if only.is_some_and(|id| id != take.id) {
+                continue;
+            }
             for (index, &source) in take.events.iter().enumerate() {
-                if section_take(sections, source.tick) != Some(take.id) {
+                let active = section_take(sections, source.tick) == Some(take.id);
+                if only.is_none() && !active {
                     continue;
                 }
                 let id = EventId {
@@ -67,6 +91,7 @@ impl Clip {
                         source,
                         tick: event.tick,
                         end,
+                        active,
                     });
                     events.len() < MAX_EVENTS
                 });
@@ -131,7 +156,11 @@ impl Clip {
         }
     }
 
-    pub(super) fn edit_events(&mut self, changes: &[EventChange]) -> Result<()> {
+    pub(super) fn edit_events(
+        &mut self,
+        changes: &[EventChange],
+        only_take: Option<u64>,
+    ) -> Result<()> {
         let [start, end] = self.roll_source_bounds();
         let (takes, sections) = self
             .cycle
@@ -157,6 +186,9 @@ impl Clip {
                 EventChange::Replace(id, event) => (Some(id), Some(event)),
                 EventChange::Remove(id) => (Some(id), None),
             };
+            if only_take.is_some_and(|take| id.is_some_and(|id| id.take != take)) {
+                return Err("An edit targets a take outside the edited take.".into());
+            }
             let previous = if let Some(id) = id {
                 let event = takes
                     .iter()
@@ -164,7 +196,8 @@ impl Clip {
                     .and_then(|take| take.events.get(id.index))
                     .filter(|event| {
                         (start..end).contains(&event.tick)
-                            && section_take(sections, event.tick) == Some(id.take)
+                            && (only_take.is_some()
+                                || section_take(sections, event.tick) == Some(id.take))
                     })
                     .ok_or("The MIDI event is unavailable.")?;
                 if !affected.insert(id) {
@@ -227,7 +260,10 @@ impl Clip {
                         .ok_or("MIDI event order exhausted.")?;
                     event.order = next_order;
                 }
-                after.push((section_take(sections, event.tick).unwrap(), event));
+                let target = only_take
+                    .or_else(|| section_take(sections, event.tick))
+                    .ok_or("The MIDI edit has no target take.")?;
+                after.push((target, event));
             }
             if let (Some(id), Some(previous)) = (id, previous) {
                 before.push((id.take, previous));
@@ -396,6 +432,7 @@ mod tests {
         edit(
             &mut model,
             ClipEdit::EditEvents {
+                take: None,
                 clip: ids[1],
                 label: "Transpose",
                 changes: vec![EventChange::Replace(source[0].id, note(10, 70, 67))],
@@ -460,6 +497,7 @@ mod tests {
         edit(
             &mut model,
             ClipEdit::EditEvents {
+                take: None,
                 clip: id,
                 label: "Change Velocity",
                 changes: vec![EventChange::Replace(selected.id, updated)],
@@ -479,6 +517,7 @@ mod tests {
             model
                 .edit(
                     &ClipEdit::EditEvents {
+                        take: None,
                         clip: id,
                         label: "Invalid",
                         changes: vec![EventChange::Insert(Event {
@@ -495,5 +534,79 @@ mod tests {
                 .is_err()
         );
         assert_eq!(model, before);
+    }
+    #[test]
+    fn take_view_lists_every_event_and_marks_the_comp() {
+        let mut model = Arrangement::default();
+        model
+            .record(
+                1,
+                Mode::NewTake,
+                [0, 960],
+                vec![vec![note(100, 200, 60)], vec![note(500, 700, 62)]],
+                false,
+            )
+            .unwrap();
+        let clip = &model.clips(1)[0];
+        let first = clip.takes[0].id;
+        let second = clip.takes[1].id;
+        let comp = clip.roll_events([0, 960]);
+        assert_eq!(comp.len(), 1);
+        assert_eq!(comp[0].source.message, note(500, 700, 62).message);
+        let take = clip.roll_take_events(first, [0, 960]);
+        assert_eq!(take.len(), 1);
+        assert!(!take[0].active);
+        let take = clip.roll_take_events(second, [0, 960]);
+        assert_eq!(take.len(), 1);
+        assert!(take[0].active);
+        assert_eq!(clip.take_active_ranges(second), vec![[0, 960]]);
+    }
+
+    #[test]
+    fn editing_an_inactive_take_keeps_the_comp_unchanged() {
+        let mut model = Arrangement::default();
+        model
+            .record(
+                1,
+                Mode::NewTake,
+                [0, 960],
+                vec![vec![note(100, 200, 60)], vec![note(500, 700, 62)]],
+                false,
+            )
+            .unwrap();
+        let clip = model.clips(1)[0].clone();
+        let first = clip.takes[0].id;
+        let inactive = clip
+            .roll_take_events(first, [0, 960])
+            .into_iter()
+            .next()
+            .unwrap();
+        let mut updated = inactive.source;
+        updated.tick = 600;
+        if let Message::Note { end, .. } = &mut updated.message {
+            *end = 800;
+        }
+        let sections = clip.sections.clone();
+        edit(
+            &mut model,
+            ClipEdit::EditEvents {
+                take: Some(first),
+                clip: clip.id(),
+                label: "Move note",
+                changes: vec![EventChange::Replace(inactive.id, updated)],
+            },
+        );
+        let updated_clip = &model.clips(1)[0];
+        assert_eq!(updated_clip.sections, sections);
+        assert!(matches!(
+            updated_clip.roll_events([0, 960]).as_slice(),
+            [event] if event.source.message == note(500, 700, 62).message
+        ));
+        assert_eq!(
+            updated_clip.roll_take_events(first, [0, 960])[0]
+                .source
+                .message,
+            updated.message
+        );
     }
 }

@@ -1,6 +1,7 @@
 use crate::{
     Action, App, Command,
-    arrangement::{Lane, LaneInput},
+    arrangement::{ArrangementUi, Lane, LaneInput, TakeLaneInput, TakeLaneRow, paint_kebab},
+    colors,
     primitives::{
         timeline::{self as timeline_ui, LOOP_HEIGHT, LoopGesture, RULER_HEIGHT, Viewport},
         transport::{self as controls, Glyph},
@@ -150,11 +151,11 @@ impl App {
                     chosen = Some(command);
                 }
             }
-            let mode = self.view.project.midi.mode;
+            let mode = self.view.project.record_mode;
             ui.add_enabled_ui(
                 !self.view.recording && self.confirm.is_none() && self.file.is_none(),
                 |ui| {
-                    let menu = ui.menu_button(format!("REC {} ▾", mode.label()), |ui| {
+                    let menu = ui.menu_button(format!("REC {}   ", mode.label()), |ui| {
                         for (mode, command) in Mode::ALL.into_iter().zip([
                             Command::RecordMerge,
                             Command::RecordReplace,
@@ -164,13 +165,23 @@ impl App {
                                 ui,
                                 command,
                                 mode.label(),
-                                mode == self.view.project.midi.mode,
+                                mode == self.view.project.record_mode,
                             ) {
                                 chosen = Some(command);
                                 ui.close();
                             }
                         }
                     });
+                    paint_kebab(
+                        ui,
+                        egui::Rect::from_center_size(
+                            egui::pos2(
+                                menu.response.rect.right() - 9.0,
+                                menu.response.rect.center().y,
+                            ),
+                            egui::vec2(10.0, 18.0),
+                        ),
+                    );
                     menu.response.on_hover_text("MIDI record mode");
                 },
             );
@@ -253,6 +264,13 @@ impl App {
             && self.busy_since.is_none()
             && self.confirm.is_none()
             && self.file.is_none();
+        let take_enabled = self.view.project_open
+            && !self.view.recording
+            && !transport.pending
+            && self.busy_since.is_none()
+            && self.confirm.is_none()
+            && self.file.is_none()
+            && self.view.tracks.iter().all(|track| !track.loading);
         ui.horizontal(|ui| {
             timeline_ui::snap_control(ui, &mut self.arrangement_ui.settings.snap);
         });
@@ -269,6 +287,8 @@ impl App {
         let mut add = false;
         let mut clip_command = None;
         let mut lanes = Vec::new();
+        let mut take_action = None;
+        let mut take_toggle = None;
         let mut loop_gesture = self.transport_ui.loop_gesture.take();
         ui.horizontal_top(|ui| {
             ui.vertical(|ui| {
@@ -323,11 +343,16 @@ impl App {
                         || "No instrument".to_owned(),
                         |p| format!("{} · {}", p.name, p.format),
                     );
+                    let take_count = ArrangementUi::take_count(&self.view.project.midi, track.id);
+                    let chip = take_count >= 2;
                     ui.horizontal_top(|ui| {
-                        let row_width = header_width
-                            - 28.0
-                            - crate::theme::HEADER_METER
-                            - 2.0 * ui.spacing().item_spacing.x;
+                        let row_width = if chip {
+                            header_width - 28.0 - 34.0 - 2.0 * ui.spacing().item_spacing.x
+                        } else {
+                            header_width - 28.0 - ui.spacing().item_spacing.x
+                        };
+                        let row_width =
+                            row_width - crate::theme::HEADER_METER - ui.spacing().item_spacing.x;
                         let response = Self::track_row(
                             ui,
                             &track.name,
@@ -337,6 +362,40 @@ impl App {
                             self.confirm.is_none(),
                             self.keyboard_mode,
                         );
+                        if chip {
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(34.0, row_height),
+                                egui::Layout::top_down(egui::Align::Center),
+                                |ui| {
+                                    ui.add_space(11.0);
+                                    let label = egui::RichText::new(format!("T {take_count}"))
+                                        .size(10.0)
+                                        .color(if track.take_lanes.visible {
+                                            colors::ACCENT
+                                        } else {
+                                            colors::SECONDARY
+                                        });
+                                    let button =
+                                        egui::Button::new(label).min_size(egui::vec2(30.0, 20.0));
+                                    let response = ui
+                                        .add_enabled(!self.view.recording, button)
+                                        .on_hover_text(format!("Take lanes ({take_count} takes)"));
+                                    response.widget_info(|| {
+                                        egui::WidgetInfo::selected(
+                                            egui::WidgetType::SelectableLabel,
+                                            !self.view.recording,
+                                            track.take_lanes.visible,
+                                            format!("Take lanes, {take_count} takes"),
+                                        )
+                                    });
+                                    if response.clicked() {
+                                        let mut lanes = track.take_lanes.clone();
+                                        lanes.visible = !lanes.visible;
+                                        take_toggle = Some((track.id, lanes));
+                                    }
+                                },
+                            );
+                        }
                         let armed = self.view.armed == Some(track.id);
                         let arm_enabled = !self.view.recording
                             && !transport.pending
@@ -398,7 +457,7 @@ impl App {
                                         timeline,
                                         arrangement: &self.view.project.midi,
                                         track,
-                                        enabled: clip_enabled,
+                                        enabled: take_enabled,
                                         playhead: transport.audible_tick,
                                     },
                                     binding,
@@ -441,6 +500,43 @@ impl App {
                             }
                         }
                     });
+                    if track.take_lanes.visible && take_count >= 2 {
+                        for take_lane in 0..take_count {
+                            let height = self
+                                .arrangement_ui
+                                .lane_height_preview
+                                .filter(|(id, lane, _)| *id == track.id && *lane == take_lane)
+                                .map_or_else(
+                                    || f32::from(track.take_lanes.height(take_lane)),
+                                    |(_, _, height)| f32::from(height),
+                                );
+                            ui.horizontal_top(|ui| {
+                                let (_, header) =
+                                    ui.allocate_space(egui::vec2(header_width, height));
+                                let (_, band) = ui.allocate_space(egui::vec2(lane_width, height));
+                                viewport.lane_grid(ui, band);
+                                let row = TakeLaneRow {
+                                    track: track.id,
+                                    lane: take_lane,
+                                    header,
+                                    band,
+                                };
+                                if let Some(action) = self.arrangement_ui.take_lane(
+                                    ui,
+                                    TakeLaneInput {
+                                        viewport: &viewport,
+                                        timeline,
+                                        arrangement: &self.view.project.midi,
+                                        track,
+                                        row,
+                                        enabled: take_enabled,
+                                    },
+                                ) {
+                                    take_action = Some(action);
+                                }
+                            });
+                        }
+                    }
                 }
             });
         ui.horizontal_top(|ui| {
@@ -522,6 +618,18 @@ impl App {
             && !ui.input(|input| input.pointer.any_down())
         {
             self.send(Action::ArrangementView(next));
+        }
+        if let Some((track, lanes)) = take_toggle {
+            if !lanes.visible {
+                self.arrangement_ui.focused_lane = None;
+            }
+            if self.view.selected != Some(track) {
+                self.select_track(track);
+            }
+            self.send(Action::TrackView { track, lanes });
+        }
+        if let Some(action) = take_action {
+            self.apply_take_action(action);
         }
         (choose, add, action)
     }
@@ -664,6 +772,108 @@ mod tests {
     use std::{path::PathBuf, time::Instant};
 
     #[test]
+    fn take_lanes_and_chip_render_at_both_widths() {
+        use clef_model::{
+            midi::{Event, Message},
+            project::Track,
+        };
+        for width in [760.0, 1024.0] {
+            let context = egui::Context::default();
+            context.enable_accesskit();
+            let mut app = App::new(context.clone(), PathBuf::new());
+            app.view.project_open = true;
+            app.view.selected = Some(1);
+            app.view.project.tracks.push(Track {
+                id: 1,
+                name: "Strings".into(),
+                plugin: None,
+                instrument_bypassed: false,
+                instrument_offline: false,
+                record_mode: Default::default(),
+                mix: Default::default(),
+                inserts: Vec::new(),
+                take_lanes: clef_model::project::TakeLanes {
+                    visible: true,
+                    lanes: vec![Default::default(), Default::default()],
+                },
+                state: Vec::new(),
+            });
+            std::sync::Arc::make_mut(&mut app.view.project.midi)
+                .record(
+                    1,
+                    Mode::NewTake,
+                    [0, 1920],
+                    vec![
+                        vec![Event {
+                            tick: 30,
+                            order: 0,
+                            message: Message::Note {
+                                channel: 0,
+                                key: 60,
+                                velocity: 90,
+                                end: 200,
+                                release: 10,
+                                release_order: 1,
+                            },
+                        }],
+                        vec![Event {
+                            tick: 900,
+                            order: 0,
+                            message: Message::Note {
+                                channel: 0,
+                                key: 62,
+                                velocity: 90,
+                                end: 1100,
+                                release: 10,
+                                release_order: 2,
+                            },
+                        }],
+                    ],
+                    false,
+                )
+                .unwrap();
+            let output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, 720.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| {
+                    egui::Frame::new().inner_margin(12.0).show(ui, |ui| {
+                        app.main_surface(ui, &context);
+                    });
+                },
+            );
+            let tree = output.platform_output.accesskit_update.unwrap();
+            let labels: Vec<String> = tree
+                .nodes
+                .iter()
+                .filter_map(|(_, node)| {
+                    node.label()
+                        .or_else(|| node.value())
+                        .map(|label| label.to_owned())
+                })
+                .collect();
+            assert!(
+                labels
+                    .iter()
+                    .any(|label| label.contains("Take lanes, 2 takes")),
+                "missing take chip at {width}: {labels:?}"
+            );
+            assert!(
+                labels.iter().any(|label| label.starts_with("Take 1,")),
+                "missing first take lane at {width}: {labels:?}"
+            );
+            assert!(
+                labels.iter().any(|label| label.starts_with("Take 2,")),
+                "missing second take lane at {width}: {labels:?}"
+            );
+        }
+    }
+
+    #[test]
     fn record_controls_and_clips_fit_both_workspace_widths() {
         use clef_model::{
             Plugin,
@@ -687,7 +897,12 @@ mod tests {
                     format: "VST3".into(),
                     path: "/fixture.vst3".into(),
                 }),
+                instrument_bypassed: false,
+                instrument_offline: false,
+                record_mode: Default::default(),
                 mix: Default::default(),
+                inserts: Vec::new(),
+                take_lanes: Default::default(),
                 state: Vec::new(),
             });
             std::sync::Arc::make_mut(&mut app.view.project.midi)

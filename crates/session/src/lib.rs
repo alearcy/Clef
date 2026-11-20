@@ -9,8 +9,8 @@ use clef_engine::{
 };
 use clef_model::{
     Plugin, Result,
-    midi::{Arrangement, ClipEdit, ClipEditResult, ClipId, Mode},
-    project::{self, ArrangementView, AudioSettings, Project, Track},
+    midi::{Arrangement, ClipEdit, ClipEditResult, ClipId, CompEdit, Mode},
+    project::{self, ArrangementView, AudioSettings, Project, TakeLanes, Track, TrackMode},
     timeline::{MAX_TICK, StopMode, Tempo},
 };
 #[cfg(test)]
@@ -30,6 +30,9 @@ use std::{
     time::{Duration, Instant},
 };
 mod edit_history;
+mod inserts;
+mod instruments;
+pub use inserts::{InsertAction, InsertView};
 mod mixer;
 pub use mixer::{Meter, MixChange};
 mod recovery;
@@ -45,6 +48,17 @@ pub enum Action {
     PreviewMix(Option<MixChange>),
     CommitMix(MixChange),
     ResetMeter(u64, clef_model::mixer::Target),
+    Insert(u64, clef_model::mixer::Target, InsertAction),
+    InstrumentBypass {
+        epoch: u64,
+        id: u64,
+        bypassed: bool,
+    },
+    InstrumentOffline {
+        epoch: u64,
+        id: u64,
+        offline: bool,
+    },
     New,
     Open(PathBuf),
     DiscardBeforeClose,
@@ -74,6 +88,21 @@ pub enum Action {
         velocity: u8,
     },
     ArrangementView(ArrangementView),
+    TrackView {
+        track: u64,
+        lanes: TakeLanes,
+    },
+    CompEdit {
+        expected: Arc<Arrangement>,
+        track: u64,
+        lane: usize,
+        edit: CompEdit,
+    },
+    TakeToNewTrack {
+        expected: Arc<Arrangement>,
+        track: u64,
+        lane: usize,
+    },
     SeekHistory {
         version: u64,
         target: usize,
@@ -94,6 +123,7 @@ pub enum TransportAction {
     Record,
     Arm(u64),
     SetRecordMode(Mode),
+    SetTrackRecordMode(u64, TrackMode),
     Stop,
     Locate(u64),
     SetTempo(Tempo),
@@ -118,6 +148,7 @@ pub struct Snapshot {
     pub project: Project,
     pub selected: Option<u64>,
     pub tracks: Vec<TrackView>,
+    pub inserts: HashMap<u64, InsertView>,
     pub quarantine: Vec<Entry>,
     pub quarantine_error: String,
     pub notice: u64,
@@ -164,18 +195,54 @@ impl Snapshot {
             .iter()
             .filter(|t| self.state(t.id).is_some_and(|s| s.lost))
             .map(|t| t.name.clone())
+            .chain(
+                self.project
+                    .tracks
+                    .iter()
+                    .flat_map(|track| &track.inserts)
+                    .chain(&self.project.master_inserts)
+                    .filter(|insert| {
+                        self.inserts
+                            .get(&insert.id)
+                            .is_some_and(|state| state.loss_version.is_some())
+                    })
+                    .map(|insert| insert.plugin.name.clone()),
+            )
+            .collect()
+    }
+    pub fn retained_losses(&self) -> Vec<(u64, u64)> {
+        self.tracks
+            .iter()
+            .filter(|track| track.lost)
+            .map(|track| (track.id, track.loss_version))
+            .chain(
+                self.inserts
+                    .iter()
+                    .filter_map(|(&id, view)| view.loss_version.map(|version| (id, version))),
+            )
             .collect()
     }
     fn for_ui(&self) -> Self {
+        fn without_state(inserts: &[project::Insert]) -> Vec<project::Insert> {
+            inserts
+                .iter()
+                .map(|insert| project::Insert {
+                    state: Arc::default(),
+                    ..insert.clone()
+                })
+                .collect()
+        }
         Self {
             project: Project {
                 version: self.project.version,
                 next_id: self.project.next_id,
                 audio: self.project.audio.clone(),
                 timeline: self.project.timeline.clone(),
+                record_mode: self.project.record_mode,
                 midi: self.project.midi.clone(),
                 arrangement_view: self.project.arrangement_view,
                 master: self.project.master,
+                master_inserts: without_state(&self.project.master_inserts),
                 tracks: self
                     .project
                     .tracks
@@ -184,13 +251,19 @@ impl Snapshot {
                         id: t.id,
                         name: t.name.clone(),
                         plugin: t.plugin.clone(),
+                        instrument_bypassed: t.instrument_bypassed,
+                        instrument_offline: t.instrument_offline,
+                        record_mode: t.record_mode,
                         mix: t.mix,
+                        inserts: without_state(&t.inserts),
+                        take_lanes: t.take_lanes.clone(),
                         state: Vec::new(),
                     })
                     .collect(),
             },
             selected: self.selected,
             tracks: self.tracks.clone(),
+            inserts: self.inserts.clone(),
             quarantine: self.quarantine.clone(),
             quarantine_error: self.quarantine_error.clone(),
             notice: self.notice,
@@ -285,6 +358,8 @@ pub struct Session {
     silence: Arc<AtomicBool>,
     pub view: Snapshot,
     runtimes: HashMap<u64, Runtime>,
+    insert_workers: HashMap<u64, inserts::Runtime>,
+    insert_loss_version: u64,
     engine: Option<Engine>,
     jobs: Vec<LoadJob>,
     generation: u64,
@@ -331,6 +406,8 @@ impl Session {
                 ..Default::default()
             },
             runtimes: HashMap::new(),
+            insert_workers: HashMap::new(),
+            insert_loss_version: 1,
             engine: None,
             jobs: Vec::new(),
             generation: 0,
@@ -584,6 +661,7 @@ impl Session {
             cursor = if forward { cursor + 1 } else { cursor - 1 };
         }
         candidate.validate()?;
+        self.capture_removed_inserts(&candidate)?;
         if let Some(engine) = self.engine.as_mut() {
             if candidate.timeline != self.view.project.timeline {
                 engine
@@ -596,6 +674,8 @@ impl Session {
                 engine.set_arrangement(&candidate.midi, &candidate.timeline)?;
             }
         }
+        self.reconcile_inserts(&candidate, false)?;
+        self.sync_instrument_bypasses(&candidate);
         for id in release {
             self.release_track_worker(id);
         }
@@ -610,6 +690,7 @@ impl Session {
         if let Some(id) = self.live_target()
             && self.engine.is_some()
             && let Ok(track) = self.track(id)
+            && !track.instrument_offline
             && track
                 .plugin
                 .as_ref()
@@ -672,6 +753,7 @@ impl Session {
                 }
             }
         }
+        self.stop_inserts();
         for (plugin, reason) in faults {
             self.quarantine(plugin, reason);
         }
@@ -688,6 +770,7 @@ impl Session {
         }
         let _ = self.stop();
         self.runtimes.clear();
+        self.insert_workers.clear();
     }
     fn close_editors(&mut self) -> Result<()> {
         let mut open = Vec::new();
@@ -704,13 +787,25 @@ impl Session {
     }
 
     fn set_track_editor(&mut self, id: u64, open: bool) -> Result<()> {
+        let runtime = self.runtimes.get(&id).ok_or("editor worker unavailable")?;
+        if runtime.editor == open {
+            // A native close may not have reached the session poll yet. Consume it
+            // before an open request so the click is not swallowed by stale state.
+            let closed = open
+                && self
+                    .runtimes
+                    .get_mut(&id)
+                    .and_then(|runtime| runtime.instrument.as_mut())
+                    .is_some_and(Instrument::editor_closed);
+            if !closed {
+                return Ok(());
+            }
+            self.finish_track_editor(id)?;
+        }
         let runtime = self
             .runtimes
             .get_mut(&id)
             .ok_or("editor worker unavailable")?;
-        if runtime.editor == open {
-            return Ok(());
-        }
         let instrument = runtime
             .instrument
             .as_mut()
@@ -798,6 +893,9 @@ impl Session {
     }
     fn request_load(&mut self, id: u64, replacement: Option<Plugin>) -> Result<()> {
         let track = self.track(id)?;
+        if track.instrument_offline {
+            return Err("Instrument track is offline. Bring it online first.".into());
+        }
         let plugin = replacement
             .clone()
             .or_else(|| track.plugin.clone())
@@ -906,6 +1004,7 @@ impl Session {
             );
         }
         let mut candidate = self.view.project.clone();
+        self.capture_inserts(&mut candidate, use_retained)?;
         for track in &mut candidate.tracks {
             if let Some(runtime) = self.runtimes.get_mut(&track.id)
                 && let Some(instrument) = runtime.instrument.as_mut()
@@ -948,6 +1047,10 @@ impl Session {
         };
     }
     fn quarantine(&mut self, plugin: Plugin, reason: String) {
+        self.quarantine_kind(plugin, reason, false);
+    }
+
+    fn quarantine_kind(&mut self, plugin: Plugin, reason: String, effect: bool) {
         let reason: String = reason.chars().take(1024).collect();
         for track in &self.view.project.tracks {
             if track
@@ -982,9 +1085,10 @@ impl Session {
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs(),
+                effect,
             });
         }
-        match quarantine::update(&self.registry, &plugin, Some(&reason)) {
+        match quarantine::update_kind(&self.registry, &plugin, Some(&reason), effect) {
             Ok(entries) => self.merge_persisted_quarantine(entries, None),
             Err(e) => {
                 self.registry_error =
@@ -1032,6 +1136,15 @@ impl Session {
                 if epoch == self.view.project_epoch {
                     self.reset_meter(target);
                 }
+            }
+            Action::Insert(epoch, target, action) => self.edit_inserts(epoch, target, action)?,
+            Action::InstrumentBypass {
+                epoch,
+                id,
+                bypassed,
+            } => self.set_instrument_bypass(epoch, id, bypassed)?,
+            Action::InstrumentOffline { epoch, id, offline } => {
+                self.set_instrument_offline(epoch, id, offline)?
             }
             Action::Shutdown => {}
             Action::New => {
@@ -1152,6 +1265,7 @@ impl Session {
                     runtime.touched = false;
                     runtime.lost = false;
                 }
+                self.clear_insert_losses();
                 self.view.message =
                     "Project saved. Audio stopped and editors closed for a coherent snapshot."
                         .into();
@@ -1174,7 +1288,12 @@ impl Session {
                     id,
                     name: format!("Instrument {}", self.view.project.tracks.len() + 1),
                     plugin: None,
+                    instrument_bypassed: false,
+                    instrument_offline: false,
+                    record_mode: clef_model::project::TrackMode::Global,
                     mix: Default::default(),
+                    inserts: Vec::new(),
+                    take_lanes: clef_model::project::TakeLanes::default(),
                     state: Vec::new(),
                 };
                 let index = self.view.project.tracks.len();
@@ -1199,7 +1318,7 @@ impl Session {
                     self.rename(old, name)?;
                 }
                 self.select(Some(id))?;
-                if self.track(id)?.plugin.is_some() {
+                if self.track(id)?.plugin.is_some() && !self.track(id)?.instrument_offline {
                     self.request_load(id, None)?;
                 }
             }
@@ -1217,6 +1336,10 @@ impl Session {
                 let state = self.capture_track_state(id)?;
                 let mut candidate = self.view.project.clone();
                 let mut track = candidate.tracks.remove(index);
+                self.capture_removed_inserts(&candidate)?;
+                track
+                    .inserts
+                    .clone_from(&self.view.project.tracks[index].inserts);
                 track.state = state;
                 let clips = Arc::make_mut(&mut candidate.midi)
                     .tracks
@@ -1229,6 +1352,7 @@ impl Session {
                     self.select(None)?;
                 }
                 self.release_track_worker(id);
+                self.reconcile_inserts(&candidate, false)?;
                 self.view.project = candidate;
                 if self.view.armed == Some(id) {
                     self.view.armed = None;
@@ -1246,7 +1370,7 @@ impl Session {
                     let next =
                         self.view.project.tracks[index.min(self.view.project.tracks.len() - 1)].id;
                     self.select(Some(next))?;
-                    if self.track(next)?.plugin.is_some() {
+                    if self.track(next)?.plugin.is_some() && !self.track(next)?.instrument_offline {
                         let _ = self.request_load(next, None);
                     }
                 }
@@ -1299,6 +1423,34 @@ impl Session {
                     self.mark_other_change();
                 }
             }
+            Action::TrackView { track, lanes } => {
+                lanes.validate()?;
+                if !self.view.project_open {
+                    return Err("Open a project before changing its take lanes.".into());
+                }
+                let position = self
+                    .view
+                    .project
+                    .tracks
+                    .iter()
+                    .position(|item| item.id == track)
+                    .ok_or("track no longer exists")?;
+                if self.view.project.tracks[position].take_lanes != lanes {
+                    self.view.project.tracks[position].take_lanes = lanes;
+                    self.mark_other_change();
+                }
+            }
+            Action::CompEdit {
+                expected,
+                track,
+                lane,
+                edit,
+            } => self.comp_edit(&expected, track, lane, edit)?,
+            Action::TakeToNewTrack {
+                expected,
+                track,
+                lane,
+            } => self.take_to_new_track(&expected, track, lane)?,
             Action::SeekHistory { version, target } => self.seek_history(version, target)?,
             Action::Select(id, plugin) => {
                 self.track(id)?;
@@ -1325,6 +1477,7 @@ impl Session {
                 self.mark_other_change();
                 if changed_rate {
                     self.runtimes.clear();
+                    self.insert_workers.clear();
                     for id in loaded {
                         self.request_load(id, None)?;
                     }
@@ -1332,7 +1485,9 @@ impl Session {
                 self.view.message = "Settings applied. Audio is stopped.".into();
             }
             Action::Editor(id, open) => {
-                self.track(id)?;
+                if self.track(id)?.instrument_offline {
+                    return Err("Instrument track is offline. Bring it online first.".into());
+                }
                 if open {
                     self.select(Some(id))?;
                 }
@@ -1372,6 +1527,11 @@ impl Session {
                     self.view.transport.tick,
                 )?;
                 self.engine = Some(engine);
+                self.sync_instrument_bypasses(&self.view.project);
+                if let Err(error) = self.reconcile_inserts(&self.view.project.clone(), true) {
+                    let _ = self.stop();
+                    return Err(error);
+                }
                 self.publish_mix();
                 self.update_arrangement()?;
                 self.view.active = true;
@@ -1389,6 +1549,7 @@ impl Session {
                         .clock
                         .select(id);
                     if self.track(id)?.plugin.is_some()
+                        && !self.track(id)?.instrument_offline
                         && !self
                             .runtimes
                             .get(&id)
@@ -1486,6 +1647,153 @@ impl Session {
         Ok(())
     }
 
+    fn comp_edit(
+        &mut self,
+        expected: &Arc<Arrangement>,
+        track_id: u64,
+        lane: usize,
+        edit: CompEdit,
+    ) -> Result<()> {
+        self.refresh_transport();
+        let can_comp = self.view.project_open
+            && !self.view.recording
+            && !self.view.transport.pending
+            && matches!(
+                self.view.transport.phase,
+                TransportPhase::Stopped | TransportPhase::Playing
+            )
+            && self.runtimes.values().all(|runtime| !runtime.loading);
+        if !can_comp {
+            return Err("Wait for the transport and instrument loads before comping.".into());
+        }
+        let previous = &self.view.project.midi;
+        if !Arc::ptr_eq(previous, expected) {
+            return Err("The arrangement changed before the comp edit was applied.".into());
+        }
+        let track_ids = || self.view.project.tracks.iter().map(|track| track.id);
+        let mut candidate = (**previous).clone();
+        let selection = match candidate.comp(track_id, lane, edit, track_ids())? {
+            ClipEditResult::Applied(selection) => selection,
+            ClipEditResult::Unchanged => return Ok(()),
+            ClipEditResult::NeedsSplitConfirmation => {
+                return Err("Confirm splitting the crossed MIDI notes.".into());
+            }
+        };
+        let tracks = track_ids()
+            .filter_map(|id| {
+                let before = previous.clips(id);
+                let after = candidate.clips(id);
+                (before != after).then(|| ClipChange {
+                    id,
+                    before: before.to_vec(),
+                    after: after.to_vec(),
+                })
+            })
+            .collect();
+        if let Some(engine) = &self.engine {
+            engine.set_arrangement(&candidate, &self.view.project.timeline)?;
+        }
+        self.view.project.midi = Arc::new(candidate);
+        self.view.clip_edit_selection = Some(selection);
+        self.view.message = edit.label().into();
+        self.record_edit(Edit::Clips {
+            label: edit.label(),
+            tracks,
+        });
+        if matches!(edit, CompEdit::DeleteTake | CompEdit::Flatten)
+            && let Some(track) = self
+                .view
+                .project
+                .tracks
+                .iter_mut()
+                .find(|track| track.id == track_id)
+        {
+            if edit == CompEdit::DeleteTake {
+                track.take_lanes.remove(lane);
+            }
+            if self
+                .view
+                .project
+                .midi
+                .clips(track.id)
+                .iter()
+                .map(|clip| clip.takes.len())
+                .max()
+                .unwrap_or(0)
+                < 2
+            {
+                track.take_lanes = TakeLanes::default();
+            }
+            self.mark_other_change();
+        }
+        Ok(())
+    }
+
+    fn take_to_new_track(
+        &mut self,
+        expected: &Arc<Arrangement>,
+        track: u64,
+        lane: usize,
+    ) -> Result<()> {
+        self.refresh_transport();
+        if !self.history_available() {
+            return Err(
+                "Stop transport and wait for instrument loads before copying a take.".into(),
+            );
+        }
+        if !Arc::ptr_eq(&self.view.project.midi, expected) {
+            return Err("The arrangement changed before the take was copied.".into());
+        }
+        let owner = self
+            .view
+            .project
+            .tracks
+            .iter()
+            .position(|item| item.id == track)
+            .ok_or("track no longer exists")?;
+        let name = self.view.project.tracks[owner].take_lanes.name(lane);
+        if self.view.project.tracks.len() >= crate::project::MAX_TRACKS {
+            return Err("project track safety limit reached".into());
+        }
+        let mut candidate = self.view.project.clone();
+        let id = candidate.next_id;
+        let next = id.checked_add(1).ok_or("track ID exhausted")?;
+        let clips = std::sync::Arc::make_mut(&mut candidate.midi).copy_take_clips(track, lane)?;
+        let new_track = Track {
+            id,
+            name,
+            plugin: None,
+            instrument_bypassed: false,
+            instrument_offline: false,
+            record_mode: TrackMode::Global,
+            mix: Default::default(),
+            inserts: Vec::new(),
+            take_lanes: TakeLanes::default(),
+            state: Vec::new(),
+        };
+        candidate.tracks.insert(owner + 1, new_track.clone());
+        candidate.next_id = next;
+        std::sync::Arc::make_mut(&mut candidate.midi)
+            .tracks
+            .insert(id, clips.clone());
+        candidate.validate()?;
+        if let Some(engine) = &self.engine {
+            engine.set_arrangement(&candidate.midi, &candidate.timeline)?;
+            engine.clock.select(id);
+        }
+        self.view.project = candidate;
+        self.view.selected = Some(id);
+        self.record_edit(Edit::TakeToNewTrack {
+            slot: Box::new(TrackSlot {
+                track: new_track,
+                index: owner + 1,
+                clips,
+            }),
+        });
+        self.view.message = "Take copied to a new track.".into();
+        Ok(())
+    }
+
     fn update_live_target(&self) {
         if let Some(engine) = &self.engine {
             engine.clock.select(self.live_target().unwrap_or(0));
@@ -1537,6 +1845,16 @@ impl Session {
         let ids: Vec<_> = self.view.project.midi.tracks.keys().copied().collect();
         let mut warnings = Vec::new();
         for id in ids {
+            let offline = self
+                .view
+                .project
+                .tracks
+                .iter()
+                .find(|track| track.id == id)
+                .is_some_and(|track| track.instrument_offline);
+            if offline {
+                continue;
+            }
             if !self.ready(id)
                 && !self
                     .runtimes
@@ -1582,7 +1900,10 @@ impl Session {
             return Err(reason.into());
         }
         let target = self.view.armed.ok_or("no armed instrument")?;
-        let mode = self.view.project.midi.mode;
+        let mode = self
+            .track(target)?
+            .record_mode
+            .effective(self.view.project.record_mode);
         let engine = self.engine.as_mut().ok_or("audio unavailable")?;
         let map = SampleMap::new(&self.view.project.timeline, engine.rate)?;
         engine.mute_recording(target, mode != Mode::Merge);
@@ -1776,9 +2097,45 @@ impl Session {
                 self.update_live_target();
             }
             SetRecordMode(mode) => {
-                if self.view.project.midi.mode != mode {
-                    Arc::make_mut(&mut self.view.project.midi).mode = mode;
-                    self.mark_other_change();
+                if self.view.project.record_mode != mode {
+                    if self.view.recording
+                        || self.view.transport.pending
+                        || self.runtimes.values().any(|runtime| runtime.loading)
+                    {
+                        return Err("Wait for the transport and instrument loads before changing the record mode.".into());
+                    }
+                    let before = self.view.project.record_mode;
+                    self.view.project.record_mode = mode;
+                    self.record_edit(Edit::RecordMode {
+                        before,
+                        after: mode,
+                    });
+                    self.view.message = format!("Record mode: {}", mode.label());
+                }
+            }
+            SetTrackRecordMode(id, mode) => {
+                let position = self
+                    .view
+                    .project
+                    .tracks
+                    .iter()
+                    .position(|track| track.id == id)
+                    .ok_or("track no longer exists")?;
+                let before = self.view.project.tracks[position].record_mode;
+                if before != mode {
+                    if self.view.recording
+                        || self.view.transport.pending
+                        || self.runtimes.values().any(|runtime| runtime.loading)
+                    {
+                        return Err("Wait for the transport and instrument loads before changing the record mode.".into());
+                    }
+                    self.view.project.tracks[position].record_mode = mode;
+                    self.record_edit(Edit::TrackMode {
+                        id,
+                        before,
+                        after: mode,
+                    });
+                    self.view.message = format!("Track record mode: {}", mode.label());
                 }
             }
             Stop => {
@@ -1892,6 +2249,13 @@ impl Session {
         Ok(())
     }
     fn attach(&mut self, id: u64) -> Result<()> {
+        let bypass = self
+            .view
+            .project
+            .tracks
+            .iter()
+            .find(|track| track.id == id)
+            .is_some_and(|track| track.instrument_bypassed);
         if let Some(runtime) = self.runtimes.get_mut(&id)
             && runtime.broker.is_none()
             && let (Some(engine), Some(instrument)) =
@@ -1899,6 +2263,7 @@ impl Session {
         {
             match engine.attach(id, instrument) {
                 Ok(broker) => {
+                    engine.set_instrument_bypass(id, bypass);
                     runtime.broker = Some(broker);
                     runtime.error.clear();
                 }
@@ -2067,12 +2432,14 @@ impl Session {
         }
     }
     fn refresh(&mut self) {
+        self.refresh_insert_views();
         self.refresh_transport();
         self.view.edit_history = self.edits.view(self.history_available());
         self.view.record_unavailable = self.record_unavailable();
         self.view.tracks = self.view.project.tracks.iter().map(|track| {
             let runtime = self.runtimes.get(&track.id);
-            let status = if track.plugin.is_none() { "Empty" }
+            let status = if track.instrument_offline { "Offline" }
+                else if track.plugin.is_none() { "Empty" }
                 else if track.plugin.as_ref().is_some_and(|p| self.blocked(p)) { "Quarantined" }
                 else if track.plugin.as_ref().is_some_and(|p| !p.path.exists()) { "Missing" }
                 else if runtime.is_some_and(|r| r.loading) { "Loading" }
@@ -2082,8 +2449,14 @@ impl Session {
             let diagnostics = runtime.map(|r| {
                 if let Some(broker) = &r.broker {
                     let s = &broker.stats;
-                    format!("latency {} samples · processed {} blocks · missed {} blocks · transition {} frames · stale {} blocks · MIDI {} / dropped {} · playback overflows {} · max RPC {} us · max worker {} us",
-                        s.latency.load(Ordering::Relaxed),s.processed.load(Ordering::Relaxed),s.misses.load(Ordering::Relaxed),s.transition_frames.load(Ordering::Relaxed),s.stale.load(Ordering::Relaxed),s.midi_received.load(Ordering::Relaxed),s.midi_dropped.load(Ordering::Relaxed),s.playback_dropped.load(Ordering::Relaxed),s.max_rpc_us.load(Ordering::Relaxed),s.max_worker_us.load(Ordering::Relaxed))
+                    let error = s
+                        .error
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .clone()
+                        .unwrap_or_default();
+                    format!("latency {} samples · processed {} blocks · missed {} blocks · transition {} frames · stale {} blocks · MIDI {} / dropped {} · playback overflows {} · max RPC {} us · max worker {} us{}",
+                        s.latency.load(Ordering::Relaxed),s.processed.load(Ordering::Relaxed),s.misses.load(Ordering::Relaxed),s.transition_frames.load(Ordering::Relaxed),s.stale.load(Ordering::Relaxed),s.midi_received.load(Ordering::Relaxed),s.midi_dropped.load(Ordering::Relaxed),s.playback_dropped.load(Ordering::Relaxed),s.max_rpc_us.load(Ordering::Relaxed),s.max_worker_us.load(Ordering::Relaxed), if error.is_empty() { String::new() } else { format!(" · {error}") })
                 } else { r.error.clone() }
             }).unwrap_or_default();
             TrackView { id: track.id, status: status.into(), diagnostics, loading: runtime.is_some_and(|r| r.loading), lost: runtime.is_some_and(|r| r.lost), loss_version: runtime.map_or(0,|r|r.request) }
@@ -2102,6 +2475,7 @@ impl Session {
         }
     }
     fn poll(&mut self) {
+        self.poll_inserts();
         let closed: Vec<_> = self
             .runtimes
             .iter_mut()
@@ -2132,11 +2506,12 @@ impl Session {
         }
         let mut faults = Vec::new();
         for (id, runtime) in &mut self.runtimes {
-            if (runtime
+            let broker_failed = runtime
                 .broker
                 .as_ref()
-                .is_some_and(|b| b.stats.failed.load(Ordering::Acquire))
-                || runtime.instrument.as_mut().is_some_and(|i| i.exited()))
+                .is_some_and(|b| b.stats.failed.load(Ordering::Acquire));
+            let worker_exited = runtime.instrument.as_mut().is_some_and(|i| i.exited());
+            if (broker_failed || worker_exited)
                 && let Some(plugin) = self
                     .view
                     .project
@@ -2145,14 +2520,24 @@ impl Session {
                     .find(|t| t.id == *id)
                     .and_then(|t| t.plugin.clone())
             {
-                faults.push(plugin);
+                let detail = runtime
+                    .broker
+                    .as_ref()
+                    .and_then(|broker| {
+                        broker
+                            .stats
+                            .error
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .clone()
+                    })
+                    .or_else(|| (!runtime.error.is_empty()).then(|| runtime.error.clone()))
+                    .unwrap_or_else(|| "worker stopped responding".into());
+                faults.push((plugin, detail));
             }
         }
-        for plugin in faults {
-            self.quarantine(
-                plugin,
-                "Worker exited, timed out, or returned invalid audio".into(),
-            );
+        for (plugin, reason) in faults {
+            self.quarantine(plugin, reason);
         }
         if self.engine.is_some() && self.last_devices.elapsed() > Duration::from_secs(2) {
             self.last_devices = Instant::now();
@@ -2461,6 +2846,7 @@ mod tests {
         let before = session.view.project.midi.clone();
         let clip = before.clips(1)[0].id();
         let edit = ClipEdit::EditEvents {
+            take: None,
             clip,
             label: "Draw MIDI Events",
             changes: vec![
@@ -3216,12 +3602,7 @@ mod tests {
             session.view.message
         );
         for runtime in session.runtimes.values_mut() {
-            runtime
-                .instrument
-                .as_mut()
-                .unwrap()
-                .call(crate::protocol::Request::Editor { open: true })
-                .unwrap();
+            runtime.instrument.as_mut().unwrap().editor(true).unwrap();
             runtime.editor = true;
             runtime.touched = true;
             runtime.instrument.as_mut().unwrap().editor(false).unwrap();
@@ -4041,5 +4422,208 @@ mod tests {
             session.view.message
         );
         session.apply(Action::Disable).unwrap();
+    }
+    fn note(tick: u64, end: u64, key: u8) -> clef_model::midi::Event {
+        clef_model::midi::Event {
+            tick,
+            order: 0,
+            message: clef_model::midi::Message::Note {
+                channel: 0,
+                key,
+                velocity: 90,
+                end,
+                release: 12,
+                release_order: 1,
+            },
+        }
+    }
+
+    fn take_fixture(session: &mut Session) {
+        session.apply(Action::New).unwrap();
+        session.apply(Action::AddTrack(None)).unwrap();
+        let midi = std::sync::Arc::make_mut(&mut session.view.project.midi);
+        midi.record(
+            1,
+            Mode::NewTake,
+            [0, 960],
+            vec![vec![note(100, 200, 60)], vec![note(500, 700, 62)]],
+            false,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn record_modes_use_track_overrides_and_are_undoable() {
+        let (_directory, mut session) = isolated();
+        session.apply(Action::New).unwrap();
+        session.apply(Action::AddTrack(None)).unwrap();
+        session
+            .apply(Action::Transport(TransportAction::SetRecordMode(
+                Mode::NewTake,
+            )))
+            .unwrap();
+        session
+            .apply(Action::Transport(TransportAction::SetTrackRecordMode(
+                1,
+                TrackMode::Replace,
+            )))
+            .unwrap();
+        assert_eq!(session.view.project.record_mode, Mode::NewTake);
+        assert_eq!(
+            session.view.project.tracks[0].record_mode,
+            TrackMode::Replace
+        );
+        assert_eq!(session.view.project.midi.mode, Mode::Merge);
+        let cursor = session.view.edit_history.cursor;
+        assert_eq!(cursor, 3);
+        session
+            .apply(Action::SeekHistory {
+                version: session.view.edit_history.version,
+                target: 2,
+            })
+            .unwrap();
+        assert_eq!(
+            session.view.project.tracks[0].record_mode,
+            TrackMode::Global
+        );
+        session
+            .apply(Action::SeekHistory {
+                version: session.view.edit_history.version,
+                target: 1,
+            })
+            .unwrap();
+        assert_eq!(session.view.project.record_mode, Mode::Merge);
+        session
+            .apply(Action::SeekHistory {
+                version: session.view.edit_history.version,
+                target: 3,
+            })
+            .unwrap();
+        assert_eq!(session.view.project.record_mode, Mode::NewTake);
+        assert_eq!(
+            session.view.project.tracks[0].record_mode,
+            TrackMode::Replace
+        );
+    }
+
+    #[test]
+    fn comp_actions_are_one_step_and_take_to_new_track_is_undoable() {
+        let (_directory, mut session) = isolated();
+        take_fixture(&mut session);
+        let expected = session.view.project.midi.clone();
+        let cursor = session.view.edit_history.cursor;
+        session
+            .apply(Action::CompEdit {
+                expected,
+                track: 1,
+                lane: 0,
+                edit: CompEdit::UseWholeTake,
+            })
+            .unwrap();
+        assert_eq!(session.view.edit_history.cursor, cursor + 1);
+        assert_eq!(
+            session.view.edit_history.labels.last().copied(),
+            Some("Use whole take")
+        );
+        let clip = &session.view.project.midi.clips(1)[0];
+        assert_eq!(clip.sections.len(), 1);
+        assert_eq!(clip.sections[0].take, clip.takes[0].id);
+        session
+            .apply(Action::SeekHistory {
+                version: session.view.edit_history.version,
+                target: cursor,
+            })
+            .unwrap();
+        let clip = &session.view.project.midi.clips(1)[0];
+        assert_eq!(clip.sections.last().unwrap().take, clip.takes[1].id);
+
+        let expected = session.view.project.midi.clone();
+        session
+            .apply(Action::TakeToNewTrack {
+                expected,
+                track: 1,
+                lane: 1,
+            })
+            .unwrap();
+        assert_eq!(session.view.project.tracks.len(), 2);
+        assert!(session.view.project.tracks[1].plugin.is_none());
+        assert_eq!(session.view.project.midi.clips(2).len(), 1);
+        assert_eq!(
+            session.view.edit_history.labels.last().copied(),
+            Some("Take to New Track")
+        );
+        session
+            .apply(Action::SeekHistory {
+                version: session.view.edit_history.version,
+                target: cursor,
+            })
+            .unwrap();
+        assert_eq!(session.view.project.tracks.len(), 1);
+        assert!(session.view.project.midi.clips(2).is_empty());
+    }
+
+    #[test]
+    fn comp_edits_apply_while_the_transport_plays() {
+        let (_directory, mut session) = isolated();
+        take_fixture(&mut session);
+        session.view.transport.phase = TransportPhase::Playing;
+        let expected = session.view.project.midi.clone();
+        session
+            .apply(Action::CompEdit {
+                expected,
+                track: 1,
+                lane: 0,
+                edit: CompEdit::UseWholeTake,
+            })
+            .unwrap();
+        let clip = &session.view.project.midi.clips(1)[0];
+        assert_eq!(clip.sections.len(), 1);
+        assert_eq!(clip.sections[0].take, clip.takes[0].id);
+        session.view.transport.phase = TransportPhase::Stopped;
+        let target = session.view.edit_history.cursor - 1;
+        session
+            .apply(Action::SeekHistory {
+                version: session.view.edit_history.version,
+                target,
+            })
+            .unwrap();
+        assert_eq!(
+            session.view.project.midi.clips(1)[0]
+                .sections
+                .last()
+                .unwrap()
+                .take,
+            session.view.project.midi.clips(1)[0].takes[1].id
+        );
+    }
+
+    #[test]
+    fn take_lane_view_state_is_saved_but_not_undoable() {
+        let (directory, mut session) = isolated();
+        take_fixture(&mut session);
+        let lanes = TakeLanes {
+            visible: true,
+            lanes: vec![clef_model::project::TakeLane {
+                name: Some("Close".into()),
+                height: 64,
+            }],
+        };
+        let cursor = session.view.edit_history.cursor;
+        session
+            .apply(Action::TrackView {
+                track: 1,
+                lanes: lanes.clone(),
+            })
+            .unwrap();
+        assert_eq!(session.view.project.tracks[0].take_lanes, lanes);
+        assert_eq!(session.view.edit_history.cursor, cursor);
+        assert!(session.view.dirty);
+        let path = directory.0.join("Takes.clef");
+        save(&mut session, path.clone(), false, false).unwrap();
+        let expected = session.view.project.clone();
+        session.apply(Action::New).unwrap();
+        session.apply(Action::Open(path)).unwrap();
+        assert_eq!(session.view.project, expected);
+        assert_eq!(session.view.project.tracks[0].take_lanes, lanes);
     }
 }

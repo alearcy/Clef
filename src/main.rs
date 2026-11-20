@@ -22,7 +22,11 @@ fn main() {
 
 fn run() -> protocol::Result<()> {
     let args: Vec<_> = std::env::args().collect();
-    if args.get(1).is_some_and(|s| s == "worker") && (4..=6).contains(&args.len()) {
+    if args
+        .get(1)
+        .is_some_and(|s| matches!(s.as_str(), "worker" | "effect-worker"))
+        && (4..=6).contains(&args.len())
+    {
         return worker::run(
             std::path::Path::new(&args[2]),
             std::path::Path::new(&args[3]),
@@ -31,12 +35,18 @@ fn run() -> protocol::Result<()> {
                 .map(|s| s.parse())
                 .transpose()?
                 .unwrap_or(protocol::RATE),
+            args[1] == "effect-worker",
         );
     }
-    if args.get(1).is_some_and(|arg| arg == "scan-bundle") && args.len() == 4 {
+    if args
+        .get(1)
+        .is_some_and(|arg| matches!(arg.as_str(), "scan-bundle" | "scan-bundle-categorized"))
+        && args.len() == 4
+    {
         return catalog::inspect(
             std::path::Path::new(&args[2]),
             std::path::Path::new(&args[3]),
+            args[1] == "scan-bundle-categorized",
         );
     }
     if args.len() == 1 || args.get(1).is_some_and(|s| s == "app") {

@@ -9,6 +9,8 @@ pub struct Entry {
     pub plugin: Plugin,
     pub reason: String,
     pub time: u64,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub effect: bool,
 }
 pub fn same(a: &Plugin, b: &Plugin) -> bool {
     fn normalized(path: &Path) -> PathBuf {
@@ -64,6 +66,15 @@ pub fn read(path: &Path) -> Result<Vec<Entry>> {
 }
 /// Merge under a separate stable lock inode; publication may replace the data inode.
 pub fn update(path: &Path, plugin: &Plugin, reason: Option<&str>) -> Result<Vec<Entry>> {
+    update_kind(path, plugin, reason, false)
+}
+
+pub fn update_kind(
+    path: &Path,
+    plugin: &Plugin,
+    reason: Option<&str>,
+    effect: bool,
+) -> Result<Vec<Entry>> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     let parent = path.parent().ok_or("invalid quarantine path")?;
@@ -86,6 +97,7 @@ pub fn update(path: &Path, plugin: &Plugin, reason: Option<&str>) -> Result<Vec<
             time: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)?
                 .as_secs(),
+            effect,
         });
     }
     let bytes = serde_json::to_vec(&entries)?;

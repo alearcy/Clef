@@ -38,4 +38,4 @@ Open: the menu anchors under the button (see F04 menu anchoring). Disabled: `dis
 ## Decision (UI10.3)
 No new class: a menu button is a kit-painted `juce::TextButton` or `juce::ComboBox` whose text follows the value convention above. `ShapeMenuButton` stays the one subclass because it draws the shape glyph. A new menu button needs no new painter.
 
-Raised (UI10 Fix 7): a body 2 px shorter than its bounds with a 1-pixel top light and a soft 2-pixel shadow under it (`paintControlBody`, `ControlDepth::raised`); hover adds the `controlEdge` edge; lit or pressed keeps the body and shadow and drops the top light; disabled is flat `panel` with a `divider` edge. See control depth in [foundations](../foundations.md).
+Raised (UI10 Fix 7): a body 2 px shorter than its bounds with a 1-pixel top light and a soft 2-pixel shadow under it (`paintControlBody`, `ControlDepth::raised`); hover lifts the body to `field` without an edge; lit or pressed keeps the body and shadow and drops the top light; disabled is flat `panel` with a `divider` edge. See control depth in [foundations](../foundations.md).

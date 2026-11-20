@@ -137,6 +137,17 @@ pub struct ControlConnection(Arc<Mutex<UnixStream>>);
 
 impl ControlConnection {
     fn call_until(&self, request: &Request, deadline: Instant) -> Result<Reply> {
+        let reply = self.call_reply(request, deadline)?;
+        if let Some(error) = &reply.error {
+            return Err(error.clone().into());
+        }
+        if reply.latency > crate::protocol::RATE * 10 {
+            return Err("worker latency exceeds prototype capacity".into());
+        }
+        Ok(reply)
+    }
+
+    fn call_reply(&self, request: &Request, deadline: Instant) -> Result<Reply> {
         let mut stream = loop {
             match self.0.try_lock() {
                 Ok(stream) => break stream,
@@ -150,12 +161,6 @@ impl ControlConnection {
         let mut stream = DeadlineStream::new(&mut stream, deadline)?;
         send(&mut stream, request)?;
         let reply: Reply = receive(&mut stream)?;
-        if let Some(error) = &reply.error {
-            return Err(error.clone().into());
-        }
-        if reply.latency > crate::protocol::RATE * 10 {
-            return Err("worker latency exceeds prototype capacity".into());
-        }
         Ok(reply)
     }
 }
@@ -212,6 +217,29 @@ impl Instrument {
         state: Option<&[u8]>,
         cancel: &std::sync::atomic::AtomicBool,
     ) -> Result<Self> {
+        Self::load_worker(executable, path, selected, rate, state, cancel, false)
+    }
+
+    pub fn load_effect(
+        executable: &Path,
+        path: &Path,
+        selected: &str,
+        rate: u32,
+        state: Option<&[u8]>,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<Self> {
+        Self::load_worker(executable, path, selected, rate, state, cancel, true)
+    }
+
+    fn load_worker(
+        executable: &Path,
+        path: &Path,
+        selected: &str,
+        rate: u32,
+        state: Option<&[u8]>,
+        cancel: &std::sync::atomic::AtomicBool,
+        effect: bool,
+    ) -> Result<Self> {
         if !(8000..=384000).contains(&rate) {
             return Err("unsupported sample rate".into());
         }
@@ -243,7 +271,7 @@ impl Instrument {
             .set_nonblocking(true)
             .map_err(|error| format!("configure worker listener: {error}"))?;
         let mut child = Command::new(executable)
-            .arg("worker")
+            .arg(if effect { "effect-worker" } else { "worker" })
             .arg(&socket.0)
             .arg(path)
             .arg(selected)
@@ -350,14 +378,10 @@ impl Instrument {
         if self.audio.is_none()
             && !matches!(
                 request,
-                Request::Editor { .. } | Request::FixtureFault { .. } | Request::FixtureEdit { .. }
+                Request::FixtureFault { .. } | Request::FixtureEdit { .. }
             )
         {
             return Err("stop live playback before this operation".into());
-        }
-        let opening_editor = matches!(request, Request::Editor { open: true });
-        if opening_editor {
-            self.editor_closed();
         }
         let result = (|| {
             if matches!(
@@ -401,9 +425,6 @@ impl Instrument {
             return Err("worker latency exceeds prototype capacity".into());
         }
         self.latency = reply.latency;
-        if opening_editor {
-            self.editor_generation = self.editor_generation.wrapping_add(1);
-        }
         Ok(reply)
     }
 
@@ -417,10 +438,9 @@ impl Instrument {
         self.processing_mode = None;
         self.call(Request::Start { offline })?;
         self.processing_mode = Some(offline);
-        self.audio
-            .as_mut()
-            .ok_or("audio connection unavailable")?
-            .timeout = Duration::from_secs(if offline { 60 } else { 1 });
+        let audio = self.audio.as_mut().ok_or("audio connection unavailable")?;
+        audio.latency = self.latency;
+        audio.timeout = Duration::from_secs(if offline { 60 } else { 1 });
         Ok(())
     }
 
@@ -435,6 +455,7 @@ impl Instrument {
             position,
             events: events.to_vec(),
             frames,
+            input: Vec::new(),
         })?;
         if reply.frames.len() != frames || reply.frames.iter().flatten().any(|v| !v.is_finite()) {
             let _ = self.child.kill();
@@ -465,7 +486,28 @@ impl Instrument {
         Ok(())
     }
     pub fn editor(&mut self, open: bool) -> Result<()> {
-        self.call(Request::Editor { open })?;
+        if open {
+            // Drop notifications left by the previous editor session. The worker
+            // advances its generation only after this open succeeds.
+            let _ = self.editor_closed();
+        }
+        // A reply error such as "no editor" is a plugin property, not a broken
+        // worker. Keep the child alive so the VI and its audio path remain usable.
+        let reply = self.control.call_reply(
+            &Request::Editor { open },
+            Instant::now() + Duration::from_secs(60),
+        )?;
+        if let Some(error) = reply.error {
+            return Err(error.into());
+        }
+        if reply.latency > crate::protocol::RATE * 10 {
+            return Err("worker latency exceeds prototype capacity".into());
+        }
+        if open {
+            // The worker sends this generation when the native window closes.
+            // Advance it on success so the next close notification matches.
+            self.editor_generation = self.editor_generation.wrapping_add(1);
+        }
         Ok(())
     }
     pub fn editor_closed(&mut self) -> bool {
@@ -502,18 +544,43 @@ pub struct AudioConnection {
 
 impl AudioConnection {
     pub fn process(&mut self, position: u64, events: &[Midi], frames: usize) -> Result<Reply> {
+        validate_block(frames, events)?;
+        self.process_block(position, events, frames, &[], self.timeout)
+    }
+
+    pub fn process_effect(
+        &mut self,
+        position: u64,
+        input: &[Frame],
+        timeout: Duration,
+    ) -> Result<Reply> {
+        validate_block(input.len(), &[])?;
+        if input.iter().flatten().any(|sample| !sample.is_finite()) {
+            return Err("non-finite effect input".into());
+        }
+        self.process_block(position, &[], input.len(), input, timeout)
+    }
+
+    fn process_block(
+        &mut self,
+        position: u64,
+        events: &[Midi],
+        frames: usize,
+        input: &[Frame],
+        timeout: Duration,
+    ) -> Result<Reply> {
         if self.failed {
             return Err("audio connection failed; recreate worker".into());
         }
-        validate_block(frames, events)?;
         let result = exchange(
             &mut self.stream,
             &Request::Process {
                 position,
                 events: events.to_vec(),
                 frames,
+                input: input.to_vec(),
             },
-            self.timeout,
+            timeout,
         );
         let reply = match result {
             Ok(reply) => reply,
@@ -537,19 +604,32 @@ impl AudioConnection {
     }
 
     pub fn reconfigure(&mut self, control: &ControlConnection) -> Result<u32> {
-        let result = (|| {
+        self.with_stopped(control, || Ok(()))?;
+        Ok(self.latency)
+    }
+
+    pub fn with_stopped<T>(
+        &mut self,
+        control: &ControlConnection,
+        action: impl FnOnce() -> Result<T>,
+    ) -> Result<T> {
+        let result: Result<Result<T>> = (|| {
             let deadline = Instant::now() + Duration::from_secs(1);
             self.suspend()?;
             control.call_until(&Request::Stop, deadline)?;
-            let reply = control.call_until(&Request::Start { offline: false }, deadline)?;
+            let value = action();
+            let reply = control.call_until(
+                &Request::Start { offline: false },
+                Instant::now() + Duration::from_secs(1),
+            )?;
             self.latency = reply.latency;
-            Ok(reply.latency)
+            Ok(value)
         })();
         if result.is_err() {
             self.failed = true;
             let _ = self.stream.shutdown(std::net::Shutdown::Both);
         }
-        result
+        result?
     }
 
     pub fn suspend(&mut self) -> Result<()> {
@@ -622,5 +702,41 @@ mod tests {
         let (mut tx, mut rx) = UnixStream::pair().unwrap();
         tx.write_all(&u32::MAX.to_le_bytes()).unwrap();
         assert!(receive::<Request>(&mut rx).is_err());
+    }
+
+    #[test]
+    fn editor_close_notification_matches_the_latest_open() {
+        let (parent_control, mut worker_control) = UnixStream::pair().unwrap();
+        let (parent_events, mut worker_events) = UnixStream::pair().unwrap();
+        parent_events.set_nonblocking(true).unwrap();
+        let child = Command::new("sleep").arg("30").spawn().unwrap();
+        let worker = std::thread::spawn(move || {
+            let request: Request = receive(&mut worker_control).unwrap();
+            assert!(matches!(request, Request::Editor { open: true }));
+            send(&mut worker_control, &Reply::empty()).unwrap();
+            // The worker advances its generation after a successful open, then
+            // reports that generation when the native window closes.
+            worker_events.write_all(&[1]).unwrap();
+        });
+        let mut instrument = Instrument {
+            processing_mode: None,
+            child,
+            control: ControlConnection(Arc::new(Mutex::new(parent_control))),
+            audio: None,
+            editor_events: parent_events,
+            editor_generation: 0,
+            name: String::new(),
+            latency: 0,
+        };
+        instrument.editor(true).unwrap();
+        worker.join().unwrap();
+        let started = Instant::now();
+        while !instrument.editor_closed() {
+            assert!(
+                started.elapsed() < Duration::from_secs(1),
+                "close notification was ignored"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 }

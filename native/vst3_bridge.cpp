@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -34,6 +35,30 @@ constexpr size_t block = 128, max_events = 1024, max_state = 64 * 1024 * 1024;
 thread_local char error_text[1024] = {};
 void require(bool ok, const char* message) { if (!ok) throw std::runtime_error(message); }
 bool success(tresult result) { return result == kResultOk || result == kResultTrue; }
+
+constexpr int32 max_audio_inputs = 32;
+bool stereo_buses(IComponent& component, IAudioProcessor& processor, bool effect) {
+    const auto count = component.getBusCount(kAudio, kInput);
+    if (component.getBusCount(kAudio, kOutput) != 1 ||
+        (effect ? (count < 1 || count > max_audio_inputs) : count != 0)) return false;
+    std::array<SpeakerArrangement, max_audio_inputs> inputs {};
+    inputs[0] = SpeakerArr::kStereo;
+    for (int32 i = 1; i < count; ++i) {
+        BusInfo info {};
+        if (!success(component.getBusInfo(kAudio, kInput, i, info)) || info.busType != kAux ||
+            !success(processor.getBusArrangement(kInput, i, inputs[i]))) return false;
+    }
+    SpeakerArrangement output = SpeakerArr::kStereo;
+    if (!success(processor.canProcessSampleSize(kSample32)) ||
+        !success(processor.setBusArrangements(effect ? inputs.data() : nullptr, count, &output, 1))) return false;
+    BusInfo info {};
+    if (!success(component.getBusInfo(kAudio, kOutput, 0, info)) || info.channelCount != 2) return false;
+    for (int32 i = 0; i < count; ++i) {
+        if (!success(component.getBusInfo(kAudio, kInput, i, info)) ||
+            (i == 0 ? info.channelCount != 2 : info.channelCount < 1 || info.channelCount > 32)) return false;
+    }
+    return true;
+}
 template<class F> int guarded(F&& f) noexcept {
     try { f(); return 1; }
     catch (const std::exception& e) { std::snprintf(error_text, sizeof(error_text), "%s", e.what()); }
@@ -145,6 +170,93 @@ public:
     }
 };
 
+// The SDK ConnectionProxy drops messages that arrive off the UI thread. Some
+// effects, including FabFilter Pro-Q, send their analyzer data from the audio
+// thread through IConnectionPoint; queue those messages and deliver them from
+// the main-thread poll instead of losing the editor feedback.
+class MessageProxy final : public IConnectionPoint {
+public:
+    explicit MessageProxy(IConnectionPoint* source)
+        : source(source), main_thread(std::this_thread::get_id()) { FUNKNOWN_CTOR }
+    ~MessageProxy() noexcept {
+        drain();
+        FUNKNOWN_DTOR
+    }
+
+    tresult PLUGIN_API connect(IConnectionPoint* other) override {
+        if (!other) return kInvalidArgument;
+        if (destination) return kResultFalse;
+        destination = other;
+        // The peer may notify synchronously from inside connect (JUCE sends its
+        // processor pointer this way). Mark the proxy connected before calling
+        // the source or that handshake message is lost.
+        connected.store(true, std::memory_order_release);
+        const auto result = source ? source->connect(this) : kResultFalse;
+        if (result != kResultTrue) {
+            connected.store(false, std::memory_order_release);
+            destination = nullptr;
+        }
+        return result;
+    }
+    tresult PLUGIN_API disconnect(IConnectionPoint* other) override {
+        if (!other) return kInvalidArgument;
+        if (other != destination) return kInvalidArgument;
+        connected.store(false, std::memory_order_release);
+        if (source) source->disconnect(this);
+        destination = nullptr;
+        return kResultTrue;
+    }
+    bool disconnect() {
+        if (!destination) return false;
+        return disconnect(destination) == kResultTrue;
+    }
+    tresult PLUGIN_API notify(IMessage* message) override {
+        if (!message || !connected.load(std::memory_order_acquire)) return kResultFalse;
+        if (std::this_thread::get_id() == main_thread)
+            return destination ? destination->notify(message) : kResultFalse;
+        message->addRef();
+        // Never block the plugin's audio thread on editor delivery. If the poll
+        // is draining the queue, drop this update; analyzers are rate-limited.
+        std::unique_lock lock(pending_mutex, std::try_to_lock);
+        if (!lock.owns_lock() || !pending.push(message)) {
+            message->release();
+            return kResultFalse;
+        }
+        return kResultOk;
+    }
+    void dispatch() {
+        IMessage* message = nullptr;
+        while (true) {
+            {
+                std::lock_guard lock(pending_mutex);
+                if (!pending.pop(message)) break;
+            }
+            if (destination) destination->notify(message);
+            message->release();
+        }
+    }
+
+    DECLARE_FUNKNOWN_METHODS
+private:
+    void drain() {
+        IMessage* message = nullptr;
+        while (true) {
+            {
+                std::lock_guard lock(pending_mutex);
+                if (!pending.pop(message)) break;
+            }
+            message->release();
+        }
+    }
+    IPtr<IConnectionPoint> source;
+    IPtr<IConnectionPoint> destination;
+    std::atomic<bool> connected {false};
+    std::thread::id main_thread;
+    std::mutex pending_mutex;
+    Queue<IMessage*, 256> pending;
+};
+IMPLEMENT_FUNKNOWN_METHODS(MessageProxy, IConnectionPoint, IConnectionPoint::iid)
+
 struct Midi { uint32_t offset; uint8_t bytes[3]; };
 struct Bridge {
     // Module must outlive every plugin interface and the provider's termination calls.
@@ -152,7 +264,7 @@ struct Bridge {
     IPtr<Host> host = owned(new Host);
     Signals signals;
     IPtr<Handler> handler = owned(new Handler(signals));
-    IPtr<ConnectionProxy> component_connection, controller_connection;
+    IPtr<MessageProxy> component_connection, controller_connection;
     bool component_initialized = false, controller_initialized = false;
     IPtr<IComponent> component;
     IPtr<IEditController> controller;
@@ -174,10 +286,19 @@ struct Bridge {
     ProcessData data {};
     std::array<std::array<float, block>, 2> channels {};
     std::array<float*, 2> pointers {channels[0].data(), channels[1].data()};
+    std::array<std::array<float, block>, 2> input_channels {};
+    std::array<float*, 2> input_pointers {input_channels[0].data(), input_channels[1].data()};
+    std::array<AudioBusBuffers, max_audio_inputs> inputs {};
+    std::array<float, block> silent_input {};
+    std::array<float*, 32> silent_pointers {};
     AudioBusBuffers output {};
     std::vector<uint8_t> snapshot;
 
     void main_thread() const { require(std::this_thread::get_id() == signals.main, "VST3 main-thread operation on wrong thread"); }
+    void dispatch_messages() {
+        if (component_connection) component_connection->dispatch();
+        if (controller_connection) controller_connection->dispatch();
+    }
     void close() {
         main_thread();
         if (view) {
@@ -201,7 +322,7 @@ struct Bridge {
         if (component_initialized && component) component->terminate();
         view = nullptr; processor = nullptr; controller = nullptr; component = nullptr;
     }
-    void load(const char* path, const char* selected) {
+    void load(const char* path, const char* selected, bool effect) {
         std::string error;
         module = VST3::Hosting::Module::create(path, error);
         require(bool(module), error.c_str());
@@ -220,44 +341,57 @@ struct Bridge {
             if (single_component) controller = combined;
             else {
                 TUID id;
-                require(success(component->getControllerClassId(id)), "VST3 controller class unavailable");
-                controller = factory.createInstance<IEditController>(VST3::UID(id));
-                require(bool(controller), "VST3 controller creation failed");
-                require(success(controller->initialize(host)), "VST3 controller initialization failed");
-                controller_initialized = true;
+                if (success(component->getControllerClassId(id))) {
+                    controller = factory.createInstance<IEditController>(VST3::UID(id));
+                    require(bool(controller), "VST3 controller creation failed");
+                    require(success(controller->initialize(host)), "VST3 controller initialization failed");
+                    controller_initialized = true;
+                }
             }
             break;
         }
-        require(component && controller, "T02 requires a VST3 component and controller");
+        require(component && (controller || effect), "VST3 component or instrument controller unavailable");
+
         FUnknownPtr<IAudioProcessor> proc(component); processor = proc;
         require(bool(processor), "VST3 component has no audio processor");
-        require(success(controller->setComponentHandler(handler)), "VST3 rejected component handler");
-        if (!single_component) {
+        if (controller)
+            require(success(controller->setComponentHandler(handler)), "VST3 rejected component handler");
+        if (controller && !single_component) {
             FUnknownPtr<IConnectionPoint> comp(component), ctrl(controller);
             // IConnectionPoint is optional; the SDK provider assumes both sides expose it.
             if (comp && ctrl) {
-                component_connection = owned(new ConnectionProxy(comp));
-                controller_connection = owned(new ConnectionProxy(ctrl));
+                component_connection = owned(new MessageProxy(comp));
+                controller_connection = owned(new MessageProxy(ctrl));
                 require(success(component_connection->connect(ctrl)) && success(controller_connection->connect(comp)),
                     "VST3 component/controller connection failed");
             }
         }
-        require(component->getBusCount(kAudio, kInput) == 0 && component->getBusCount(kAudio, kOutput) == 1,
-            "T02 bridge requires a zero-input single-stereo-output VST3 instrument");
-        BusInfo info {};
-        require(success(component->getBusInfo(kAudio, kOutput, 0, info)) && info.channelCount == 2, "VST3 output is not stereo");
-        SpeakerArrangement stereo = SpeakerArr::kStereo;
-        require(success(processor->setBusArrangements(nullptr, 0, &stereo, 1)), "VST3 rejected stereo arrangement");
+        require(stereo_buses(*component, *processor, effect), "unsupported VST3 stereo audio bus layout");
         require(success(component->activateBus(kAudio, kOutput, 0, true)), "VST3 output activation failed");
+        if (effect) {
+            data.numInputs = component->getBusCount(kAudio, kInput);
+            silent_pointers.fill(silent_input.data());
+            for (int32 i = 0; i < data.numInputs; ++i) {
+                BusInfo info {};
+                require(success(component->getBusInfo(kAudio, kInput, i, info)), "VST3 input unavailable");
+                require(success(component->activateBus(kAudio, kInput, i, i == 0)), "VST3 input activation failed");
+                auto& input = inputs[i];
+                input.numChannels = info.channelCount;
+                input.channelBuffers32 = i == 0 ? input_pointers.data() : silent_pointers.data();
+                input.silenceFlags = (uint64_t{1} << info.channelCount) - 1;
+            }
+            data.inputs = inputs.data();
+        }
         int32 note_buses = component->getBusCount(kEvent, kInput);
-        require(note_buses > 0 && note_buses <= 32, "VST3 has no usable event input");
+        require(note_buses >= (effect ? 0 : 1) && note_buses <= 32, "VST3 has no usable event input");
         for (int32 i = 0; i < note_buses; ++i)
-            require(success(component->activateBus(kEvent, kInput, i, i == 0)), "VST3 note-bus activation failed");
+            require(success(component->activateBus(kEvent, kInput, i, !effect && i == 0)), "VST3 note-bus activation failed");
         require(success(processor->canProcessSampleSize(kSample32)), "VST3 does not support float32 processing");
-        FUnknownPtr<IMidiMapping> midi(controller);
+        FUnknownPtr<IMidiMapping> midi;
+        if (!effect) midi = FUnknownPtr<IMidiMapping>(controller);
         for (int channel = 0; channel < 16; ++channel) {
             mapping[channel].fill(kNoParamId);
-            if (midi) for (int cc = 0; cc < 131; ++cc) {
+            if (!effect && midi) for (int cc = 0; cc < 131; ++cc) {
                 ParamID id;
                 if (success(midi->getMidiControllerAssignment(0, channel, int16(cc), id))) mapping[channel][cc] = id;
             }
@@ -301,6 +435,9 @@ struct Bridge {
         }
         data.numSamples = int32(block);
         for (auto& channel : channels) channel.fill(0);
+        for (auto& channel : input_channels) channel.fill(0);
+        silent_input.fill(0);
+        inputs[0].silenceFlags = 3;
         require(success(processor->process(data)), "VST3 note cleanup process failed");
         auto result = processor->setProcessing(false);
         require(success(result) || result == kNotImplemented, "VST3 stopProcessing failed");
@@ -312,8 +449,18 @@ struct Bridge {
         auto* queue = input_params.addParameterData(id, index);
         require(queue && success(queue->addPoint(offset, value, index)), "VST3 parameter queue failed");
     }
-    void process(uint64_t position, const Midi* midi, size_t count, size_t frames, float* interleaved) {
+    void process(uint64_t position, const Midi* midi, size_t count, size_t frames,
+                 const float* source, float* interleaved) {
         require(active && frames > 0 && frames <= block && count <= max_events, "invalid VST3 process block");
+        require((source != nullptr) == (data.numInputs > 0), "wrong VST3 input role");
+        if (source) {
+            inputs[0].silenceFlags = 0;
+            silent_input.fill(0);
+            for (size_t i = 0; i < frames; ++i) {
+                input_channels[0][i] = source[i * 2];
+                input_channels[1][i] = source[i * 2 + 1];
+            }
+        }
         if (!processing.load(std::memory_order_acquire)) {
             audio_thread = std::this_thread::get_id();
             auto result = processor->setProcessing(true);
@@ -389,7 +536,7 @@ struct Bridge {
         main_thread(); require(!active, "deactivate VST3 before saving state");
         StateStream comp, ctrl;
         require(success(component->getState(&comp)), "VST3 component getState failed");
-        auto result = single_component ? kNotImplemented : controller->getState(&ctrl);
+        auto result = single_component || !controller ? kNotImplemented : controller->getState(&ctrl);
         require(success(result) || result == kNotImplemented || result == kResultFalse, "VST3 controller getState failed");
         uint32_t cl = uint32_t(comp.getSize()), tl = success(result) ? uint32_t(ctrl.getSize()) : UINT32_MAX;
         size_t total = 28 + size_t(cl) + (tl == UINT32_MAX ? 0 : tl);
@@ -417,12 +564,12 @@ struct Bridge {
         signals.edits.clear_stopped(); signals.feedback.clear_stopped();
         StateStream comp(component_bytes, component_size);
         require(success(component->setState(&comp)), "VST3 component setState failed");
-        if (!single_component) {
+        if (controller && !single_component) {
             StateStream sync(component_bytes, component_size);
             auto result = controller->setComponentState(&sync);
             require(success(result) || result == kNotImplemented, "VST3 controller setComponentState failed");
         }
-        if (controller_bytes && !single_component) {
+        if (controller_bytes && controller && !single_component) {
             StateStream ctrl(controller_bytes, controller_size);
             require(success(controller->setState(&ctrl)), "VST3 controller setState failed");
         }
@@ -454,11 +601,11 @@ int clef_audio_thread_is_realtime() noexcept {
     return result == KERN_SUCCESS && !is_default;
 }
 const char* clef_vst_error() noexcept { return error_text; }
-int clef_vst_load(const char* path, const char* selected, void** out) noexcept { return guarded([&] {
+int clef_vst_load(const char* path, const char* selected, int effect, void** out) noexcept { return guarded([&] {
     require(path && out, "null VST3 load argument"); auto instance = std::make_unique<Bridge>();
-    instance->load(path, selected); *out = instance.release();
+    instance->load(path, selected, effect != 0); *out = instance.release();
 }); }
-int clef_vst_scan(const char* path, void (*entry)(const char*, const char*, void*), void* context) noexcept { return guarded([&] {
+int clef_vst_scan(const char* path, int include_effects, void (*entry)(const char*, const char*, int, void*), void* context) noexcept { return guarded([&] {
     require(path && entry, "invalid scan arguments");
     std::string error;
     auto module = VST3::Hosting::Module::create(path, error);
@@ -467,16 +614,20 @@ int clef_vst_scan(const char* path, void (*entry)(const char*, const char*, void
         if (info.category() != kVstAudioEffectClass) continue;
         auto categories = info.subCategoriesString();
         bool instrument = categories.find("Instrument") != std::string::npos;
-        // Legacy factories expose no subcategories; inspect their buses in this disposable process.
-        if (categories.empty()) {
+        bool effect = false;
+        // Check the main audio path and classify legacy factories in the disposable scanner.
+        if (!instrument && (include_effects || categories.empty())) {
             auto component = module->getFactory().createInstance<IComponent>(info.ID());
             auto host = owned(new Host);
             if (component && success(component->initialize(host))) {
-                instrument = component->getBusCount(kAudio, kInput) == 0 && component->getBusCount(kEvent, kInput) > 0;
+                auto inputs = component->getBusCount(kAudio, kInput);
+                instrument = categories.empty() && inputs == 0 && component->getBusCount(kEvent, kInput) > 0;
+                FUnknownPtr<IAudioProcessor> processor(component);
+                effect = include_effects && !instrument && processor && stereo_buses(*component, *processor, true);
                 component->terminate();
             }
         }
-        if (instrument) entry(info.ID().toString().c_str(), info.name().c_str(), context);
+        if (instrument || effect) entry(info.ID().toString().c_str(), info.name().c_str(), effect, context);
     }
 }); }
 int clef_vst_destroy(void* p) noexcept { return guarded([&] { bridge(p).main_thread(); delete &bridge(p); }); }
@@ -488,14 +639,17 @@ int clef_vst_deactivate(void* p) noexcept { return guarded([&] {
     auto& b = bridge(p); b.main_thread(); require(!b.processing.load(std::memory_order_acquire), "suspend VST3 audio before deactivation");
     if (b.active) { require(success(b.component->setActive(false)), "VST3 deactivation failed"); b.active = false; }
 }); }
-int clef_vst_process(void* p, uint64_t position, const Midi* events, size_t count, size_t frames, float* output) noexcept { return guarded([&] {
-    require(output && (count == 0 || events), "null VST3 audio argument"); bridge(p).process(position, events, count, frames, output);
+int clef_vst_process(void* p, uint64_t position, const Midi* events, size_t count, size_t frames, const float* input, float* output) noexcept { return guarded([&] {
+    require(output && (count == 0 || events), "null VST3 audio argument"); bridge(p).process(position, events, count, frames, input, output);
 }); }
 int clef_vst_suspend(void* p) noexcept { return guarded([&] { bridge(p).stop_audio(); }); }
 int clef_vst_editor(void* p, void* parent, int open, int32_t* w, int32_t* h, int* resizable) noexcept { return guarded([&] {
     auto& b = bridge(p); b.main_thread(); b.close(); if (!open) return;
     require(parent && w && h && resizable, "invalid VST3 editor arguments");
-    b.view = owned(b.controller->createView("editor")); require(bool(b.view), "VST3 editor unavailable");
+    require(bool(b.controller), "VST3 editor unavailable: no controller");
+    b.view = owned(b.controller->createView("editor"));
+    if (!b.view) b.view = owned(b.controller->createView(nullptr));
+    require(bool(b.view), "VST3 editor unavailable: no editor view");
     try {
         ViewRect rect {}; require(success(b.view->getSize(&rect)), "VST3 editor size unavailable");
         *w = rect.right-rect.left; *h = rect.bottom-rect.top;
@@ -511,9 +665,10 @@ int clef_vst_resize(void* p, int32_t* w, int32_t* h) noexcept { return guarded([
 }); }
 int clef_vst_poll(void* p, uint32_t* flags, int32_t* w, int32_t* h) noexcept { return guarded([&] {
     auto& b = bridge(p); b.main_thread(); require(flags && w && h, "null VST3 poll argument");
+    b.dispatch_messages();
     require(!b.signals.overflow.exchange(false), "VST3 parameter handoff overflow");
     Edit edit; while (b.signals.feedback.pop(edit))
-        require(success(b.controller->setParamNormalized(edit.id, edit.value)), "VST3 controller feedback failed");
+        if (b.controller) require(success(b.controller->setParamNormalized(edit.id, edit.value)), "VST3 controller feedback failed");
     *flags = b.signals.restart.exchange(0, std::memory_order_acq_rel);
     auto size = b.signals.resize.exchange(0, std::memory_order_acq_rel); *w = *h = 0;
     if (size && b.view) {

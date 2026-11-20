@@ -43,8 +43,8 @@ estimates are deliberately omitted until each task is specified.
 | T11 | P1 | Mixer and master section | T04 |
 | T12 | P1 | Insert effects hosting | T04, T11 |
 | T13 | P1 | Export and bounce | T11, T12 |
-| T14 | P1 | Audio tracks and recording | T05, T11; media decision |
 | T15 | P2 | Buses, sends, groups, and routing | T11, T12 |
+| T14 | P1 | Audio tracks and recording | T05, T11; media decision |
 | T16 | P2 | Plugin management and hosting robustness | T03, T12 |
 | T17 | P2 | Device resilience and preferences | T03, T04 |
 | T18 | P2 | egui design system, commands, and accessibility | ongoing UI work |
@@ -283,7 +283,8 @@ reopen; no partial recordings published as complete; monitoring and PDC.
 solo/mute semantics across the graph, and cycle rejection.
 
 **Why now:** direct-to-master is enough for the first mixes; buses and sends are the next
-step, not a prerequisite for composition.
+step, not a prerequisite for composition. MIDI instrument tracks can already be grouped and
+sent, so routing follows export (T13) and does not wait for audio tracks (T14).
 
 **Interview questions:** bus types and counts; send count; sidechain; solo-in-place versus
 PFL/AFL; routing UI; folder tracks; automation of sends and routing (later).
@@ -358,8 +359,7 @@ T03 accepted
    |---> T05 ---> T06 ---> T07
    |               |------> T08 ---> T09
    |                              \-> T10
-   |---> T11 ---> T12 ---> T15
-   |          \--> T13
+   |---> T11 ---> T12 ---> T13 ---> T15
    \---> T14 (after T05 + T11 and the media decision)
 
 T16, T17, T18, T19, T20: interleave where they protect the current milestone.

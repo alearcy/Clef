@@ -16,6 +16,10 @@ impl Default for Matrix {
 }
 
 impl Matrix {
+    pub(crate) fn trim(trim: f32) -> Self {
+        Self([trim, 0.0, trim, 0.0])
+    }
+
     fn from_channel(channel: Channel, any_solo: bool) -> Self {
         if channel.mute
             || (any_solo && !channel.solo)
@@ -48,7 +52,7 @@ impl Matrix {
 
 #[derive(Clone, PartialEq)]
 pub(crate) struct PreparedMix {
-    channels: [(u64, Matrix); MAX_TRACKS],
+    channels: [(u64, Matrix, f32); MAX_TRACKS],
     len: usize,
     pub(crate) master: Matrix,
 }
@@ -56,7 +60,7 @@ pub(crate) struct PreparedMix {
 impl Default for PreparedMix {
     fn default() -> Self {
         Self {
-            channels: [(0, Matrix::default()); MAX_TRACKS],
+            channels: [(0, Matrix::default(), 1.0); MAX_TRACKS],
             len: 0,
             master: Matrix::default(),
         }
@@ -76,10 +80,10 @@ impl PreparedMix {
         };
         let any_solo = project.tracks.iter().any(|track| track.mix.solo);
         for (entry, track) in result.channels.iter_mut().zip(&project.tracks) {
-            *entry = (
-                track.id,
-                Matrix::from_channel(apply_preview(Target::Track(track.id), track.mix), any_solo),
-            );
+            let mut channel = apply_preview(Target::Track(track.id), track.mix);
+            let trim = 10.0_f32.powf(f32::from(channel.trim) / 200.0);
+            channel.trim = 0;
+            *entry = (track.id, Matrix::from_channel(channel, any_solo), trim);
             result.len += 1;
         }
         result.channels[..result.len].sort_unstable_by_key(|entry| entry.0);
@@ -100,6 +104,12 @@ impl PreparedMix {
         self.channels[..self.len]
             .binary_search_by_key(&id, |entry| entry.0)
             .map_or_else(|_| Matrix::default(), |index| self.channels[index].1)
+    }
+
+    pub(crate) fn trim(&self, id: u64) -> f32 {
+        self.channels[..self.len]
+            .binary_search_by_key(&id, |entry| entry.0)
+            .map_or(1.0, |index| self.channels[index].2)
     }
 }
 

@@ -28,7 +28,7 @@ A raised `field` body (`paintControlBody`) with a 14-pixel [icon](icons.md) cent
 24 × 22 inside a `controlHeight` row; 4 pixels between a pair.
 
 ## States
-At rest `secondary` glyph; hover lifts the glyph to `text` and adds the `controlEdge` edge; lit is a
+At rest `secondary` glyph; hover lifts the glyph to `text` and the body to `field`, without an edge; lit is a
 `peacock` body with a `text` glyph (no top light); disabled is flat with a `disabled` glyph.
 
 ## Behaviour

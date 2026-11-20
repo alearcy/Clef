@@ -47,4 +47,4 @@ segments.onSelect = [this](int i) { commands.invoke(segmentCommands[i]); };
 segments.setSelected(shown); // the host reports the value back
 ```
 
-Recessed (UI10 Fix 7): the track has the same body height as a raised button; the lit segment is a flat `peacock` fill inside it with an inner top shadow and a 1-pixel bottom light (`ControlDepth::recessed`); hover adds the `controlEdge` edge, focus the `accent` edge. See control depth in [foundations](../foundations.md).
+Recessed (UI10 Fix 7): the track has the same body height as a raised button; the lit segment is a flat `peacock` fill inside it with an inner top shadow and a 1-pixel bottom light (`ControlDepth::recessed`); hover lifts the body to `field`, focus keeps the `accent` edge. See control depth in [foundations](../foundations.md).

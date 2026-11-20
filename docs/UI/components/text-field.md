@@ -37,4 +37,4 @@ Search fields carry the `search` glyph at the left.
 - Don't restyle a text field with a track colour.
 - Don't use a text field to enter a numeric parameter: every number is a [value slider](fader.md#value-slider), whose value text is typed in place on double-click (composer, 2026-11-13, global rule).
 
-Raised (UI10 Fix 7, variant B for fields): the same body, top light and under-shadow as a raised button (`ControlDepth::raised`); hover adds the `controlEdge` edge, focus the `accent` edge while typing. See control depth in [foundations](../foundations.md).
+Raised (UI10 Fix 7, variant B for fields): the same body, top light and under-shadow as a raised button (`ControlDepth::raised`); hover lifts the body to `field`, focus keeps the `accent` edge while typing. See control depth in [foundations](../foundations.md).

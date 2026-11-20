@@ -2288,7 +2288,11 @@ impl Class for TestSynthSingle {
 }
 
 impl TestSynthSingle {
-    const CID: TUID = uid(0x54455354, 0x53594E54, 0x53494E47, 0x00000001);
+    const CID: TUID = if clef_latency::EFFECT {
+        uid(0x434C4546, 0x494E5345, 0x52544658, 0x00000001)
+    } else {
+        uid(0x54455354, 0x53594E54, 0x53494E47, 0x00000001)
+    };
 
     fn new() -> Self {
         Self {
@@ -2347,6 +2351,9 @@ impl IComponentTrait for TestSynthSingle {
         kResultOk
     }
     unsafe fn getBusCount(&self, media_type: MediaType, dir: BusDirection) -> i32 {
+        if clef_latency::EFFECT {
+            return i32::from(media_type as MediaTypes == MediaTypes_::kAudio);
+        }
         synth_bus_count(media_type, dir)
     }
     unsafe fn getBusInfo(
@@ -2356,6 +2363,21 @@ impl IComponentTrait for TestSynthSingle {
         index: i32,
         bus: *mut BusInfo,
     ) -> tresult {
+        if clef_latency::EFFECT && dir as BusDirections == BusDirections_::kInput {
+            if media_type as MediaTypes != MediaTypes_::kAudio {
+                return kInvalidArgument;
+            }
+            let result = synth_bus_info(
+                media_type,
+                BusDirections_::kOutput as BusDirection,
+                index,
+                bus,
+            );
+            if result == kResultOk {
+                (*bus).direction = dir;
+            }
+            return result;
+        }
         synth_bus_info(media_type, dir, index, bus)
     }
     unsafe fn getRoutingInfo(&self, _i: *mut RoutingInfo, _o: *mut RoutingInfo) -> tresult {
@@ -2392,12 +2414,17 @@ impl IComponentTrait for TestSynthSingle {
 impl IAudioProcessorTrait for TestSynthSingle {
     unsafe fn setBusArrangements(
         &self,
-        _inputs: *mut SpeakerArrangement,
+        inputs: *mut SpeakerArrangement,
         num_ins: i32,
         outputs: *mut SpeakerArrangement,
         num_outs: i32,
     ) -> tresult {
-        if num_ins != 0 || num_outs != 1 || *outputs != SpeakerArr::kStereo {
+        let input_ok = if clef_latency::EFFECT {
+            num_ins == 1 && !inputs.is_null() && *inputs == SpeakerArr::kStereo
+        } else {
+            num_ins == 0
+        };
+        if !input_ok || num_outs != 1 || outputs.is_null() || *outputs != SpeakerArr::kStereo {
             return kResultFalse;
         }
         kResultTrue
@@ -2408,7 +2435,7 @@ impl IAudioProcessorTrait for TestSynthSingle {
         index: i32,
         arr: *mut SpeakerArrangement,
     ) -> tresult {
-        if dir as BusDirections == BusDirections_::kOutput && index == 0 {
+        if (dir as BusDirections == BusDirections_::kOutput || clef_latency::EFFECT) && index == 0 {
             *arr = SpeakerArr::kStereo;
             kResultOk
         } else {
@@ -2608,7 +2635,12 @@ impl IPluginFactoryTrait for Factory {
             info.cid = TestSynthSingle::CID;
             info.cardinality = PClassInfo_::ClassCardinality_::kManyInstances as i32;
             copy_cstring("Audio Module Class", &mut info.category);
-            copy_cstring("Clef Latency Fixture", &mut info.name);
+            let name = if clef_latency::EFFECT {
+                "Clef VST3 Insert Fixture"
+            } else {
+                "Clef Latency Fixture"
+            };
+            copy_cstring(name, &mut info.name);
             return kResultOk;
         }
         match index {

@@ -98,6 +98,22 @@ description includes the track, musical range, and take count.
 Take lanes and comp editing are specified in [T26](../../specs/T26-midi-comping.md). See
 [T06](../../specs/T06-midi-recording.md) for states and playback rules.
 
+## T26 take lanes and comping
+
+A track with two or more takes shows the `T n` chip beside its arm target; the chip is hidden
+below two takes and toggles the track's lanes. Lanes sit directly under the track at their saved
+heights (40 points by default, 24–320). Their headers carry the take name and a `Plays …` summary,
+with a `▾` menu for Rename…, Edit in editor, Use whole take, Delete take, Flatten comp, and Take to
+new track. Lane bands use the accent role at 8 %, with the comp sections at 24 %, dashed cuts, and
+the take's note marks drawn low to high at full strength on the comp and dimmed elsewhere.
+
+A Select drag on a lane comps that take over the dragged range in every touched clip of the track,
+as one `Comp take` step. A cut drag waits for the press before it moves, snaps to the grid, stops
+one grid step before its neighbours, and uses Option for a free one-tick move. Double-clicking a
+clip's lane section opens that take in the editor. The selected-track inspector adds the track's
+`Record mode` menu; the transport keeps the global mode chip. All lane view state is saved with the
+project and never enters the edit history.
+
 ## T09 arrangement editing
 
 The provisional Rust timeline adds clip selection, a marquee, a Snap control,

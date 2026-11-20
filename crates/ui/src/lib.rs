@@ -1,6 +1,7 @@
 use clef_model::{
     Plugin, Result,
-    project::{self, AudioSettings},
+    midi::CompEdit,
+    project::{self, AudioSettings, TrackMode},
 };
 use clef_plugin_host::{
     catalog::{self, Catalog},
@@ -15,6 +16,7 @@ use std::{
 };
 mod primitives {
     pub mod history;
+    pub(crate) mod inserts;
     pub mod mixer;
     pub mod piano_roll;
     pub mod project;
@@ -61,6 +63,15 @@ enum Command {
     MixerMute,
     MixerSolo,
     ResetMixerClip,
+    InsertAdd,
+    InsertAfter,
+    InsertOpen,
+    InsertBypass,
+    InsertMoveUp,
+    InsertMoveDown,
+    InsertRemove,
+    InstrumentBypass,
+    InstrumentOffline,
     CreateClip,
     SelectAllClips,
     DuplicateClips,
@@ -109,6 +120,17 @@ enum Command {
     RecordMerge,
     RecordReplace,
     RecordNewTake,
+    RecordTrackGlobal,
+    RecordTrackMerge,
+    RecordTrackReplace,
+    RecordTrackNewTake,
+    ShowTakeLanes,
+    UseWholeTake,
+    DeleteTake,
+    FlattenComp,
+    TakeToNewTrack,
+    RenameTake,
+    EditTake,
     Stop,
     PlayStop,
     ReturnToStart,
@@ -164,6 +186,15 @@ fn commands() -> Vec<Binding> {
         (MixerMute, "Mixer: Toggle Mute", None),
         (MixerSolo, "Mixer: Toggle Solo", None),
         (ResetMixerClip, "Mixer: Clear Clip Indicator", None),
+        (InsertAdd, "Add Audio Effect…", None),
+        (InsertAfter, "Insert Effect After…", None),
+        (InsertOpen, "Open Effect Editor", None),
+        (InsertBypass, "Toggle Effect Bypass", None),
+        (InsertMoveUp, "Move Effect Up", None),
+        (InsertMoveDown, "Move Effect Down", None),
+        (InsertRemove, "Remove Effect", None),
+        (InstrumentBypass, "Toggle Instrument Bypass", None),
+        (InstrumentOffline, "Toggle Instrument Offline", None),
         (CreateClip, "Create Clip", Some(Key::Enter)),
         (SelectAllClips, "Select All Clips", Some(Key::A)),
         (DuplicateClips, "Duplicate", Some(Key::D)),
@@ -215,6 +246,17 @@ fn commands() -> Vec<Binding> {
         (RecordMerge, "Record Mode: Merge", None),
         (RecordReplace, "Record Mode: Replace", None),
         (RecordNewTake, "Record Mode: New take", None),
+        (RecordTrackGlobal, "Track Record Mode: Global", None),
+        (RecordTrackMerge, "Track Record Mode: Merge", None),
+        (RecordTrackReplace, "Track Record Mode: Replace", None),
+        (RecordTrackNewTake, "Track Record Mode: New take", None),
+        (ShowTakeLanes, "Show/Hide Take Lanes", None),
+        (UseWholeTake, "Use Whole Take", None),
+        (DeleteTake, "Delete Take", None),
+        (FlattenComp, "Flatten Comp", None),
+        (TakeToNewTrack, "Take to New Track", None),
+        (RenameTake, "Rename Take", None),
+        (EditTake, "Edit Take", None),
         (Stop, "Stop", None),
         (PlayStop, "Play / Stop", Some(Key::Space)),
         (ReturnToStart, "Return to Start", None),
@@ -395,11 +437,21 @@ impl App {
             &mut style.visuals.widgets.inactive,
             &mut style.visuals.widgets.active,
             &mut style.visuals.widgets.hovered,
+            &mut style.visuals.widgets.open,
         ] {
-            widget.bg_fill = colors::FIELD;
-            widget.weak_bg_fill = colors::FIELD;
+            widget.bg_fill = colors::PANEL;
+            widget.weak_bg_fill = colors::PANEL;
+            widget.bg_stroke = egui::Stroke::NONE;
             widget.corner_radius = egui::CornerRadius::same(2);
         }
+        style.visuals.widgets.inactive.bg_fill = colors::PANEL;
+        style.visuals.widgets.inactive.weak_bg_fill = colors::PANEL;
+        style.visuals.widgets.hovered.bg_fill = colors::FIELD;
+        style.visuals.widgets.hovered.weak_bg_fill = colors::FIELD;
+        style.visuals.widgets.active.bg_fill = colors::FIELD;
+        style.visuals.widgets.active.weak_bg_fill = colors::FIELD;
+        style.visuals.widgets.open.bg_fill = colors::FIELD;
+        style.visuals.widgets.open.weak_bg_fill = colors::FIELD;
         style.spacing.item_spacing = egui::vec2(12.0, 8.0);
         style.spacing.button_padding = egui::vec2(8.0, 4.0);
         style.spacing.interact_size.y = 24.0;
@@ -516,6 +568,9 @@ impl App {
             ShowMixer | MixerPrevious | MixerNext | MixerMute | MixerSolo | ResetMixerClip => {
                 self.mixer_command_available(command)
             }
+            InsertAdd | InsertAfter | InsertOpen | InsertBypass | InsertMoveUp | InsertMoveDown
+            | InsertRemove => self.insert_command_available(command),
+            InstrumentBypass | InstrumentOffline => self.instrument_command_available(command),
             Undo => self.view.edit_history.available && self.view.edit_history.cursor > 0,
             Redo => {
                 self.view.edit_history.available
@@ -551,8 +606,17 @@ impl App {
                         .any(|e| crate::quarantine::same(&e.plugin, p))
                 }),
             Save | SaveAs | ApplySettings if self.view.tracks.iter().any(|t| t.loading) => false,
-            Instrument | Rename => self.view.track().is_some(),
-            Editor => self.view.track().is_some_and(|t| t.plugin.is_some()) && !self.view.failed,
+            Instrument => self
+                .view
+                .track()
+                .is_some_and(|track| !track.instrument_offline),
+            Rename => self.view.track().is_some(),
+            Editor => {
+                self.view
+                    .track()
+                    .is_some_and(|t| t.plugin.is_some() && !t.instrument_offline)
+                    && !self.view.failed
+            }
             CloseEditor => self.view.editor,
             Enable => {
                 !self.view.active
@@ -560,7 +624,10 @@ impl App {
                     && !self.view.project.audio.midi.is_empty()
             }
             Disable => self.view.active,
-            Restart => self.view.track().is_some_and(|t| t.plugin.is_some()),
+            Restart => self
+                .view
+                .track()
+                .is_some_and(|t| t.plugin.is_some() && !t.instrument_offline),
             Rescan => self.scan_job.is_none(),
             Refresh => self.device_job.is_none(),
             ApplySettings => self.settings_open,
@@ -568,6 +635,28 @@ impl App {
             | PlayStop | ReturnToStart | ToggleLoop | ToggleClick | ToggleCountIn | TempoMap
             | TransportSettings | KeepStopPosition | ReturnStopPosition => {
                 self.transport_enabled(command, wait_for_transport)
+            }
+            RecordTrackGlobal | RecordTrackMerge | RecordTrackReplace | RecordTrackNewTake => {
+                self.view.selected.is_some()
+                    && !self.view.recording
+                    && !self.view.transport.pending
+                    && self.busy_since.is_none()
+                    && self.view.tracks.iter().all(|track| !track.loading)
+            }
+            ShowTakeLanes => {
+                self.view
+                    .selected
+                    .and_then(|id| self.view.project.tracks.iter().find(|t| t.id == id))
+                    .is_some_and(|track| {
+                        crate::arrangement::ArrangementUi::take_count(
+                            &self.view.project.midi,
+                            track.id,
+                        ) >= 2
+                    })
+                    && !self.view.recording
+            }
+            UseWholeTake | DeleteTake | FlattenComp | TakeToNewTrack | RenameTake | EditTake => {
+                self.take_command_enabled(command)
             }
             _ => true,
         }
@@ -636,9 +725,9 @@ impl App {
     fn save(&mut self, as_new: bool) {
         if self
             .view
-            .tracks
+            .retained_losses()
             .iter()
-            .any(|t| t.lost && !self.retained_approved.contains(&(t.id, t.loss_version)))
+            .any(|loss| !self.retained_approved.contains(loss))
         {
             self.confirm = Some(Confirm::Retained(as_new));
             return;
@@ -719,6 +808,9 @@ impl App {
             ShowMixer | MixerPrevious | MixerNext | MixerMute | MixerSolo | ResetMixerClip => {
                 self.dispatch_mixer(command)
             }
+            InsertAdd | InsertAfter | InsertOpen | InsertBypass | InsertMoveUp | InsertMoveDown
+            | InsertRemove => self.dispatch_insert(command, ctx),
+            InstrumentBypass | InstrumentOffline => self.dispatch_instrument(command, ctx),
             Close => self.transition(Transition::Close, ctx),
             OpenRecent | LocateRecent | RemoveRecent | ShowRecovery | RecoverProject
             | DiscardRecovery | RecoveryLater => self.dispatch_startup(command, ctx),
@@ -803,6 +895,108 @@ impl App {
             | TransportSettings | KeepStopPosition | ReturnStopPosition => {
                 self.dispatch_transport(command)
             }
+            RecordTrackGlobal | RecordTrackMerge | RecordTrackReplace | RecordTrackNewTake => {
+                let mode = match command {
+                    RecordTrackGlobal => TrackMode::Global,
+                    RecordTrackMerge => TrackMode::Merge,
+                    RecordTrackReplace => TrackMode::Replace,
+                    _ => TrackMode::NewTake,
+                };
+                if let Some(id) = self.view.selected {
+                    self.send(Action::Transport(TransportAction::SetTrackRecordMode(
+                        id, mode,
+                    )));
+                }
+            }
+            ShowTakeLanes => {
+                if let Some(track) = self.view.track() {
+                    let mut lanes = track.take_lanes.clone();
+                    lanes.visible = !lanes.visible;
+                    if !lanes.visible {
+                        self.arrangement_ui.focused_lane = None;
+                    }
+                    self.send(Action::TrackView {
+                        track: track.id,
+                        lanes,
+                    });
+                }
+            }
+            UseWholeTake | DeleteTake | FlattenComp | TakeToNewTrack | RenameTake | EditTake => {
+                self.dispatch_take_command(command);
+            }
+        }
+    }
+
+    fn dispatch_take_command(&mut self, command: Command) {
+        let Some((track, lane, clip)) = self.arrangement_ui.take_lane_target() else {
+            return;
+        };
+        use Command::*;
+        match command {
+            UseWholeTake => self.apply_take_action(crate::arrangement::TakeAction::Comp {
+                track,
+                lane,
+                edit: CompEdit::UseWholeTake,
+            }),
+            DeleteTake => self.apply_take_action(crate::arrangement::TakeAction::Comp {
+                track,
+                lane,
+                edit: CompEdit::DeleteTake,
+            }),
+            FlattenComp => self.apply_take_action(crate::arrangement::TakeAction::Comp {
+                track,
+                lane,
+                edit: CompEdit::Flatten,
+            }),
+            TakeToNewTrack => self
+                .apply_take_action(crate::arrangement::TakeAction::TakeToNewTrack { track, lane }),
+            RenameTake => {
+                let name = self
+                    .view
+                    .project
+                    .tracks
+                    .iter()
+                    .find(|item| item.id == track)
+                    .map(|item| item.take_lanes.name(lane))
+                    .unwrap_or_default();
+                self.arrangement_ui.begin_take_rename(track, lane, name);
+            }
+            EditTake => {
+                self.apply_take_action(crate::arrangement::TakeAction::EditTake {
+                    track,
+                    lane,
+                    clip,
+                });
+            }
+            _ => {}
+        }
+    }
+
+    fn take_command_enabled(&self, command: Command) -> bool {
+        let Some((track, lane)) = self.arrangement_ui.focused_take_lane() else {
+            return false;
+        };
+        let Some(track) = self
+            .view
+            .project
+            .tracks
+            .iter()
+            .find(|item| item.id == track)
+        else {
+            return false;
+        };
+        let present = self
+            .view
+            .project
+            .midi
+            .clips(track.id)
+            .iter()
+            .filter(|clip| lane < clip.takes.len())
+            .count();
+        match command {
+            Command::RenameTake => present > 0,
+            Command::EditTake => present > 0 && !self.view.recording,
+            _ => present > 0 && !self.view.recording && self.view.edit_history.available,
         }
     }
     fn poll(&mut self, ctx: &egui::Context) {
@@ -1196,6 +1390,7 @@ impl App {
         }
         let mut choose = None;
         let mut transport_action = None;
+        let mut track_mode = None;
         let height = (ui.available_height() - 78.0).max(150.0);
         let arrangement_height = if self.piano_roll_open {
             self.piano_roll.split_height(height)
@@ -1234,6 +1429,29 @@ impl App {
                         ui.label(track.plugin.as_ref().map(|p|format!("{} · {}",p.name,p.format)).unwrap_or_else(||"No instrument".into()));
                         let state = self.view.state(track.id).map(|s|s.status.as_str()).unwrap_or("Empty");
                         ui.colored_label(if self.view.failed {colors::DANGER} else {colors::SECONDARY},state);
+                        ui.add_space(8.0);
+                        ui.label("Record mode");
+                        let mode_enabled = !self.view.recording
+                            && !self.view.transport.pending
+                            && self.busy_since.is_none()
+                            && self.view.tracks.iter().all(|track| !track.loading);
+                        ui.add_enabled_ui(mode_enabled, |ui| {
+                            let mut chosen = track.record_mode;
+                            egui::ComboBox::from_id_salt(("track-record-mode", track.id))
+                                .selected_text(chosen.label())
+                                .show_ui(ui, |ui| {
+                                    for mode in TrackMode::ALL {
+                                        ui.selectable_value(&mut chosen, mode, mode.label());
+                                    }
+                                });
+                            if chosen != track.record_mode {
+                                track_mode = Some(chosen);
+                            }
+                        });
+                        ui.colored_label(
+                            colors::SECONDARY,
+                            "Global follows the transport record mode.",
+                        );
                         ui.horizontal_wrapped(|ui| { for command in [Command::Instrument,Command::Editor,Command::CloseEditor] {if self.button(ui,command) {selected=Some(command);}} });
                         ui.horizontal_wrapped(|ui| { for command in [Command::Restart,Command::Reactivate,Command::Quarantine] {if self.button(ui,command) {selected=Some(command);}} });
                         ui.add_space(12.0);
@@ -1248,6 +1466,13 @@ impl App {
                 });
             }); });
         });
+        if let Some(mode) = track_mode
+            && let Some(id) = self.view.selected
+        {
+            self.send(Action::Transport(TransportAction::SetTrackRecordMode(
+                id, mode,
+            )));
+        }
         if let Some(id) = self.arrangement_ui.open_roll.take()
             && let Some((_, clip)) = self.view.project.midi.find_clip(id)
         {
@@ -1645,13 +1870,7 @@ impl App {
             Confirm::Reactivate(plugin) => self.send(Action::Reactivate(plugin)),
             Confirm::SplitClips(expected, edit) => self.send_clip_edit(expected, edit),
             Confirm::Retained(as_new) => {
-                self.retained_approved = self
-                    .view
-                    .tracks
-                    .iter()
-                    .filter(|t| t.lost)
-                    .map(|t| (t.id, t.loss_version))
-                    .collect();
+                self.retained_approved = self.view.retained_losses();
                 self.save(as_new);
             }
             Confirm::Overwrite(path) => {
@@ -1928,6 +2147,105 @@ mod tests {
         assert!(app.exiting);
     }
     #[test]
+    fn buttons_share_a_borderless_hover_background() {
+        let context = egui::Context::default();
+        let _app = App::new(context.clone(), PathBuf::new());
+        let style = context.global_style();
+        for widget in [
+            &style.visuals.widgets.inactive,
+            &style.visuals.widgets.hovered,
+            &style.visuals.widgets.active,
+            &style.visuals.widgets.open,
+        ] {
+            assert_eq!(widget.bg_stroke, egui::Stroke::NONE);
+        }
+        assert_eq!(style.visuals.widgets.inactive.bg_fill, colors::PANEL);
+        assert_eq!(style.visuals.widgets.hovered.bg_fill, colors::FIELD);
+        assert_eq!(style.visuals.widgets.active.bg_fill, colors::FIELD);
+    }
+
+    #[test]
+    fn take_commands_need_a_lane_and_have_no_default_shortcut() {
+        use clef_model::midi::{Event, Message, Mode};
+        let context = egui::Context::default();
+        let mut app = App::new(context, PathBuf::new());
+        app.view.project_open = true;
+        app.view.selected = Some(1);
+        app.view.project.tracks.push(crate::project::Track {
+            id: 1,
+            name: "Strings".into(),
+            plugin: None,
+            instrument_bypassed: false,
+            instrument_offline: false,
+            record_mode: Default::default(),
+            mix: Default::default(),
+            inserts: Vec::new(),
+            take_lanes: Default::default(),
+            state: Vec::new(),
+        });
+        std::sync::Arc::make_mut(&mut app.view.project.midi)
+            .record(
+                1,
+                Mode::NewTake,
+                [0, 960],
+                vec![
+                    vec![Event {
+                        tick: 100,
+                        order: 0,
+                        message: Message::Control([0xb0, 1, 10]),
+                    }],
+                    vec![Event {
+                        tick: 500,
+                        order: 0,
+                        message: Message::Control([0xb0, 1, 20]),
+                    }],
+                ],
+                false,
+            )
+            .unwrap();
+        app.view.edit_history.available = true;
+        for command in [
+            Command::ShowTakeLanes,
+            Command::RecordTrackGlobal,
+            Command::RecordTrackMerge,
+            Command::RecordTrackReplace,
+            Command::RecordTrackNewTake,
+        ] {
+            assert!(app.enabled(command));
+        }
+        for command in [
+            Command::UseWholeTake,
+            Command::DeleteTake,
+            Command::FlattenComp,
+            Command::TakeToNewTrack,
+            Command::RenameTake,
+            Command::EditTake,
+        ] {
+            assert!(!app.enabled(command), "take command without a lane");
+            assert!(
+                app.bindings
+                    .iter()
+                    .find(|binding| binding.command == command)
+                    .unwrap()
+                    .shortcut
+                    .is_none(),
+                "take command gained a default shortcut"
+            );
+        }
+        app.arrangement_ui.focused_lane = Some((1, 0));
+        for command in [
+            Command::UseWholeTake,
+            Command::DeleteTake,
+            Command::FlattenComp,
+            Command::TakeToNewTrack,
+            Command::RenameTake,
+            Command::EditTake,
+        ] {
+            assert!(app.enabled(command), "take command with a lane");
+        }
+    }
+
+    #[test]
     fn staged_name_requires_unsaved_confirmation() {
         let context = egui::Context::default();
         let mut app = App::new(context.clone(), PathBuf::new());
@@ -1937,7 +2255,12 @@ mod tests {
             id: 1,
             name: "Old".into(),
             plugin: None,
+            instrument_bypassed: false,
+            instrument_offline: false,
+            record_mode: Default::default(),
             mix: Default::default(),
+            inserts: Vec::new(),
+            take_lanes: Default::default(),
             state: Vec::new(),
         }];
         app.rename = "New name".into();
@@ -1959,14 +2282,24 @@ mod tests {
                 id: 1,
                 name: "One".into(),
                 plugin: None,
+                instrument_bypassed: false,
+                instrument_offline: false,
+                record_mode: Default::default(),
                 mix: Default::default(),
+                inserts: Vec::new(),
+                take_lanes: Default::default(),
                 state: Vec::new(),
             },
             crate::project::Track {
                 id: 2,
                 name: "Two".into(),
                 plugin: None,
+                instrument_bypassed: false,
+                instrument_offline: false,
+                record_mode: Default::default(),
                 mix: Default::default(),
+                inserts: Vec::new(),
+                take_lanes: Default::default(),
                 state: Vec::new(),
             },
         ];

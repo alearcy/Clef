@@ -2,8 +2,10 @@ use crate::{Result, timeline::MAX_TICK};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 
+mod comp;
 mod editing;
 mod piano_roll;
+pub use comp::CompEdit;
 pub use editing::{ClipEdit, ClipEditResult, ClipId, Snap, exposed};
 pub use piano_roll::{EventChange, EventId, RollEvent};
 
@@ -227,6 +229,9 @@ impl Clip {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Arrangement {
+    /// Legacy v2 global record mode. New projects keep this in `Project::record_mode`;
+    /// it remains readable so v2 projects migrate without loss, but it is not written.
+    #[serde(default, skip_serializing)]
     pub mode: Mode,
     pub tracks: BTreeMap<u64, Vec<Clip>>,
     next_take: u64,

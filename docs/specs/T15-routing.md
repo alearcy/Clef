@@ -7,6 +7,12 @@
 **Roadmap:** [Post-T03 backlog](../planning/post-T03-backlog.md)
 **Depends on:** T11 mixer; T12 effects.
 
+## Sequencing
+
+Approved on 2026-11-19: T15 follows T13 and does not wait for T14 (audio tracks). MIDI
+instrument tracks can already be grouped and sent to buses, so the routing graph does not
+depend on audio recording being implemented.
+
 ## Goal
 
 Extend the direct-to-master path into a routing graph: group/bus/FX-return tracks,

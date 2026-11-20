@@ -19,7 +19,7 @@ use std::{
 
 enum Audio {
     Vst(VstAudio),
-    Clap(ClapAudio),
+    Clap(Box<ClapAudio>),
     Fixture(Arc<AtomicU8>),
 }
 
@@ -32,11 +32,24 @@ impl Audio {
         }
         Ok(())
     }
-    fn process(&mut self, position: u64, events: &[Midi], frames: usize) -> Result<Vec<Frame>> {
+    fn process(
+        &mut self,
+        position: u64,
+        events: &[Midi],
+        frames: usize,
+        input: &[Frame],
+    ) -> Result<Vec<Frame>> {
         validate_block(frames, events)?;
+        if !input.is_empty()
+            && (input.len() != frames
+                || !events.is_empty()
+                || input.iter().flatten().any(|s| !s.is_finite()))
+        {
+            return Err("invalid insert audio block".into());
+        }
         match self {
-            Self::Vst(audio) => audio.process(position, events, frames),
-            Self::Clap(audio) => audio.process(position, events, frames),
+            Self::Vst(audio) => audio.process(position, events, frames, input),
+            Self::Clap(audio) => audio.process(position, events, frames, input),
             Self::Fixture(fault) => {
                 match fault.load(Ordering::Acquire) {
                     1 => std::process::exit(91),
@@ -44,6 +57,12 @@ impl Audio {
                         std::thread::park();
                     },
                     _ => {}
+                }
+                if !input.is_empty() {
+                    return Ok(input
+                        .iter()
+                        .map(|frame| [frame[0] * 0.5, frame[1] * 0.5])
+                        .collect());
                 }
                 let mut output = vec![[0.0; 2]; frames];
                 for event in events {
@@ -78,18 +97,24 @@ struct MainPlugin {
 }
 
 impl MainPlugin {
-    fn load(path: &Path, window: NativeWindow, selected: &str, sample_rate: u32) -> Result<Self> {
+    fn load(
+        path: &Path,
+        window: NativeWindow,
+        selected: &str,
+        sample_rate: u32,
+        effect: bool,
+    ) -> Result<Self> {
         let (backend, name) = if path == Path::new("@fixture") {
             (
                 Backend::Fixture(Arc::new(AtomicU8::new(0))),
                 "Clef deterministic process fixture".to_owned(),
             )
         } else if path.extension().is_some_and(|s| s == "vst3") {
-            let plugin = VstMain::load(path, selected, sample_rate)?;
+            let plugin = VstMain::load(path, selected, sample_rate, effect)?;
             let name = plugin.name.clone();
             (Backend::Vst(plugin), name)
         } else if path.extension().is_some_and(|s| s == "clap") {
-            let plugin = ClapMain::load(path, selected, sample_rate)?;
+            let plugin = ClapMain::load(path, selected, sample_rate, effect)?;
             let name = plugin.name.clone();
             (Backend::Clap(Box::new(plugin)), name)
         } else {
@@ -130,7 +155,7 @@ impl MainPlugin {
     fn stop(&mut self) -> Result<()> {
         let audio = self.audio.lock().map_err(|_| "audio lock poisoned")?.take();
         match (&mut self.backend, audio) {
-            (Backend::Clap(main), Some(Audio::Clap(audio))) => main.deactivate(audio),
+            (Backend::Clap(main), Some(Audio::Clap(audio))) => main.deactivate(*audio),
             (Backend::Vst(plugin), audio) => {
                 drop(audio);
                 plugin.deactivate()?;
@@ -161,7 +186,7 @@ impl MainPlugin {
                 self.realtime.store(!offline, Ordering::Release);
                 let audio = match &mut self.backend {
                     Backend::Vst(plugin) => Audio::Vst(plugin.activate(offline)?),
-                    Backend::Clap(main) => Audio::Clap(main.activate(offline)?),
+                    Backend::Clap(main) => Audio::Clap(Box::new(main.activate(offline)?)),
                     Backend::Fixture(fault) => Audio::Fixture(Arc::clone(fault)),
                 };
                 *self.audio.lock().map_err(|_| "audio lock poisoned")? = Some(audio);
@@ -381,7 +406,13 @@ impl MainPlugin {
     }
 }
 
-pub fn run(socket: &Path, path: &Path, selected: String, sample_rate: u32) -> Result<()> {
+pub fn run(
+    socket: &Path,
+    path: &Path,
+    selected: String,
+    sample_rate: u32,
+    effect: bool,
+) -> Result<()> {
     let mut stream = UnixStream::connect(socket)?;
     let mut audio_stream = UnixStream::connect(socket)?;
     let editor_events = UnixStream::connect(socket)?;
@@ -410,7 +441,7 @@ pub fn run(socket: &Path, path: &Path, selected: String, sample_rate: u32) -> Re
             // eframe can reveal the root window after its first paint. Viewport
             // commands run afterward, so keep the empty window out of sight.
             window.hide();
-            let main = match MainPlugin::load(&path, window, &selected, sample_rate) {
+            let main = match MainPlugin::load(&path, window, &selected, sample_rate, effect) {
                 Ok(main) => main,
                 Err(error) => {
                     rpc::send(&mut stream, &Reply::failed(&error))?;
@@ -440,6 +471,7 @@ pub fn run(socket: &Path, path: &Path, selected: String, sample_rate: u32) -> Re
                             position,
                             events,
                             frames,
+                            input,
                         } => {
                             let started = std::time::Instant::now();
                             let result: Result<Vec<Frame>> = (|| {
@@ -453,7 +485,7 @@ pub fn run(socket: &Path, path: &Path, selected: String, sample_rate: u32) -> Re
                                 audio
                                     .as_mut()
                                     .ok_or("plugin is stopped")?
-                                    .process(position, &events, frames)
+                                    .process(position, &events, frames, &input)
                             })();
                             match result {
                                 Ok(frames) => Reply {

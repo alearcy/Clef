@@ -305,6 +305,41 @@ mod tests {
     }
 
     #[test]
+    fn stop_fades_out_and_keeps_the_requested_stop_frame() {
+        let timeline = Timeline {
+            looping: true,
+            loop_range: [960, 1920],
+            ..Default::default()
+        };
+        let (mut control, mut renderer) = start(&timeline, 48_000, 0);
+        control.send(Command::Play).unwrap();
+        advance(&mut renderer, 2_000);
+        let before = renderer.frame;
+        control.send(Command::Stop).unwrap();
+        advance(&mut renderer, 0);
+        assert_eq!(control.view().phase, Phase::Stopped);
+        let mut previous = renderer.gain();
+        for _ in 0..240 {
+            renderer.sample();
+            let gain = renderer.gain();
+            assert!(gain <= previous + f32::EPSILON, "{gain} > {previous}");
+            previous = gain;
+        }
+        assert_eq!(renderer.phase, Phase::Stopped);
+        assert_eq!(renderer.frame, before);
+        assert!(renderer.gain() <= f32::EPSILON);
+        for _ in 0..240 {
+            renderer.sample();
+        }
+        assert_eq!(renderer.gain(), 0.0);
+        renderer.resume_gate();
+        for _ in 0..240 {
+            renderer.sample();
+        }
+        assert_eq!(renderer.gain(), 1.0);
+    }
+
+    #[test]
     fn count_in_clicks_use_the_current_meter_and_seek_cancels_the_count() {
         for rate in [44_100, 48_000] {
             let mut timeline = Timeline {
@@ -513,6 +548,13 @@ pub(crate) struct Renderer {
     generation: u64,
     recording: bool,
     stopped_recording: bool,
+    stopping: bool,
+    stop_pending: u32,
+    stop_frame: u64,
+    declick_gain: f32,
+    declick_target: f32,
+    declick_step: f32,
+    declick_remaining: u32,
 }
 
 impl Renderer {
@@ -543,6 +585,13 @@ impl Renderer {
             generation: 0,
             recording: false,
             stopped_recording: false,
+            stopping: false,
+            stop_pending: 0,
+            stop_frame: frame,
+            declick_gain: 1.0,
+            declick_target: 1.0,
+            declick_step: 0.0,
+            declick_remaining: 0,
         };
         renderer.prepare_position();
         renderer.publish(0);
@@ -584,10 +633,62 @@ impl Renderer {
         }
         self.phase = Phase::Stopped;
         self.count = None;
+        self.stopping = false;
+        self.stop_pending = 0;
+        self.declick_gain = 0.0;
+        self.declick_target = 0.0;
+        self.declick_step = 0.0;
+        self.declick_remaining = 0;
         self.prepare_position();
     }
 
+    fn fade_to(&mut self, target: f32, frames: u32) {
+        self.declick_target = target;
+        self.declick_remaining = frames.max(1);
+        self.declick_step = (target - self.declick_gain) / self.declick_remaining as f32;
+    }
+
+    fn advance_declick(&mut self) {
+        if self.declick_remaining != 0 {
+            self.declick_remaining -= 1;
+            if self.declick_remaining == 0 {
+                self.declick_gain = self.declick_target;
+            } else {
+                self.declick_gain += self.declick_step;
+            }
+        }
+    }
+
+    fn request_stop(&mut self) {
+        if self.phase == Phase::Stopped || self.stopping {
+            return;
+        }
+        // Capture the record end at the stop request, not after the short fade.
+        self.stopped_recording |= self.recording;
+        self.recording = false;
+        self.stop_frame = self.frame;
+        self.stopping = true;
+        self.stop_pending = (self.settings.map.rate / 200).max(1);
+        self.fade_to(0.0, self.stop_pending);
+    }
+
+    pub(crate) fn gain(&self) -> f32 {
+        self.declick_gain
+    }
+
+    /// Reopen the output gate for live audition after a stop. It stays closed
+    /// for sequenced audio so a release tail cannot be unmuted by the fade.
+    pub(crate) fn resume_gate(&mut self) {
+        if self.phase == Phase::Stopped && self.declick_gain < 1.0 {
+            self.fade_to(1.0, (self.settings.map.rate / 200).max(1));
+        }
+    }
+
     fn play(&mut self, record: bool, hold: u64) {
+        if self.stopping {
+            self.frame = self.stop_frame;
+            self.stop();
+        }
         if self.phase != Phase::Stopped {
             return;
         }
@@ -605,6 +706,10 @@ impl Renderer {
         self.generation = self.generation.wrapping_add(1);
         self.prepare_position();
         self.phase = Phase::Playing;
+        self.declick_gain = 1.0;
+        self.declick_target = 1.0;
+        self.declick_step = 0.0;
+        self.declick_remaining = 0;
         if self.settings.count_in {
             let map = &self.settings.map;
             let tempo = map.segments[map.at_sample(self.frame)].tempo;
@@ -632,7 +737,7 @@ impl Renderer {
             match update.command {
                 Command::Play => self.play(false, hold),
                 Command::Record => self.play(true, hold),
-                Command::Stop => self.stop(),
+                Command::Stop => self.request_stop(),
                 Command::Locate(tick) => {
                     if self.phase == Phase::CountingIn {
                         self.stop();
@@ -707,11 +812,19 @@ impl Renderer {
     }
 
     pub(crate) fn sample(&mut self) -> f32 {
+        if self.stopping && (self.hold > 0 || self.count.is_some()) {
+            // Count-in and the initial hold are already silent or click-only;
+            // finish the stop without extending them by the fade window.
+            self.frame = self.stop_frame;
+            self.stop();
+            return 0.0;
+        }
         if self.hold > 0 {
             self.hold -= 1;
             return 0.0;
         }
         if self.phase == Phase::Stopped {
+            self.advance_declick();
             return 0.0;
         }
         let rate = self.settings.map.rate;
@@ -754,11 +867,29 @@ impl Renderer {
             self.frame = self.span.next;
             self.prepare_span();
         }
+        self.advance_declick();
+        if self.stopping {
+            self.stop_pending -= 1;
+            if self.stop_pending == 0 {
+                self.frame = self.stop_frame;
+                self.stop();
+            }
+        }
         sample
     }
 
     pub(crate) fn publish(&self, latency_frames: u64) {
-        let audible = if self.phase == Phase::Playing {
+        let phase = if self.stopping {
+            Phase::Stopped
+        } else {
+            self.phase
+        };
+        let frame = if self.stopping {
+            self.stop_frame
+        } else {
+            self.frame
+        };
+        let audible = if phase == Phase::Playing {
             let projected = self.origin + self.elapsed.saturating_sub(latency_frames);
             match self.settings.range {
                 Some([left, right]) if self.origin < right && projected >= right => {
@@ -767,12 +898,12 @@ impl Renderer {
                 _ => projected,
             }
         } else {
-            self.frame
+            frame
         };
         let map = &self.settings.map;
-        let packed = map.tick_at(self.frame)
+        let packed = map.tick_at(frame)
             | (map.tick_at(audible) << TICK_BITS)
-            | ((self.phase as u64) << (TICK_BITS * 2));
+            | ((phase as u64) << (TICK_BITS * 2));
         self.shared.position.store(packed, Ordering::Release);
         self.shared.revision.store(self.revision, Ordering::Release);
     }

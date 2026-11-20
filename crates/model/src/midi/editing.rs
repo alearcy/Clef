@@ -90,6 +90,7 @@ pub enum ClipEdit {
     EditEvents {
         clip: ClipId,
         label: &'static str,
+        take: Option<u64>,
         changes: Vec<super::EventChange>,
     },
 }
@@ -207,11 +208,16 @@ impl Arrangement {
     fn apply_edit(&mut self, edit: &ClipEdit) -> Result<ClipEditResult> {
         let mut selection = Vec::new();
         match edit {
-            ClipEdit::EditEvents { clip, changes, .. } => {
+            ClipEdit::EditEvents {
+                clip,
+                take,
+                changes,
+                ..
+            } => {
                 let (track, previous) =
                     self.find_clip(*clip).ok_or("The MIDI clip was removed.")?;
                 let mut updated = previous.clone();
-                updated.edit_events(changes)?;
+                updated.edit_events(changes, *take)?;
                 if &updated == previous {
                     return Ok(ClipEditResult::Unchanged);
                 }

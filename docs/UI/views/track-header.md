@@ -48,6 +48,14 @@ FX return and master rows. It stays fixed during horizontal scroll.
   with only the master never lets MONO cover the mode chip.
 - Selected: `panel` with the [selection edge](../components/selection-edge.md); never a colour wash.
 
+## Clef T26 take lanes
+
+The provisional Clef track row adds the `T n` chip beside the record-arm target when the track has
+two or more takes. Its accessible name is “Take lanes, n takes” and it shows the on state with the
+accent fill. The per-track record mode lives in the selected-track inspector as a `Record mode`
+menu (`Global`, `Merge`, `Replace`, `New take`), not in the header; the transport keeps the global
+mode chip. Take lanes are specified in [track lanes](track-lanes.md#take-lane-d66-t26).
+
 ## Density
 `HeaderDensity`: at 30 pixels and above, controls are 20-pixel targets with 13-px names; below 30,
 16-pixel targets with 11-px names. Below `minimumHeaderWidth` 160 the columns leave rather than overlap the name;

@@ -1,4 +1,5 @@
 use crate::protocol::Result;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
     ffi::{CStr, CString, c_char, c_void},
@@ -9,28 +10,35 @@ use std::{
 
 pub use clef_model::Plugin;
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Serialize, Deserialize)]
 pub struct Catalog {
     pub plugins: Vec<Plugin>,
+    pub effects: Vec<Plugin>,
     pub failures: Vec<String>,
 }
 
 unsafe extern "C" {
     fn clef_vst_scan(
         path: *const c_char,
-        entry: extern "C" fn(*const c_char, *const c_char, *mut c_void),
+        include_effects: i32,
+        entry: extern "C" fn(*const c_char, *const c_char, i32, *mut c_void),
         context: *mut c_void,
     ) -> i32;
     fn clef_vst_error() -> *const c_char;
 }
 
 // This function runs only in a disposable scanner process, never in the application.
-pub fn inspect(path: &Path, output: &Path) -> Result<()> {
-    let mut plugins = Vec::<Plugin>::new();
+pub fn inspect(path: &Path, output: &Path, categorized: bool) -> Result<()> {
+    let mut report = Catalog::default();
     match path.extension().and_then(|s| s.to_str()) {
         Some("vst3") => {
-            extern "C" fn entry(id: *const c_char, name: *const c_char, context: *mut c_void) {
-                let entries = unsafe { &mut *context.cast::<Vec<(String, String)>>() };
+            extern "C" fn entry(
+                id: *const c_char,
+                name: *const c_char,
+                effect: i32,
+                context: *mut c_void,
+            ) {
+                let entries = unsafe { &mut *context.cast::<Vec<(String, String, bool)>>() };
                 if entries.len() < 4096 {
                     let text = |p| {
                         unsafe { CStr::from_ptr(p) }
@@ -39,26 +47,39 @@ pub fn inspect(path: &Path, output: &Path) -> Result<()> {
                             .take(1024)
                             .collect()
                     };
-                    entries.push((text(id), text(name)));
+                    entries.push((text(id), text(name), effect != 0));
                 }
             }
             use std::os::unix::ffi::OsStrExt;
             let file = CString::new(path.as_os_str().as_bytes())?;
-            let mut entries = Vec::<(String, String)>::new();
-            if unsafe { clef_vst_scan(file.as_ptr(), entry, (&mut entries as *mut Vec<_>).cast()) }
-                != 1
+            let mut entries = Vec::<(String, String, bool)>::new();
+            if unsafe {
+                clef_vst_scan(
+                    file.as_ptr(),
+                    categorized.into(),
+                    entry,
+                    (&mut entries as *mut Vec<_>).cast(),
+                )
+            } != 1
             {
                 return Err(unsafe { CStr::from_ptr(clef_vst_error()) }
                     .to_string_lossy()
                     .into_owned()
                     .into());
             }
-            plugins.extend(entries.into_iter().map(|(id, name)| Plugin {
-                path: path.into(),
-                id,
-                name,
-                format: "VST3".into(),
-            }));
+            for (id, name, effect) in entries {
+                let list = if effect {
+                    &mut report.effects
+                } else {
+                    &mut report.plugins
+                };
+                list.push(Plugin {
+                    path: path.into(),
+                    id,
+                    name,
+                    format: "VST3".into(),
+                });
+            }
         }
         Some("clap") => {
             let entry =
@@ -67,10 +88,12 @@ pub fn inspect(path: &Path, output: &Path) -> Result<()> {
                 .get_plugin_factory()
                 .ok_or("CLAP factory unavailable")?;
             for descriptor in factory.plugin_descriptors().take(4096) {
-                if !descriptor
-                    .features()
-                    .any(|feature| feature.to_bytes() == b"instrument")
-                {
+                let instrument = descriptor.features().any(|f| f.to_bytes() == b"instrument");
+                let effect = categorized
+                    && descriptor
+                        .features()
+                        .any(|f| f.to_bytes() == b"audio-effect");
+                if !instrument && !effect {
                     continue;
                 }
                 let id = descriptor
@@ -83,17 +106,35 @@ pub fn inspect(path: &Path, output: &Path) -> Result<()> {
                     .ok_or("CLAP name missing")?
                     .to_string_lossy()
                     .into_owned();
-                plugins.push(Plugin {
+                let plugin = Plugin {
                     path: path.into(),
                     id,
                     name,
                     format: "CLAP".into(),
-                });
+                };
+                if effect
+                    && crate::clap_host::ClapMain::load(
+                        path,
+                        &plugin.id,
+                        crate::protocol::RATE,
+                        true,
+                    )
+                    .is_ok()
+                {
+                    report.effects.push(plugin.clone());
+                }
+                if instrument {
+                    report.plugins.push(plugin);
+                }
             }
         }
         _ => return Err("unsupported plugin bundle".into()),
     }
-    let bytes = serde_json::to_vec(&plugins)?;
+    let bytes = if categorized {
+        serde_json::to_vec(&report)?
+    } else {
+        serde_json::to_vec(&report.plugins)?
+    };
     if bytes.len() > 2 * 1024 * 1024 {
         return Err("plugin descriptor report too large".into());
     }
@@ -172,19 +213,21 @@ fn scan(executable: &Path, cancel: &std::sync::atomic::AtomicBool) -> Catalog {
                 .unwrap_or_else(|_| entry.plugin.path.clone())
                 == path
         }) {
-            report.plugins.extend(
-                quarantine
-                    .iter()
-                    .filter(|entry| {
-                        entry
-                            .plugin
-                            .path
-                            .canonicalize()
-                            .unwrap_or_else(|_| entry.plugin.path.clone())
-                            == path
-                    })
-                    .map(|entry| entry.plugin.clone()),
-            );
+            for entry in quarantine.iter().filter(|entry| {
+                entry
+                    .plugin
+                    .path
+                    .canonicalize()
+                    .unwrap_or_else(|_| entry.plugin.path.clone())
+                    == path
+            }) {
+                let list = if entry.effect {
+                    &mut report.effects
+                } else {
+                    &mut report.plugins
+                };
+                list.push(entry.plugin.clone());
+            }
             report
                 .failures
                 .push(format!("{}: quarantined bundle skipped", path.display()));
@@ -194,16 +237,21 @@ fn scan(executable: &Path, cancel: &std::sync::atomic::AtomicBool) -> Catalog {
             break;
         }
         match scan_bundle_cancellable(executable, &path, Duration::from_secs(15), cancel) {
-            Ok(entries) => report.plugins.extend(entries),
+            Ok(entries) => {
+                report.plugins.extend(entries.plugins);
+                report.effects.extend(entries.effects);
+            }
             Err(e) => report.failures.push(format!("{}: {e}", path.display())),
         }
     }
-    report.plugins.sort_by(|a, b| {
-        a.name
-            .to_lowercase()
-            .cmp(&b.name.to_lowercase())
-            .then(a.format.cmp(&b.format))
-    });
+    for list in [&mut report.plugins, &mut report.effects] {
+        list.sort_by(|a, b| {
+            a.name
+                .to_lowercase()
+                .cmp(&b.name.to_lowercase())
+                .then(a.format.cmp(&b.format))
+        });
+    }
     report
 }
 
@@ -212,11 +260,11 @@ fn scan_bundle_cancellable(
     path: &Path,
     timeout: Duration,
     cancel: &std::sync::atomic::AtomicBool,
-) -> Result<Vec<Plugin>> {
+) -> Result<Catalog> {
     let directory = crate::project::TemporaryDirectory::new("scan")?;
     let output = directory.0.join("report.json");
     let mut child = Command::new(executable)
-        .arg("scan-bundle")
+        .arg("scan-bundle-categorized")
         .arg(path)
         .arg(&output)
         .stdin(Stdio::null())
@@ -232,9 +280,11 @@ fn scan_bundle_cancellable(
     if bytes.len() > 2 * 1024 * 1024 {
         return Err("scan report exceeds limit".into());
     }
-    let entries: Vec<Plugin> = serde_json::from_slice(&bytes)?;
-    if entries.len() > 4096
-        || entries.iter().any(|p| {
+    let entries: Catalog = serde_json::from_slice(&bytes)?;
+    if entries.plugins.len() > 4096
+        || entries.effects.len() > 4096
+        || !entries.failures.is_empty()
+        || entries.plugins.iter().chain(&entries.effects).any(|p| {
             p.path != path
                 || p.id.is_empty()
                 || p.id.len() > 4096
