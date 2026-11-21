@@ -3,7 +3,7 @@ name: Window
 kind: view
 reference: composer::style::layoutWorkspace, WorkspaceRects
 status: mixed
-impl: planned
+impl: app
 reference-source: [Source/MainComponent.cpp]
 components: [transport-bar, tool-row, tabs, chip, menus]
 snapshot: snapshots/window.png
@@ -61,3 +61,26 @@ check; this does not establish full editor acceptance for all mandatory plugins.
 The approved single-instrument workspace is implemented in Rust/egui. See
 [Single-Instrument Project](single-instrument-project.md) for its surface, commands,
 states and verification. The T02-only UI scope above describes the earlier prototype.
+
+## Clef Rust/egui — menu bar (T18 Phase 2)
+
+The project window starts with the in-window [menu bar](../components/menus.md) (`menuBarHeight`
+28, `crates/ui/src/menus.rs`) on macOS too: Clef has no AppKit menu bar. It replaced the
+provisional row of command buttons (New Project, Open, Save, Save As, Edit, Mixer, Audio/MIDI
+Settings, Commands). The startup chooser has no menu bar.
+
+| Menu | Entries (registry commands; captions in italics) |
+| --- | --- |
+| File | New Project, Open Project… · Save, Save As… · Close Clef |
+| Edit | Undo *edit*, Redo *edit*, Edit History… · Select All Clips, Duplicate, Split at Playhead, Delete |
+| Track | Add Instrument Track, Add Bus, Rename Track, Move Track Up/Down, Remove Track… · Choose Instrument, Open/Close Editor, Restart Instrument, Toggle Instrument Bypass/Offline · Toggle Record Arm, Show/Hide Take Lanes, *Track Record Mode* (Global, Merge, Replace, New take, ticked) |
+| Transport | Play / Stop, Return to Start, Record MIDI · Loop, Metronome, One-Bar Count-In (ticked) · *Record Mode* (ticked) · *Stop Mode* (ticked) · Tempo and Meter Map…, Transport Settings… |
+| View | Show Mixer / Show Sequencer · Fit Arrangement to Width/Height, Fit Piano Roll to Width/Height |
+| Window | Commands / Keyboard Shortcuts, Command Palette…, Audio/MIDI Settings · Show Quarantined Plugins…, Rescan Plugins, Refresh Devices · Primitive Gallery (Debug) — debug builds only, not a registry command |
+
+Right-aligned: **Commands…** opens the [command palette](command-palette.md); **Settings** opens
+Audio/MIDI Settings. Open Recent and Recovery stay on the startup chooser: with a project open
+they are unavailable, so they are not in File.
+
+Evidence: every T07–T40 project-window snapshot shows the bar; `t18-menu-bar-{1024,760}.png`
+shows an open menu.

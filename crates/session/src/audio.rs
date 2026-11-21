@@ -98,13 +98,17 @@ impl Preferences {
     }
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = path.parent().ok_or("invalid preferences path")?;
     std::fs::create_dir_all(parent)?;
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_nanos();
-    let temporary = parent.join(format!(".audio-{}-{nonce}.tmp", std::process::id()));
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("preferences");
+    let temporary = parent.join(format!(".{stem}-{}-{nonce}.tmp", std::process::id()));
     let result = (|| -> Result<()> {
         let mut file = std::fs::OpenOptions::new()
             .write(true)

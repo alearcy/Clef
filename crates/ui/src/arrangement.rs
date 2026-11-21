@@ -1,6 +1,10 @@
 use crate::{
-    Action, App, Command, Confirm, colors,
-    primitives::timeline::{self, Viewport},
+    Action, App, Command, Confirm,
+    primitives::{
+        menu,
+        timeline::{self, Viewport},
+    },
+    theme,
 };
 use clef_model::{
     midi::{Arrangement, Clip, ClipEdit, ClipId, CompEdit, Message, Snap},
@@ -24,6 +28,7 @@ pub struct Lane {
     pub track: u64,
     pub rect: Rect,
     pub visible: Rect,
+    pub colour: egui::Color32,
 }
 
 enum Drag {
@@ -45,6 +50,8 @@ enum Drag {
 
 #[derive(Default)]
 pub struct ArrangementUi {
+    /// The live shortcuts for menu rows, copied from the app's key map when it changes.
+    pub(crate) keys: crate::commands::Keymap,
     pub settings: ArrangementView,
     pub selected: BTreeSet<ClipId>,
     pub open_roll: Option<ClipId>,
@@ -63,6 +70,25 @@ pub struct ArrangementUi {
     lane_name: String,
     take_drag: Option<TakeDrag>,
     pub lane_height_preview: Option<(u64, usize, u16)>,
+    /// T40: first visible point of the scrolled track rows (view state, not saved).
+    pub v_offset: f32,
+    /// T40: a fit requested by a command, applied on the next frame.
+    pub fit: Option<Fit>,
+}
+
+/// T40: fit the content to the visible width or height.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Fit {
+    Width,
+    Height,
+}
+
+/// A track height in points, clamped to the saved range.
+pub fn clamp_height(height: f32) -> u16 {
+    let range = clef_model::project::TRACK_HEIGHT;
+    height
+        .round()
+        .clamp(f32::from(*range.start()), f32::from(*range.end())) as u16
 }
 
 pub struct LaneInput<'a> {
@@ -146,7 +172,7 @@ impl ArrangementUi {
             ui,
             lane.rect,
             timeline,
-            &track.name,
+            (&track.name, lane.colour),
             clips,
             (&self.selected, enabled),
         );
@@ -456,10 +482,13 @@ impl ArrangementUi {
                     viewport.edit_preview(
                         ui,
                         [lane.rect, lane.visible],
-                        range,
-                        tick,
-                        !free,
-                        &label,
+                        lane.colour,
+                        crate::primitives::timeline::EditPreview {
+                            range,
+                            tick,
+                            snap: !free,
+                            label: &label,
+                        },
                     );
                 };
                 match preview {
@@ -714,6 +743,7 @@ mod tests {
                 .unwrap();
             let tracks = (1..=2)
                 .map(|id| Track {
+                    colour: None,
                     id,
                     name: format!("Track {id}"),
                     plugin: None,
@@ -753,6 +783,7 @@ mod tests {
                         track: track.id,
                         rect,
                         visible: rect,
+                        colour: crate::theme::PEACOCK,
                     }
                 })
                 .collect();
@@ -922,6 +953,7 @@ mod tests {
             )
             .unwrap();
         let track = Track {
+            colour: None,
             id: 1,
             name: "Strings".into(),
             plugin: None,
@@ -940,6 +972,7 @@ mod tests {
             state: Default::default(),
         };
         let context = egui::Context::default();
+        crate::theme::install_fonts(&context);
         context.enable_accesskit();
         let mut editor = ArrangementUi::default();
         let timeline = Timeline::default();
@@ -1004,7 +1037,7 @@ mod tests {
             }
         }
         assert!(
-            labels.iter().any(|label| label == "Use whole take"),
+            labels.iter().any(|label| label == "Use Whole Take"),
             "take menu did not open: {labels:?}"
         );
     }
@@ -1081,6 +1114,7 @@ mod tests {
             .unwrap();
         let id = model.clips(1)[0].id();
         let track = Track {
+            colour: None,
             id: 1,
             name: "Strings".into(),
             plugin: None,
@@ -1099,6 +1133,7 @@ mod tests {
             state: Default::default(),
         };
         let context = egui::Context::default();
+        crate::theme::install_fonts(&context);
         let mut editor = ArrangementUi::default();
         let timeline = Timeline::default();
         let viewport = Viewport::with_snap(&timeline, 0, 96.0, 480.0, Snap::Off);
@@ -1192,6 +1227,7 @@ mod tests {
             )
             .unwrap();
         let track = Track {
+            colour: None,
             id: 1,
             name: "Strings".into(),
             plugin: None,
@@ -1210,6 +1246,7 @@ mod tests {
             state: Default::default(),
         };
         let context = egui::Context::default();
+        crate::theme::install_fonts(&context);
         let mut editor = ArrangementUi::default();
         editor.settings.snap = Snap::Off;
         let timeline = Timeline::default();
@@ -1318,6 +1355,7 @@ mod tests {
             )
             .unwrap();
         let track = Track {
+            colour: None,
             id: 1,
             name: "Strings".into(),
             plugin: None,
@@ -1336,6 +1374,7 @@ mod tests {
             state: Default::default(),
         };
         let context = egui::Context::default();
+        crate::theme::install_fonts(&context);
         let mut editor = ArrangementUi::default();
         editor.settings.snap = Snap::Off;
         let timeline = Timeline::default();
@@ -1533,7 +1572,7 @@ impl ArrangementUi {
             .flat_map(|clip| clip.take_active_ranges(clip.takes[row.lane].id))
             .collect();
         let painter = ui.painter();
-        painter.rect_filled(row.header, 0.0, colors::PANEL);
+        painter.rect_filled(row.header, 0.0, theme::PANEL);
         for clip in clips {
             if row.lane >= clip.takes.len() {
                 continue;
@@ -1547,11 +1586,11 @@ impl ArrangementUi {
             if !clip_rect.is_positive() {
                 continue;
             }
-            painter.rect_filled(clip_rect, 2.0, colors::ACCENT.gamma_multiply(0.08));
+            painter.rect_filled(clip_rect, 2.0, theme::ACCENT.gamma_multiply(0.08));
             painter.rect_stroke(
                 clip_rect,
                 2.0,
-                egui::Stroke::new(1.0_f32, colors::DIVIDER),
+                egui::Stroke::new(1.0_f32, theme::DIVIDER),
                 egui::StrokeKind::Inside,
             );
             let id = clip.takes[row.lane].id;
@@ -1575,11 +1614,11 @@ impl ArrangementUi {
                     ),
                 );
                 if rect.is_positive() {
-                    painter.rect_filled(rect, 1.0, colors::ACCENT.gamma_multiply(0.24));
+                    painter.rect_filled(rect, 1.0, theme::ACCENT.gamma_multiply(0.24));
                     painter.rect_stroke(
                         rect,
                         1.0,
-                        egui::Stroke::new(1.0_f32, colors::ACCENT),
+                        egui::Stroke::new(1.0_f32, theme::ACCENT),
                         egui::StrokeKind::Inside,
                     );
                 }
@@ -1594,15 +1633,15 @@ impl ArrangementUi {
                         painter,
                         egui::pos2(x, row.band.top() + 1.0),
                         egui::pos2(x, row.band.bottom() - 1.0),
-                        colors::ACCENT.gamma_multiply(0.6),
+                        theme::ACCENT.gamma_multiply(0.6),
                     );
                 }
             }
             for (rect, active) in take_note_rects(clip, row.lane, row.band, viewport) {
                 let color = if active {
-                    colors::TEXT
+                    theme::TEXT
                 } else {
-                    colors::TEXT.gamma_multiply(0.28)
+                    theme::TEXT.gamma_multiply(0.28)
                 };
                 painter.rect_filled(rect, 1.0, color);
             }
@@ -1644,7 +1683,7 @@ impl ArrangementUi {
                         egui::pos2(target.x + 1.0, row.band.bottom()),
                     ),
                     0.0,
-                    colors::ACCENT,
+                    theme::ACCENT,
                 );
             } else if let Some(clip) = clip_at(pos.x) {
                 self.focused_take_clip = Some(clip.id());
@@ -1725,11 +1764,11 @@ impl ArrangementUi {
                             egui::pos2(row.band.left() + viewport.x(start), row.band.top() + 1.0),
                             egui::pos2(row.band.left() + viewport.x(end), row.band.bottom() - 1.0),
                         );
-                        painter.rect_filled(rect, 1.0, colors::ACCENT.gamma_multiply(0.16));
+                        painter.rect_filled(rect, 1.0, theme::ACCENT.gamma_multiply(0.16));
                         painter.rect_stroke(
                             rect,
                             1.0,
-                            egui::Stroke::new(1.0_f32, colors::ACCENT),
+                            egui::Stroke::new(1.0_f32, theme::ACCENT),
                             egui::StrokeKind::Inside,
                         );
                         let at = timeline.position(end);
@@ -1780,7 +1819,7 @@ impl ArrangementUi {
                             egui::pos2(x + 1.0, row.band.bottom()),
                         ),
                         0.0,
-                        colors::ACCENT,
+                        theme::ACCENT,
                     );
                     let at = timeline.position(current);
                     readout(
@@ -1872,7 +1911,7 @@ impl ArrangementUi {
         });
         let stripe =
             Rect::from_min_size(row.header.left_top(), egui::vec2(2.0, row.header.height()));
-        painter.rect_filled(stripe, 0.0, colors::ACCENT);
+        painter.rect_filled(stripe, 0.0, theme::ACCENT);
         let name_rect = Rect::from_min_size(
             egui::pos2(row.header.left() + 8.0, row.header.top() + 5.0),
             egui::vec2((row.header.width() - 44.0).max(20.0), 16.0),
@@ -1907,7 +1946,7 @@ impl ArrangementUi {
                 egui::Align2::LEFT_CENTER,
                 &name,
                 egui::FontId::proportional(11.0),
-                colors::TEXT,
+                theme::TEXT,
             );
             if row.header.height() >= 32.0 {
                 painter.text(
@@ -1915,7 +1954,7 @@ impl ArrangementUi {
                     egui::Align2::LEFT_CENTER,
                     plays_summary(timeline, &active_ranges),
                     egui::FontId::proportional(10.0),
-                    colors::SECONDARY,
+                    theme::SECONDARY,
                 );
             }
             let name_hit = Rect::from_min_max(
@@ -1927,7 +1966,7 @@ impl ArrangementUi {
                                 .layout_no_wrap(
                                     name.clone(),
                                     egui::FontId::proportional(11.0),
-                                    colors::TEXT,
+                                    theme::TEXT,
                                 )
                                 .size()
                                 .x
@@ -1985,7 +2024,7 @@ impl ArrangementUi {
                 },
             );
             if enabled && menu_response.hovered() {
-                ui.painter().rect_filled(menu_rect, 2.0, colors::FIELD);
+                ui.painter().rect_filled(menu_rect, 2.0, theme::FIELD);
             }
             paint_kebab(ui, menu_rect);
             menu_response.widget_info(|| {
@@ -1996,53 +2035,64 @@ impl ArrangementUi {
                 self.focused_lane = Some((row.track, row.lane));
             }
             if enabled {
-                egui::Popup::menu(&menu_response).show(|ui| {
-                    if ui.button("Rename…").clicked() {
+                let keys = &self.keys;
+                let item = |ui: &mut Ui, command: Command| {
+                    let shortcut = keys.text(ui.ctx(), command);
+                    menu::Item::new(command.title())
+                        .shortcut(&shortcut)
+                        .destructive(command.destructive())
+                        .show(ui)
+                };
+                let picked = menu::show(menu::under(&menu_response), |ui| {
+                    let picked = [Command::RenameTake, Command::EditTake]
+                        .into_iter()
+                        .find(|&command| item(ui, command));
+                    menu::separator(ui);
+                    picked.or([
+                        Command::UseWholeTake,
+                        Command::DeleteTake,
+                        Command::FlattenComp,
+                        Command::TakeToNewTrack,
+                    ]
+                    .into_iter()
+                    .find(|&command| item(ui, command)))
+                })
+                .flatten();
+                match picked {
+                    Some(Command::RenameTake) => {
                         self.begin_take_rename(row.track, row.lane, name.clone());
-                        ui.close();
                     }
-                    if ui.button("Edit in editor").clicked() {
+                    Some(Command::EditTake) => {
                         self.focused_lane = Some((row.track, row.lane));
                         action = Some(TakeAction::EditTake {
                             track: row.track,
                             lane: row.lane,
                             clip: self.focused_take_clip,
                         });
-                        ui.close();
                     }
-                    ui.separator();
-                    if ui.button("Use whole take").clicked() {
+                    Some(
+                        command @ (Command::UseWholeTake
+                        | Command::DeleteTake
+                        | Command::FlattenComp),
+                    ) => {
                         action = Some(TakeAction::Comp {
                             track: row.track,
                             lane: row.lane,
-                            edit: CompEdit::UseWholeTake,
+                            edit: match command {
+                                Command::UseWholeTake => CompEdit::UseWholeTake,
+                                Command::DeleteTake => CompEdit::DeleteTake,
+                                _ => CompEdit::Flatten,
+                            },
                         });
-                        ui.close();
                     }
-                    if ui.button("Delete take").clicked() {
-                        action = Some(TakeAction::Comp {
-                            track: row.track,
-                            lane: row.lane,
-                            edit: CompEdit::DeleteTake,
-                        });
-                        ui.close();
-                    }
-                    if ui.button("Flatten comp").clicked() {
-                        action = Some(TakeAction::Comp {
-                            track: row.track,
-                            lane: row.lane,
-                            edit: CompEdit::Flatten,
-                        });
-                        ui.close();
-                    }
-                    if ui.button("Take to new track").clicked() {
+                    Some(Command::TakeToNewTrack) => {
                         action = Some(TakeAction::TakeToNewTrack {
                             track: row.track,
                             lane: row.lane,
                         });
-                        ui.close();
                     }
-                });
+                    _ => {}
+                }
             }
         }
         let seam = Rect::from_min_max(
@@ -2118,7 +2168,7 @@ pub(crate) fn paint_kebab(ui: &Ui, rect: Rect) {
         ui.painter().circle_filled(
             egui::pos2(center.x, center.y + offset),
             1.4,
-            colors::SECONDARY,
+            theme::SECONDARY,
         );
     }
 }
@@ -2205,20 +2255,20 @@ fn readout(painter: &egui::Painter, pos: Pos2, text: &str) {
     let galley = painter.layout_no_wrap(
         text.to_owned(),
         egui::FontId::proportional(10.0),
-        colors::TEXT,
+        theme::TEXT,
     );
     let rect = Rect::from_min_size(
         egui::pos2(pos.x + 12.0, pos.y - 20.0),
         galley.size() + egui::vec2(10.0, 4.0),
     );
-    painter.rect_filled(rect, 2.0, colors::FIELD);
+    painter.rect_filled(rect, 2.0, theme::FIELD);
     painter.rect_stroke(
         rect,
         2.0,
-        egui::Stroke::new(1.0_f32, colors::DIVIDER),
+        egui::Stroke::new(1.0_f32, theme::DIVIDER),
         egui::StrokeKind::Inside,
     );
-    painter.galley(rect.min + egui::vec2(5.0, 2.0), galley, colors::TEXT);
+    painter.galley(rect.min + egui::vec2(5.0, 2.0), galley, theme::TEXT);
 }
 
 fn dashed_line(painter: &egui::Painter, from: Pos2, to: Pos2, color: Color32) {

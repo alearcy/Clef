@@ -1,6 +1,7 @@
 use super::{
-    App, Command, Key, Modifiers, colors, egui,
-    primitives::{inserts, mixer as controls},
+    App, Command, Key, Modifiers, egui,
+    primitives::{inserts, menu, mixer as controls},
+    theme,
     theme::*,
 };
 use clef_model::mixer::{Channel, Control, Target};
@@ -492,10 +493,11 @@ impl App {
         let mut event = None;
         let mut selected_strip = None;
         ui.horizontal(|ui| {
-            ui.strong("Mixer");
-            if ui
-                .add_enabled(enabled, egui::Button::new("+ Bus"))
-                .on_hover_text("Add a bus used as a group or FX return")
+            crate::primitives::text::heading(ui, "Mixer");
+            if crate::primitives::text_button::TextButton::new("+ Bus")
+                .enabled(enabled)
+                .tooltip("Add a bus used as a group or FX return")
+                .show(ui)
                 .clicked()
             {
                 event = Some(Event::AddBus);
@@ -790,14 +792,7 @@ impl App {
         let bus = kind.is_bus();
         let track_id = target.id();
         let meter = self.meter(target);
-        let shortcut = |command| {
-            self.bindings
-                .iter()
-                .find(|binding| binding.command == command)
-                .and_then(|binding| binding.shortcut)
-                .map(|shortcut| ui.ctx().format_shortcut(&shortcut))
-                .unwrap_or_default()
-        };
+        let shortcut = |command| self.keymap.text(ui.ctx(), command);
         let shortcuts = [
             Command::MixerMute,
             Command::MixerSolo,
@@ -928,11 +923,8 @@ impl App {
                                                 egui::Button::new(
                                                     egui::RichText::new("Master").size(MIX_SMALL),
                                                 )
-                                                .fill(colors::FIELD)
-                                                .stroke(egui::Stroke::new(
-                                                    1.0_f32,
-                                                    colors::DIVIDER,
-                                                )),
+                                                .fill(theme::FIELD)
+                                                .stroke(egui::Stroke::new(1.0_f32, theme::DIVIDER)),
                                             )
                                             .on_hover_text("Buses output to Master");
                                         None
@@ -944,11 +936,8 @@ impl App {
                                                 egui::Button::new(
                                                     egui::RichText::new("Device").size(MIX_SMALL),
                                                 )
-                                                .fill(colors::FIELD)
-                                                .stroke(egui::Stroke::new(
-                                                    1.0_f32,
-                                                    colors::DIVIDER,
-                                                )),
+                                                .fill(theme::FIELD)
+                                                .stroke(egui::Stroke::new(1.0_f32, theme::DIVIDER)),
                                             )
                                             .on_hover_text("Master outputs to the audio device");
                                         None
@@ -1022,9 +1011,9 @@ impl App {
                                     [16.0, 16.0],
                                     egui::Button::new(egui::RichText::new(pre).size(6.5).color(
                                         if send.pre {
-                                            colors::ACCENT
+                                            theme::ACCENT
                                         } else {
-                                            colors::SECONDARY
+                                            theme::SECONDARY
                                         },
                                     ))
                                     .small(),
@@ -1054,23 +1043,19 @@ impl App {
                             );
                             let destination_button =
                                 destination_button.on_hover_text(format!("Send to {destination}"));
-                            egui::Popup::menu(&destination_button).show(|ui| {
+                            menu::show(menu::under(&destination_button), |ui| {
                                 for bus in
                                     self.view.project.tracks.iter().filter(|bus| bus.is_bus())
                                 {
                                     let used = sends
                                         .iter()
                                         .any(|other| other.id != send.id && other.target == bus.id);
-                                    if ui
-                                        .add_enabled(!used, egui::Button::new(&bus.name))
-                                        .clicked()
-                                    {
+                                    if inserts::menu_item(ui, &bus.name, !used) {
                                         event = Some(Event::SendTarget {
                                             track,
                                             id: send.id,
                                             target: bus.id,
                                         });
-                                        ui.close();
                                     }
                                 }
                             });
@@ -1107,22 +1092,20 @@ impl App {
                                 });
                             }
                         });
-                        row.response.context_menu(|ui| {
-                            if ui.button("Remove Send").clicked() {
+                        menu::show(menu::context(&row.response), |ui| {
+                            if inserts::menu_item(ui, "Remove Send", true) {
                                 event = Some(Event::SendRemove { track, id: send.id });
-                                ui.close();
                             }
                         });
                     });
                 }
             });
         let add = inserts::append_send(ui, name);
-        egui::Popup::menu(&add).show(|ui| {
-            if ui.button("New Bus Send…").clicked() {
+        menu::show(menu::under(&add), |ui| {
+            if inserts::menu_item(ui, "New Bus Send…", true) {
                 event = Some(Event::SendNewBus { track });
-                ui.close();
             }
-            ui.separator();
+            menu::separator(ui);
             let buses: Vec<_> = self
                 .view
                 .project
@@ -1131,19 +1114,15 @@ impl App {
                 .filter(|track| track.is_bus())
                 .collect();
             if buses.is_empty() {
-                ui.add_enabled(false, egui::Button::new("No buses yet"));
+                inserts::menu_item(ui, "No buses yet", false);
             }
             for bus in buses {
                 let used = sends.iter().any(|send| send.target == bus.id);
-                if ui
-                    .add_enabled(!used, egui::Button::new(&bus.name))
-                    .clicked()
-                {
+                if inserts::menu_item(ui, &bus.name, !used) {
                     event = Some(Event::SendAdd {
                         track,
                         target: bus.id,
                     });
-                    ui.close();
                 }
             }
         });
@@ -1156,13 +1135,13 @@ impl App {
         let label = output
             .and_then(|id| self.view.project.bus(id))
             .map_or("Master", |bus| bus.name.as_str());
-        ui.menu_button(label, |ui| {
-            if ui.button("Master").clicked() {
+        let button = ui.button(label).on_hover_text(format!("Output: {label}"));
+        menu::show(menu::under(&button), |ui| {
+            if menu::Item::new("Master").ticked(output.is_none()).show(ui) {
                 event = Some(Event::Output {
                     track,
                     output: None,
                 });
-                ui.close();
             }
             for bus in self
                 .view
@@ -1171,18 +1150,19 @@ impl App {
                 .iter()
                 .filter(|track| track.is_bus())
             {
-                if ui.button(&bus.name).clicked() {
+                if menu::Item::new(&bus.name)
+                    .ticked(output == Some(bus.id))
+                    .show(ui)
+                {
                     event = Some(Event::Output {
                         track,
                         output: Some(bus.id),
                     });
-                    ui.close();
                 }
             }
-            ui.separator();
-            if ui.button("New Bus…").clicked() {
+            menu::separator(ui);
+            if inserts::menu_item(ui, "New Bus…", true) {
                 event = Some(Event::NewBus { track });
-                ui.close();
             }
         });
         event
@@ -1555,7 +1535,7 @@ impl App {
                                         Some(slot.id),
                                     ));
                                 }
-                                response.context_menu(|ui| {
+                                menu::show(menu::context(&response), |ui| {
                                     for (command, label) in [
                                         (Command::InsertAfter, "Insert Effect After…"),
                                         (Command::InsertMoveUp, "Move Up"),
@@ -1656,7 +1636,7 @@ impl App {
             if power {
                 *event = Some(Event::Instrument(Command::InstrumentBypass, track.id));
             }
-            response.context_menu(|ui| {
+            menu::show(menu::context(&response), |ui| {
                 if !offline {
                     if plugin.is_some() {
                         if inserts::menu_item(ui, "Open Instrument Editor", ready) {
@@ -1722,6 +1702,7 @@ mod tests {
         let mut app = App::new(ctx, PathBuf::new());
         let mut project = Project::default();
         project.tracks.push(Track {
+            colour: None,
             id: 1,
             name: "Strings".into(),
             plugin: None,

@@ -1,10 +1,13 @@
 use crate::{
     Action, App, Command,
-    arrangement::{ArrangementUi, Lane, LaneInput, TakeLaneInput, TakeLaneRow, paint_kebab},
-    colors,
+    arrangement::{
+        ArrangementUi, Fit, Lane, LaneInput, TakeLaneInput, TakeLaneRow, clamp_height, paint_kebab,
+    },
     primitives::{
+        list_row::ListRow,
+        scroll_zoom_bars,
         timeline::{self as timeline_ui, LOOP_HEIGHT, LoopGesture, RULER_HEIGHT, Viewport},
-        transport::{self as controls, Glyph},
+        transport::{self as controls, Icon},
     },
 };
 use clef_model::{
@@ -134,16 +137,16 @@ impl App {
         let compact = ui.available_width() < 860.0;
         controls::bar(ui, |ui| {
             for (command, glyph, on) in [
-                (Command::ReturnToStart, Glyph::Start, false),
+                (Command::ReturnToStart, Icon::Start, false),
                 (
                     Command::Play,
-                    Glyph::Play,
+                    Icon::Play,
                     transport.phase != TransportPhase::Stopped,
                 ),
-                (Command::Stop, Glyph::Stop, false),
+                (Command::Stop, Icon::Stop, false),
                 (
                     Command::Record,
-                    Glyph::Record,
+                    Icon::Record,
                     self.view.recording || self.transport_ui.record_submitted,
                 ),
             ] {
@@ -155,23 +158,23 @@ impl App {
             ui.add_enabled_ui(
                 !self.view.recording && self.confirm.is_none() && self.file.is_none(),
                 |ui| {
-                    let menu = ui.menu_button(format!("REC {}   ", mode.label()), |ui| {
+                    let button = ui.button(format!("REC {}   ", mode.label()));
+                    crate::primitives::menu::show(crate::primitives::menu::under(&button), |ui| {
                         for (mode, command) in Mode::ALL.into_iter().zip([
                             Command::RecordMerge,
                             Command::RecordReplace,
                             Command::RecordNewTake,
                         ]) {
-                            if self.transport_button(
+                            if self.menu_command(
                                 ui,
                                 command,
-                                mode.label(),
-                                mode == self.view.project.record_mode,
+                                Some(mode == self.view.project.record_mode),
                             ) {
                                 chosen = Some(command);
-                                ui.close();
                             }
                         }
                     });
+                    let menu = egui::InnerResponse::new((), button);
                     paint_kebab(
                         ui,
                         egui::Rect::from_center_size(
@@ -185,11 +188,11 @@ impl App {
                     menu.response.on_hover_text("MIDI record mode");
                 },
             );
-            if self.transport_tool(ui, Command::ToggleLoop, Glyph::Loop, timeline.looping) {
+            if self.transport_tool(ui, Command::ToggleLoop, Icon::Loop, timeline.looping) {
                 chosen = Some(Command::ToggleLoop);
             }
             if !compact {
-                if self.transport_tool(ui, Command::ToggleClick, Glyph::Metronome, timeline.click) {
+                if self.transport_tool(ui, Command::ToggleClick, Icon::Metronome, timeline.click) {
                     chosen = Some(Command::ToggleClick);
                 }
                 if self.transport_button(ui, Command::ToggleCountIn, "1 Bar", timeline.count_in) {
@@ -204,7 +207,12 @@ impl App {
                     chosen = Some(Command::TempoMap);
                 }
             }
-            controls::counter(ui, position, transport.phase == TransportPhase::CountingIn);
+            controls::counter(
+                ui,
+                position,
+                transport.phase == TransportPhase::CountingIn,
+                self.view.recording && transport.phase == TransportPhase::Playing,
+            );
             if self.transport_button(ui, Command::TransportSettings, "Transport…", false) {
                 chosen = Some(Command::TransportSettings);
             }
@@ -218,7 +226,7 @@ impl App {
             && self.enabled(command)
     }
 
-    fn transport_tool(&self, ui: &mut egui::Ui, command: Command, glyph: Glyph, on: bool) -> bool {
+    fn transport_tool(&self, ui: &mut egui::Ui, command: Command, glyph: Icon, on: bool) -> bool {
         let name = self.transport_tooltip(ui, command);
         let mut response = controls::tool_button(
             ui,
@@ -237,15 +245,7 @@ impl App {
     }
 
     fn transport_tooltip(&self, ui: &egui::Ui, command: Command) -> String {
-        let binding = self
-            .bindings
-            .iter()
-            .find(|binding| binding.command == command)
-            .unwrap();
-        binding.shortcut.map_or_else(
-            || binding.title.to_string(),
-            |key| format!("{} ({})", binding.title, ui.ctx().format_shortcut(&key)),
-        )
+        self.keymap.tooltip(ui.ctx(), command)
     }
 
     pub fn timeline_surface(
@@ -254,8 +254,10 @@ impl App {
         height: f32,
         width: f32,
     ) -> (Option<u64>, bool, Option<TransportAction>) {
+        let start_top = ui.cursor().top();
         let header_width = if width >= 550.0 { 220.0 } else { 176.0 };
-        let lane_width = width - header_width - ui.spacing().item_spacing.x;
+        let lane_width = (width - header_width - crate::theme::metric::SCROLL_BAR)
+            .max(crate::theme::metric::SCROLL_BAR);
         let timeline = &self.view.project.timeline;
         let transport = self.view.transport;
         let locate_enabled = self.enabled(Command::ReturnToStart);
@@ -271,10 +273,147 @@ impl App {
             && self.confirm.is_none()
             && self.file.is_none()
             && self.view.tracks.iter().all(|track| !track.loading);
+        let mut fit = self.arrangement_ui.fit.take();
+        let mut snap = self.arrangement_ui.settings.snap;
         ui.horizontal(|ui| {
-            timeline_ui::snap_control(ui, &mut self.arrangement_ui.settings.snap);
+            timeline_ui::snap_control(ui, &mut snap);
+            for (command, glyph) in [
+                (Command::FitArrangementWidth, Icon::FitWidth),
+                (Command::FitArrangementHeight, Icon::FitHeight),
+            ] {
+                if self.transport_tool(ui, command, glyph, false) {
+                    fit = Some(if command == Command::FitArrangementWidth {
+                        Fit::Width
+                    } else {
+                        Fit::Height
+                    });
+                }
+            }
         });
-        let settings = self.arrangement_ui.settings;
+        self.arrangement_ui.settings.snap = snap;
+        let mut settings = self.arrangement_ui.settings;
+        let mut v_offset = self.arrangement_ui.v_offset;
+        let surface_top = ui.cursor().top();
+        let surface_left = ui.cursor().left();
+        let lane_left = surface_left + header_width;
+        let row_height = f32::from(settings.track_height);
+        let master_height = crate::theme::ARRANGEMENT_TRACK_HEIGHT;
+        let bar = crate::theme::metric::SCROLL_BAR;
+        let tracks_height =
+            (height - (surface_top - start_top) - RULER_HEIGHT - LOOP_HEIGHT - master_height - bar)
+                .max(row_height);
+        let instruments: Vec<_> = self
+            .view
+            .project
+            .tracks
+            .iter()
+            .filter(|track| track.is_instrument())
+            .collect();
+        let height_preview = self.arrangement_ui.lane_height_preview;
+        let midi = &self.view.project.midi;
+        let take_rows = |track: &clef_model::project::Track| -> Vec<f32> {
+            let count = ArrangementUi::take_count(midi, track.id);
+            if !(track.take_lanes.visible && count >= 2) {
+                return Vec::new();
+            }
+            (0..count)
+                .map(|lane| {
+                    height_preview
+                        .filter(|(id, index, _)| *id == track.id && *index == lane)
+                        .map_or_else(
+                            || f32::from(track.take_lanes.height(lane)),
+                            |(_, _, height)| f32::from(height),
+                        )
+                })
+                .collect()
+        };
+        let content_height = |row: f32| -> f32 {
+            instruments
+                .iter()
+                .map(|track| row + take_rows(track).iter().sum::<f32>())
+                .sum::<f32>()
+                .max(row)
+        };
+        // Wheel and trackpad over the whole surface: scroll, ⌘-wheel and ⌘⇧-wheel zoom.
+        let surface = egui::Rect::from_min_size(
+            egui::pos2(surface_left, surface_top),
+            egui::vec2(
+                width,
+                RULER_HEIGHT + LOOP_HEIGHT + tracks_height + master_height + bar,
+            ),
+        );
+        let wheel = scroll_zoom_bars::wheel(ui, surface);
+        let tracks_top = surface_top + RULER_HEIGHT + LOOP_HEIGHT;
+        let zoom = settings.zoom_milli as f32 / 1_000.0;
+        let before =
+            Viewport::with_snap(timeline, settings.offset, zoom, lane_width, settings.snap);
+        if let Some(factor) = wheel.zoom_horizontal {
+            let next =
+                (zoom * factor).clamp(*controls::ZOOM_RANGE.start(), *controls::ZOOM_RANGE.end());
+            let anchor = wheel.pointer.map_or(lane_width / 2.0, |pointer| {
+                (pointer.x - lane_left).clamp(0.0, lane_width)
+            });
+            settings.offset = before.offset_for_zoom(next, anchor);
+            settings.zoom_milli = (next * 1_000.0).round() as u32;
+        }
+        if wheel.scroll.x != 0.0 {
+            settings.offset = before.offset_scrolled(-wheel.scroll.x);
+        }
+        let mut height_steps = wheel.zoom_vertical;
+        let height_anchor = wheel.pointer.map_or(tracks_height / 2.0, |pointer| {
+            (pointer.y - tracks_top).clamp(0.0, tracks_height)
+        });
+        v_offset -= wheel.scroll.y;
+        // Fit buttons.
+        match fit {
+            Some(Fit::Width) => {
+                let end = self
+                    .view
+                    .project
+                    .midi
+                    .tracks
+                    .values()
+                    .flatten()
+                    .map(|clip| clip.end)
+                    .max()
+                    .unwrap_or(0)
+                    .max(timeline.loop_range[1])
+                    .max(timeline.bar_start(2));
+                let next = (lane_width * clef_model::timeline::QUARTER as f32 / end as f32)
+                    .clamp(*controls::ZOOM_RANGE.start(), *controls::ZOOM_RANGE.end());
+                settings.zoom_milli = (next * 1_000.0).round() as u32;
+                settings.offset = 0;
+            }
+            Some(Fit::Height) => {
+                let takes: f32 = instruments
+                    .iter()
+                    .map(|track| take_rows(track).iter().sum::<f32>())
+                    .sum();
+                let count = instruments.len().max(1) as f32;
+                let fitted = ((tracks_height - takes) / count).floor();
+                settings.track_height = clamp_height(fitted);
+                v_offset = 0.0;
+                height_steps = 0;
+            }
+            None => {}
+        }
+        let vertical_zoom = |settings: &mut clef_model::project::ArrangementView,
+                             v_offset: &mut f32,
+                             steps: i32,
+                             anchor: f32| {
+            if steps == 0 {
+                return;
+            }
+            let old = f32::from(settings.track_height);
+            let next = clamp_height(old * 1.25_f32.powi(steps));
+            settings.track_height = next;
+            let ratio = f32::from(next) / old;
+            *v_offset = (*v_offset + anchor) * ratio - anchor;
+        };
+        vertical_zoom(&mut settings, &mut v_offset, height_steps, height_anchor);
+        let row_height = f32::from(settings.track_height);
+        let max_v_offset = (content_height(row_height) - tracks_height).max(0.0);
+        v_offset = v_offset.clamp(0.0, max_v_offset);
         let viewport = Viewport::with_snap(
             timeline,
             settings.offset,
@@ -290,19 +429,23 @@ impl App {
         let mut take_action = None;
         let mut take_toggle = None;
         let mut loop_gesture = self.transport_ui.loop_gesture.take();
+        let mut shown_playhead = transport.audible_tick;
+        ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
         ui.horizontal_top(|ui| {
             ui.vertical(|ui| {
                 ui.set_width(header_width);
                 add = self.button(ui, Command::AddTrack);
             });
             ui.vertical(|ui| {
-                if let Some(tick) = viewport.ruler(
+                let (locate, shown) = viewport.ruler(
                     ui,
                     lane_width,
                     transport.audible_tick,
                     timeline,
                     locate_enabled,
-                ) {
+                );
+                shown_playhead = shown;
+                if let Some(tick) = locate {
                     action = Some(TransportAction::Locate(tick));
                 }
                 if let Some(range) = viewport.loop_band(
@@ -318,36 +461,42 @@ impl App {
             });
         });
         self.transport_ui.loop_gesture = loop_gesture;
-        let row_height = crate::theme::ARRANGEMENT_TRACK_HEIGHT;
-        let master_height = row_height + ui.spacing().item_spacing.y;
-        egui::ScrollArea::vertical()
-            .id_salt("arrangement-tracks")
-            .max_height(
-                (height - RULER_HEIGHT - LOOP_HEIGHT - 50.0 - master_height).max(row_height),
-            )
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                if !self
-                    .view
-                    .project
-                    .tracks
-                    .iter()
-                    .any(clef_model::project::Track::is_instrument)
-                {
-                    ui.horizontal(|ui| {
-                        ui.allocate_space(egui::vec2(header_width, row_height));
-                        let (_, rect) = ui.allocate_space(egui::vec2(lane_width, row_height));
-                        viewport.lane(ui, rect, transport.audible_tick);
-                    });
+        // The scrolled track rows: header column and lane column on one row geometry.
+        let (tracks, _) = ui.allocate_exact_size(
+            egui::vec2(header_width + lane_width + bar, tracks_height),
+            egui::Sense::hover(),
+        );
+        let rows_area = egui::Rect::from_min_size(
+            tracks.min,
+            egui::vec2(header_width + lane_width, tracks_height),
+        );
+        let mut focus_row = None;
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(egui::Rect::from_min_size(
+                    rows_area.min - egui::vec2(0.0, v_offset),
+                    egui::vec2(rows_area.width(), f32::INFINITY),
+                ))
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+            |ui| {
+                ui.set_clip_rect(rows_area.intersect(ui.clip_rect()));
+                ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+                if instruments.is_empty() {
+                    let (row, _) = ui.allocate_exact_size(
+                        egui::vec2(rows_area.width(), row_height),
+                        egui::Sense::hover(),
+                    );
+                    ui.painter().rect_filled(
+                        egui::Rect::from_min_size(row.min, egui::vec2(header_width, row_height)),
+                        0,
+                        crate::theme::PANEL,
+                    );
+                    viewport.lane_grid(
+                        ui,
+                        egui::Rect::from_min_max(egui::pos2(lane_left, row.top()), row.max),
+                    );
                 }
-                for (index, track) in self
-                    .view
-                    .project
-                    .tracks
-                    .iter()
-                    .filter(|track| track.is_instrument())
-                    .enumerate()
-                {
+                for (index, track) in instruments.iter().copied().enumerate() {
                     let state = self
                         .view
                         .state(track.id)
@@ -358,211 +507,270 @@ impl App {
                     );
                     let take_count = ArrangementUi::take_count(&self.view.project.midi, track.id);
                     let chip = take_count >= 2;
-                    ui.horizontal_top(|ui| {
-                        let row_width = if chip {
-                            header_width - 28.0 - 34.0 - 2.0 * ui.spacing().item_spacing.x
-                        } else {
-                            header_width - 28.0 - ui.spacing().item_spacing.x
-                        };
-                        let row_width =
-                            row_width - crate::theme::HEADER_METER - ui.spacing().item_spacing.x;
-                        let response = Self::track_row(
-                            ui,
-                            &track.name,
-                            &format!("{plugin} · {state}"),
-                            row_width,
-                            self.view.selected == Some(track.id),
-                            self.confirm.is_none(),
-                            self.keyboard_mode,
-                        );
-                        if chip {
-                            ui.allocate_ui_with_layout(
-                                egui::vec2(34.0, row_height),
-                                egui::Layout::top_down(egui::Align::Center),
-                                |ui| {
-                                    ui.add_space(11.0);
-                                    let label = egui::RichText::new(format!("T {take_count}"))
-                                        .size(10.0)
-                                        .color(if track.take_lanes.visible {
-                                            colors::ACCENT
-                                        } else {
-                                            colors::SECONDARY
-                                        });
-                                    let button =
-                                        egui::Button::new(label).min_size(egui::vec2(30.0, 20.0));
-                                    let response = ui
-                                        .add_enabled(!self.view.recording, button)
-                                        .on_hover_text(format!("Take lanes ({take_count} takes)"));
-                                    response.widget_info(|| {
-                                        egui::WidgetInfo::selected(
-                                            egui::WidgetType::SelectableLabel,
-                                            !self.view.recording,
-                                            track.take_lanes.visible,
-                                            format!("Take lanes, {take_count} takes"),
-                                        )
-                                    });
+                    let colour = crate::theme::track_colour(track.colour());
+                    let (row, _) = ui.allocate_exact_size(
+                        egui::vec2(rows_area.width(), row_height),
+                        egui::Sense::hover(),
+                    );
+                    let header =
+                        egui::Rect::from_min_size(row.min, egui::vec2(header_width, row_height));
+                    let rect = egui::Rect::from_min_max(egui::pos2(lane_left, row.top()), row.max);
+                    ui.painter().rect_filled(header, 0, crate::theme::PANEL);
+                    let mut response = None;
+                    ui.scope_builder(
+                        egui::UiBuilder::new()
+                            .max_rect(header)
+                            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                        |ui| {
+                            ui.spacing_mut().item_spacing = egui::vec2(2.0, 0.0);
+                            ui.add_space(crate::theme::metric::STRIPE + 1.0);
+                            let detail = format!("{plugin} · {state}");
+                            let full = format!("{}\n{detail}", track.name);
+                            // Visual (and focus) order: name, take chip, arm, meter at the edge.
+                            let meter_left = header.right() - crate::theme::HEADER_METER;
+                            let arm_left = meter_left - 2.0 - 28.0;
+                            let chip_left = if chip {
+                                arm_left - 2.0 - 34.0
+                            } else {
+                                arm_left
+                            };
+                            let slot = |left: f32, right: f32| {
+                                egui::UiBuilder::new()
+                                    .max_rect(egui::Rect::from_x_y_ranges(
+                                        left..=right,
+                                        header.y_range(),
+                                    ))
+                                    .layout(egui::Layout::left_to_right(egui::Align::Center))
+                            };
+                            let name_left = ui.cursor().left();
+                            let header_response = ui
+                                .scope_builder(slot(name_left, chip_left - 2.0), |ui| {
+                                    let mut row_widget = ListRow::new(&track.name)
+                                        .accessible(&full)
+                                        .height(row_height)
+                                        .width((chip_left - 2.0 - name_left).max(24.0))
+                                        .selected(self.view.selected == Some(track.id))
+                                        .enabled(self.confirm.is_none())
+                                        .header();
+                                    if row_height >= crate::theme::ARRANGEMENT_TRACK_HEIGHT {
+                                        row_widget = row_widget.detail(&detail);
+                                    }
+                                    row_widget.show(ui)
+                                })
+                                .inner;
+                            if chip {
+                                ui.scope_builder(slot(chip_left, arm_left - 2.0), |ui| {
+                                    let response = crate::primitives::chip::chip(
+                                        ui,
+                                        &format!("T {take_count}"),
+                                        &format!("Take lanes, {take_count} takes"),
+                                        track.take_lanes.visible,
+                                        !self.view.recording,
+                                    );
                                     if response.clicked() {
                                         let mut lanes = track.take_lanes.clone();
                                         lanes.visible = !lanes.visible;
                                         take_toggle = Some((track.id, lanes));
                                     }
-                                },
-                            );
-                        }
-                        let armed = self.view.armed == Some(track.id);
-                        let arm_enabled = !self.view.recording
-                            && !transport.pending
-                            && self.confirm.is_none()
-                            && self.file.is_none()
-                            && self.busy_since.is_none()
-                            && (armed || track.plugin.is_some());
-                        if controls::arm(
-                            ui,
-                            &track.name,
-                            arm_enabled,
-                            armed,
-                            armed && self.view.recording_region.is_some(),
-                            self.keyboard_mode,
-                        ) {
-                            action = Some(TransportAction::Arm(track.id));
-                        }
-                        crate::primitives::mixer::header_meter(
-                            ui,
-                            response.rect.height(),
-                            &track.name,
-                            self.view
-                                .track_meters
-                                .get(&track.id)
-                                .copied()
-                                .unwrap_or_default(),
-                        );
-                        let (_, rect) =
-                            ui.allocate_space(egui::vec2(lane_width, response.rect.height()));
-                        viewport.lane_grid(ui, rect);
-                        let lane = Lane {
-                            track: track.id,
-                            rect,
-                            visible: rect.intersect(ui.clip_rect()),
-                        };
-                        lanes.push(lane);
-                        if lane.visible.is_positive() {
-                            let binding = |command| {
-                                let binding = self
-                                    .bindings
-                                    .iter()
-                                    .find(|binding| binding.command == command)
-                                    .unwrap();
-                                (
-                                    binding.title,
-                                    binding
-                                        .shortcut
-                                        .map(|shortcut| ui.ctx().format_shortcut(&shortcut))
-                                        .unwrap_or_default(),
-                                )
-                            };
-                            clip_command = self
-                                .arrangement_ui
-                                .lane(
-                                    ui,
-                                    lane,
-                                    LaneInput {
-                                        viewport: &viewport,
-                                        timeline,
-                                        arrangement: &self.view.project.midi,
-                                        track,
-                                        enabled: take_enabled,
-                                        playhead: transport.audible_tick,
-                                    },
-                                    binding,
-                                )
-                                .or(clip_command);
-                        }
-                        if armed && let Some(range) = self.view.recording_region {
-                            viewport.recording(
-                                ui,
-                                rect,
-                                range,
-                                timeline.loop_range,
-                                self.view.recording_notes.as_deref(),
-                            );
-                        }
-                        viewport.paint_playhead(ui, rect, transport.audible_tick);
-                        if self.track_focus == Some(track.id) {
-                            response.request_focus();
-                            response.scroll_to_me(Some(egui::Align::Center));
-                            self.track_focus = None;
-                        }
-                        if response.clicked() {
-                            choose = Some(track.id);
-                        }
-                        if response.double_clicked() {
-                            choose = Some(track.id);
-                            self.rename_focus = true;
-                        }
-                        if response.has_focus() {
-                            let tracks: Vec<_> = self
-                                .view
-                                .project
-                                .tracks
-                                .iter()
-                                .filter(|track| track.is_instrument())
-                                .collect();
-                            if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowDown))
-                                && index + 1 < tracks.len()
-                            {
-                                choose = Some(tracks[index + 1].id);
+                                });
                             }
-                            if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowUp))
-                                && index > 0
-                            {
-                                choose = Some(tracks[index - 1].id);
-                            }
-                        }
-                    });
-                    if track.take_lanes.visible && take_count >= 2 {
-                        for take_lane in 0..take_count {
-                            let height = self
-                                .arrangement_ui
-                                .lane_height_preview
-                                .filter(|(id, lane, _)| *id == track.id && *lane == take_lane)
-                                .map_or_else(
-                                    || f32::from(track.take_lanes.height(take_lane)),
-                                    |(_, _, height)| f32::from(height),
-                                );
-                            ui.horizontal_top(|ui| {
-                                let (_, header) =
-                                    ui.allocate_space(egui::vec2(header_width, height));
-                                let (_, band) = ui.allocate_space(egui::vec2(lane_width, height));
-                                viewport.lane_grid(ui, band);
-                                let row = TakeLaneRow {
-                                    track: track.id,
-                                    lane: take_lane,
-                                    header,
-                                    band,
-                                };
-                                if let Some(action) = self.arrangement_ui.take_lane(
+                            ui.scope_builder(slot(arm_left, meter_left - 2.0), |ui| {
+                                let armed = self.view.armed == Some(track.id);
+                                let arm_enabled = !self.view.recording
+                                    && !transport.pending
+                                    && self.confirm.is_none()
+                                    && self.file.is_none()
+                                    && self.busy_since.is_none()
+                                    && (armed || track.plugin.is_some());
+                                if crate::primitives::track_state::record_arm(
                                     ui,
-                                    TakeLaneInput {
-                                        viewport: &viewport,
-                                        timeline,
-                                        arrangement: &self.view.project.midi,
-                                        track,
-                                        row,
-                                        enabled: take_enabled,
-                                    },
+                                    &track.name,
+                                    arm_enabled,
+                                    armed,
+                                    armed && self.view.recording_region.is_some(),
+                                    self.keyboard_mode,
                                 ) {
-                                    take_action = Some(action);
+                                    action = Some(TransportAction::Arm(track.id));
                                 }
                             });
+                            ui.scope_builder(slot(meter_left, header.right()), |ui| {
+                                crate::primitives::mixer::header_meter(
+                                    ui,
+                                    row_height,
+                                    &track.name,
+                                    self.view
+                                        .track_meters
+                                        .get(&track.id)
+                                        .copied()
+                                        .unwrap_or_default(),
+                                );
+                            });
+                            response = Some(header_response);
+                        },
+                    );
+                    ui.painter().rect_filled(
+                        egui::Rect::from_min_size(
+                            header.min,
+                            egui::vec2(crate::theme::metric::STRIPE + 1.0, row_height),
+                        ),
+                        0,
+                        colour,
+                    );
+                    let response = response.expect("header row drawn");
+                    viewport.lane_grid(ui, rect);
+                    let lane = Lane {
+                        track: track.id,
+                        rect,
+                        visible: rect.intersect(ui.clip_rect()),
+                        colour,
+                    };
+                    lanes.push(lane);
+                    if lane.visible.is_positive() {
+                        let binding = |command: Command| {
+                            (command.title(), self.keymap.text(ui.ctx(), command))
+                        };
+                        clip_command = self
+                            .arrangement_ui
+                            .lane(
+                                ui,
+                                lane,
+                                LaneInput {
+                                    viewport: &viewport,
+                                    timeline,
+                                    arrangement: &self.view.project.midi,
+                                    track,
+                                    enabled: take_enabled,
+                                    playhead: transport.audible_tick,
+                                },
+                                binding,
+                            )
+                            .or(clip_command);
+                    }
+                    let armed = self.view.armed == Some(track.id);
+                    if armed && let Some(range) = self.view.recording_region {
+                        viewport.recording(
+                            ui,
+                            rect,
+                            range,
+                            timeline.loop_range,
+                            self.view.recording_notes.as_deref(),
+                            colour,
+                        );
+                    }
+                    if self.track_focus == Some(track.id) {
+                        response.request_focus();
+                        focus_row = Some(row.y_range());
+                        self.track_focus = None;
+                    }
+                    if response.clicked() {
+                        choose = Some(track.id);
+                    }
+                    if response.double_clicked() {
+                        choose = Some(track.id);
+                        self.rename_focus = true;
+                    }
+                    if response.has_focus() {
+                        if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowDown))
+                            && index + 1 < instruments.len()
+                        {
+                            choose = Some(instruments[index + 1].id);
+                        }
+                        if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowUp))
+                            && index > 0
+                        {
+                            choose = Some(instruments[index - 1].id);
+                        }
+                    }
+                    for (take_lane, height) in take_rows(track).into_iter().enumerate() {
+                        let (row, _) = ui.allocate_exact_size(
+                            egui::vec2(rows_area.width(), height),
+                            egui::Sense::hover(),
+                        );
+                        let header =
+                            egui::Rect::from_min_size(row.min, egui::vec2(header_width, height));
+                        let band =
+                            egui::Rect::from_min_max(egui::pos2(lane_left, row.top()), row.max);
+                        viewport.lane_grid(ui, band);
+                        let row = TakeLaneRow {
+                            track: track.id,
+                            lane: take_lane,
+                            header,
+                            band,
+                        };
+                        if let Some(action) = self.arrangement_ui.take_lane(
+                            ui,
+                            TakeLaneInput {
+                                viewport: &viewport,
+                                timeline,
+                                arrangement: &self.view.project.midi,
+                                track,
+                                row,
+                                enabled: take_enabled,
+                            },
+                        ) {
+                            take_action = Some(action);
                         }
                     }
                 }
-            });
-        ui.horizontal_top(|ui| {
-            crate::primitives::mixer::master_header(ui, header_width, self.view.master_meter);
-            let (_, lane) = ui.allocate_space(egui::vec2(lane_width, row_height));
-            viewport.lane(ui, lane, transport.audible_tick);
-        });
+            },
+        );
+        // A row focused from the keyboard or the details panel scrolls into view.
+        if let Some(range) = focus_row {
+            let top = range.min - rows_area.top() + v_offset;
+            let bottom = range.max - rows_area.top() + v_offset;
+            if top < v_offset {
+                v_offset = top;
+            } else if bottom > v_offset + tracks_height {
+                v_offset = bottom - tracks_height;
+            }
+            ui.ctx().request_repaint();
+        }
+        // The vertical bar beside the rows: track scroll and track-height zoom.
+        let bar_rect =
+            egui::Rect::from_min_max(egui::pos2(rows_area.right(), tracks.top()), tracks.max);
+        let moved = ui
+            .scope_builder(egui::UiBuilder::new().max_rect(bar_rect), |ui| {
+                scroll_zoom_bars::vertical(
+                    ui,
+                    "Arrangement tracks",
+                    scroll_zoom_bars::Axis {
+                        offset: v_offset,
+                        visible: tracks_height,
+                        total: content_height(row_height).max(tracks_height),
+                    },
+                    true,
+                )
+            })
+            .inner;
+        if let Some(next) = moved.offset {
+            v_offset = next;
+        }
+        match moved.zoom {
+            Some(scroll_zoom_bars::Zoom::In) => {
+                vertical_zoom(&mut settings, &mut v_offset, 1, tracks_height / 2.0)
+            }
+            Some(scroll_zoom_bars::Zoom::Out) => {
+                vertical_zoom(&mut settings, &mut v_offset, -1, tracks_height / 2.0)
+            }
+            None => {}
+        }
+        let master = ui
+            .horizontal_top(|ui| {
+                crate::primitives::mixer::master_header(ui, header_width, self.view.master_meter);
+                let (_, lane) = ui.allocate_space(egui::vec2(lane_width, master_height));
+                viewport.lane_grid(ui, lane);
+                lane
+            })
+            .inner;
+        // The one playhead: from the ruler top through every track row to the Master row.
+        viewport.playhead(
+            ui,
+            egui::Rect::from_min_max(
+                egui::pos2(lane_left, surface_top),
+                egui::pos2(lane_left + lane_width, master.bottom()),
+            ),
+            shown_playhead,
+        );
         let last_bar = timeline.changes.last().map_or(1, |tempo| tempo.bar);
         let max_offset = timeline
             .bar_start(last_bar.saturating_add(64))
@@ -604,7 +812,18 @@ impl App {
         };
         let mut offset = settings.offset;
         let mut zoom = settings.zoom_milli as f32 / 1_000.0;
-        controls::navigation(ui, &mut offset, &mut zoom, max_offset);
+        ui.horizontal_top(|ui| {
+            ui.add_space(header_width);
+            controls::navigation(
+                ui,
+                "Arrangement time",
+                &mut offset,
+                &mut zoom,
+                max_offset,
+                lane_width,
+                lane_width,
+            );
+        });
         let zoom_milli = (zoom * 1_000.0).round() as u32;
         if zoom_milli != settings.zoom_milli {
             let playhead = viewport.x(transport.audible_tick);
@@ -613,13 +832,11 @@ impl App {
             } else {
                 lane_width / 2.0
             };
-            let offset_at_zoom = (f64::from(anchor) * clef_model::timeline::QUARTER as f64
-                / f64::from(zoom))
-            .round() as u64;
-            offset = viewport.tick_at(anchor).saturating_sub(offset_at_zoom);
+            offset = viewport.offset_for_zoom(zoom, anchor);
         }
+        self.arrangement_ui.v_offset = v_offset;
         let next = clef_model::project::ArrangementView {
-            offset,
+            offset: offset.min(max_offset),
             zoom_milli,
             ..settings
         };
@@ -803,6 +1020,7 @@ mod tests {
             app.view.project_open = true;
             app.view.selected = Some(1);
             app.view.project.tracks.push(Track {
+                colour: None,
                 id: 1,
                 name: "Strings".into(),
                 plugin: None,
@@ -911,6 +1129,7 @@ mod tests {
             app.view.selected = Some(1);
             app.view.armed = Some(1);
             app.view.project.tracks.push(Track {
+                colour: None,
                 id: 1,
                 name: "Lead".into(),
                 plugin: Some(Plugin {
@@ -973,9 +1192,9 @@ mod tests {
                     },
                 );
                 let record_color = if phase == TransportPhase::Stopped {
-                    crate::colors::TEXT
+                    crate::theme::TEXT
                 } else {
-                    crate::colors::DANGER
+                    crate::theme::DANGER
                 };
                 assert!(output.shapes.iter().any(|shape| matches!(
                     &shape.shape,
@@ -1056,8 +1275,8 @@ mod tests {
             context
                 .run_ui(egui::RawInput::default(), |ui| {
                     app.button(ui, Command::AddTrack);
-                    app.transport_tool(ui, Command::ToggleClick, Glyph::Metronome, false);
-                    app.transport_tool(ui, Command::Stop, Glyph::Stop, false);
+                    app.transport_tool(ui, Command::ToggleClick, Icon::Metronome, false);
+                    app.transport_tool(ui, Command::Stop, Icon::Stop, false);
                 })
                 .shapes
         };

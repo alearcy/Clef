@@ -3,16 +3,18 @@ name: Chip
 kind: component
 reference: composer::style::LookAndFeel (toggled TextButton), ModChip, TextToggle
 status: shared
-impl: planned
+impl: gallery
 reference-source: [Source/Arrangement.cpp, Source/Mixer.cpp, Source/MainComponent.cpp] (callers)
 tokens: [field, text, accent, secondary, background]
 used-in: [track-header, mixer, fx-rack, arrangement, transport-bar, window]
-snapshot: snapshots/shared-controls.png
+snapshot: snapshots/egui/t18-chip-1024.png
+api: ui::primitives::chip::chip
+evidence: [t18-chip]
 ---
 
-> **Legacy reference (C++).** The symbols and code here describe the original Composer
-> implementation; they are not in this repository and are not an API. Clef builds this in
-> Rust + egui. See [README](../README.md) and the [UI contract](../contract.md).
+> **Migrated to Rust/egui (T18, 2026-11-21).** The Clef section at the end of this file is the
+> implementation contract. Earlier sections keep the legacy design intent; their C++ symbols are
+> not in this repository.
 
 # Chip
 
@@ -39,3 +41,15 @@ the track menu offer the same command.
 
 ## Kit
 A toggle chip is a plain `juce::TextButton` under the kit `LookAndFeel` (field off, peacock while toggled); no separate class is needed. The modulation chip is `composer::style::ModChip`. Flat status toggles (BROWSER, EDITOR · MIXER · FX RACKS) are `composer::style::TextToggle`.
+
+## Clef Rust/egui — T18
+
+**API**
+
+```rust
+pub fn chip(ui: &mut egui::Ui, label: &str, name: &str, on: bool, enabled: bool) -> egui::Response;
+```
+
+20 high (`CHIP_HEIGHT`), `CAPTION` (10) text, raised `FIELD` body off, `PEACOCK` with
+`foreground_on` label while on, disabled flat. `name` is the accessible name and tooltip; the state
+is exposed as toggled. Used by the arrangement's take-lane chip ("T n").

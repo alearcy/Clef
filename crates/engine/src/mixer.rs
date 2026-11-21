@@ -474,6 +474,7 @@ mod tests {
     fn bus_solo_propagates_upstream_and_send_returns_stay_audible() {
         use clef_model::project::{Project, Send, Track, TrackKind};
         let channel = |id: u64, bus: Option<u64>| Track {
+            colour: None,
             id,
             name: format!("Track {id}"),
             plugin: None,
@@ -489,6 +490,7 @@ mod tests {
             state: Default::default(),
         };
         let bus = Track {
+            colour: None,
             id: 3,
             name: "Reverb".into(),
             plugin: None,
@@ -553,6 +555,7 @@ mod tests {
         use clef_model::project::{Project, Send, Track, TrackKind};
         let mut project = Project::default();
         project.tracks.push(Track {
+            colour: None,
             id: 1,
             name: "Strings".into(),
             plugin: None,
@@ -574,6 +577,7 @@ mod tests {
             state: Default::default(),
         });
         project.tracks.push(Track {
+            colour: None,
             id: 2,
             name: "Reverb".into(),
             plugin: None,

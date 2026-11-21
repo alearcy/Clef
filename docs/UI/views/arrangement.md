@@ -30,6 +30,11 @@ timeline navigation. The header shows the shared Master stereo meter. Its lane u
 grid and playhead at the current horizontal position and zoom. The Master row is present in an
 empty project and remains above the Piano Roll when the dock is open.
 
+## Clef T18 Phase 3
+
+The marquee is the [range overlay](../components/range-overlay.md): `accent` at 12 % with an 80 %
+edge (the edge was full `accent` before).
+
 ## Anatomy, top to bottom
 1. [Timeline rulers](timeline-rulers.md) with the locator band.
 2. **Global band**: tempo, marker, [chord](chord-lane.md) and arrangement lanes. Headers painted by `paintGlobalHeader`

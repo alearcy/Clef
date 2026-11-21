@@ -3,5 +3,8 @@ fn main() -> clef_model::Result<()> {
         .nth(1)
         .ok_or("pass a snapshot directory")?;
     let width = std::env::args().nth(2).ok_or("pass 1024 or 760")?.parse()?;
-    clef_ui::gallery::render_startup(output.into(), width)
+    let scale = std::env::args()
+        .nth(3)
+        .map_or(Ok(1), |scale| scale.parse())?;
+    clef_ui::gallery::render_startup(output.into(), width, scale)
 }

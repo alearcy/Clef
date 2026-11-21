@@ -2,16 +2,18 @@
 name: List row
 kind: component
 status: app
-impl: planned
+impl: gallery
 reference-source: [Source/Browser.cpp, Source/PluginList.cpp, Source/AudioFileList.cpp, Source/PresetList.cpp, Source/PlaylistPanel.cpp, Source/PluginPicker.h, Source/StartupChooser.h, Source/Commands.h (CommandPalette), Source/SettingsPanel.h]
 tokens: [panel, field, accent, peacock, text, secondary, disabled]
 used-in: [side-drawers, startup, command-palette, settings, callout, multitrack-session]
-snapshot: snapshots/list-row.png
+snapshot: snapshots/egui/t18-list-row-1024.png
+api: ui::primitives::list_row::ListRow
+evidence: [t18-list-row, startup and arrangement surface tests]
 ---
 
-> **Legacy reference (C++).** The symbols and code here describe the original Composer
-> implementation; they are not in this repository and are not an API. Clef builds this in
-> Rust + egui. See [README](../README.md) and the [UI contract](../contract.md).
+> **Migrated to Rust/egui (T18, 2026-11-21).** The Clef section at the end of this file is the
+> implementation contract. Earlier sections keep the legacy design intent; their C++ symbols are
+> not in this repository.
 
 # List row
 
@@ -63,3 +65,40 @@ an `accent` outline. Unavailable rows use `disabled` text and remain selectable 
 See [recent](../snapshots/egui/t07-startup-recent-1024.png),
 [missing](../snapshots/egui/t07-startup-missing-760.png) and
 [recovery](../snapshots/egui/t07-recovery-ready-760.png).
+
+## Clef Rust/egui — T18
+
+**API**
+
+```rust
+impl<'a> ListRow<'a> {
+    pub fn new(name: &'a str) -> Self;           // 22 high by default
+    pub fn detail(self, detail: &'a str) -> Self; // second line in SECONDARY
+    pub fn accessible(self, name: &'a str) -> Self;
+    pub fn height(self, height: f32) -> Self;     // 22, 26 or 44
+    pub fn width(self, width: f32) -> Self;
+    pub fn selected(self, selected: bool) -> Self;
+    pub fn enabled(self, enabled: bool) -> Self;
+    pub fn available(self, available: bool) -> Self; // false: DISABLED text, still selectable
+    pub fn header(self) -> Self;                  // selection keeps PANEL, edge only
+    pub fn show(self, ui: &mut egui::Ui) -> egui::Response;
+}
+```
+
+| State | Fill | Edge | Text |
+| --- | --- | --- | --- |
+| rest | `PANEL` | — | `TEXT` / `SECONDARY` |
+| hover | `FIELD` | — | unchanged |
+| selected | `FIELD` (header: `PANEL`) | [selection edge](selection-edge.md) | unchanged |
+| keyboard focus | unchanged | inset 1-point `ACCENT` | unchanged |
+| unavailable / disabled | unchanged | — | `DISABLED` |
+
+Each line truncates to one row; the accessible name and tooltip keep the full text. Used by the
+arrangement track headers (44, header), startup and recovery rows (44), the instrument and effect
+pickers and the file list (22).
+
+## Clef Rust/egui — T18 Phase 2 addition
+
+`ListRow::trailing(&str)` paints right-aligned `BODY` text in `secondary` (`disabled` when the
+row is unavailable) on the first line and narrows the name to fit; an empty string paints
+nothing. The [command palette](../views/command-palette.md) uses it for live shortcuts.

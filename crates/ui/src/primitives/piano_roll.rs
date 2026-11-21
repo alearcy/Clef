@@ -1,86 +1,172 @@
 use super::timeline::Viewport;
-use crate::{colors, theme};
+use crate::theme;
 use clef_model::{
     midi::{Clip, ClipId, EventId, Message, RollEvent, continuous_cc, discrete_cc},
     timeline::Timeline,
 };
-use eframe::egui::{self, Align2, FontId, Pos2, Rect, Response, Sense, Stroke, Ui, Vec2};
+use eframe::egui::{self, Align2, Pos2, Rect, Response, Sense, Stroke, Ui, Vec2};
 use std::collections::BTreeSet;
 
+/// The one pitch/time grid of the piano roll (T40): all 128 pitches, scrolled vertically.
 pub struct PitchGrid<'a> {
     pub keys: Rect,
     pub grid: Rect,
     pub time: &'a Viewport,
-    pub lowest: u8,
-    pub rows: u8,
+    /// Pitch-row height in points.
+    pub row: f32,
+    /// Points scrolled down from the top of pitch 127.
+    pub scroll: f32,
+}
+
+/// White keys within an octave, as pitch classes.
+const WHITE: [u8; 7] = [0, 2, 4, 5, 7, 9, 11];
+/// Black-key width as a share of the keybed (foundations, piano roll).
+const BLACK_WIDTH: f32 = 0.57;
+/// Key names hide below this row height.
+const NAME_ROW: f32 = 9.0;
+
+pub fn is_black(pitch: u8) -> bool {
+    matches!(pitch % 12, 1 | 3 | 6 | 8 | 10)
 }
 
 impl PitchGrid<'_> {
-    fn row(&self) -> f32 {
-        self.grid.height() / f32::from(self.rows)
+    /// Top edge of `pitch`'s row.
+    pub fn top(&self, pitch: u8) -> f32 {
+        self.grid.top() + f32::from(127 - pitch) * self.row - self.scroll
     }
 
+    /// The pitch row under `y`.
     pub fn key(&self, y: f32) -> u8 {
-        self.lowest
-            + ((self.grid.bottom() - y) / self.row())
-                .floor()
-                .clamp(0.0, f32::from(self.rows - 1)) as u8
+        let index = ((y - self.grid.top() + self.scroll) / self.row).floor();
+        127 - index.clamp(0.0, 127.0) as u8
+    }
+
+    /// The pitch under a point on the keybed: a black key where it is drawn, otherwise the white
+    /// key whose (wider) body is under `y`.
+    pub fn keybed_key(&self, pos: Pos2) -> u8 {
+        let row_key = self.key(pos.y);
+        if pos.x <= self.keys.left() + self.keys.width() * BLACK_WIDTH && is_black(row_key) {
+            return row_key;
+        }
+        let octave_base = row_key - row_key % 12;
+        let octave_bottom = self.top(octave_base) + self.row;
+        let white = 12.0 * self.row / 7.0;
+        let index = ((octave_bottom - pos.y) / white).floor().clamp(0.0, 6.0) as usize;
+        (octave_base + WHITE[index]).min(127)
+    }
+
+    /// The pitches with a row at least partly visible, lowest first.
+    pub fn visible(&self) -> std::ops::RangeInclusive<u8> {
+        let high = self.key(self.grid.top());
+        let low = self.key(self.grid.bottom() - 0.01);
+        low..=high
     }
 
     pub fn note(&self, tick: u64, end: u64, pitch: u8) -> Rect {
         let x = self.grid.left() + self.time.x(tick);
-        let y = self.grid.bottom() - (f32::from(pitch) - f32::from(self.lowest) + 1.0) * self.row();
+        let y = self.top(pitch);
         Rect::from_min_max(
             egui::pos2(x, y + theme::ROLL_NOTE_INSET),
             egui::pos2(
                 (self.grid.left() + self.time.x(end)).max(x + theme::ROLL_NOTE_MIN),
-                y + self.row() - theme::ROLL_NOTE_INSET,
+                y + self.row - theme::ROLL_NOTE_INSET,
             ),
         )
     }
 
-    pub fn paint(&self, ui: &Ui, bounds: [u64; 2], playhead: u64) {
+    /// Grid rows (white-key rows lighter, B–C the octave rule) and the time grid.
+    pub fn paint_grid(&self, ui: &Ui) {
         let painter = ui.painter_at(self.grid);
-        let keys = ui.painter_at(self.keys);
-        for pitch in self.lowest..self.lowest + self.rows {
-            let bottom = self.grid.bottom() - f32::from(pitch - self.lowest) * self.row();
-            let top = bottom - self.row();
-            let dark = matches!(pitch % 12, 1 | 3 | 6 | 8 | 10);
-            let background = if dark { colors::CANVAS } else { colors::PANEL };
-            painter.rect_filled(
-                Rect::from_x_y_ranges(self.grid.x_range(), top..=bottom),
-                0.0,
-                background,
-            );
-            let width = self.keys.width() * if dark { 0.57 } else { 1.0 };
-            keys.rect_filled(
-                Rect::from_min_max(
-                    egui::pos2(self.keys.left(), top),
-                    egui::pos2(self.keys.left() + width, bottom - theme::ROLL_NOTE_INSET),
-                ),
-                0.0,
-                if dark { colors::CANVAS } else { colors::FIELD },
-            );
-            if pitch % 12 == 0 {
-                keys.text(
-                    egui::pos2(self.keys.center().x, (bottom + top) * 0.5),
-                    Align2::CENTER_CENTER,
-                    format!("C{}", i16::from(pitch / 12) - 1),
-                    FontId::proportional(theme::ROLL_CAPTION),
-                    colors::TEXT,
+        painter.rect_filled(self.grid, 0.0, theme::CANVAS);
+        for pitch in self.visible() {
+            let top = self.top(pitch);
+            if !is_black(pitch) {
+                painter.rect_filled(
+                    Rect::from_x_y_ranges(self.grid.x_range(), top..=top + self.row),
+                    0.0,
+                    theme::PANEL,
                 );
+            }
+            let seam = match pitch % 12 {
+                0 => Some(theme::BAR_LINE),
+                5 => Some(theme::GRID),
+                _ => None,
+            };
+            if let Some(colour) = seam {
                 painter.hline(
                     self.grid.x_range(),
-                    bottom,
-                    Stroke::new(theme::ROLL_LINE, colors::DIVIDER),
+                    top + self.row,
+                    Stroke::new(theme::ROLL_LINE, colour),
                 );
             }
         }
         self.time.grid_lines(ui, self.grid);
-        for tick in bounds {
-            paint_marker(ui, self.grid, self.time, tick, colors::SECONDARY);
+    }
+
+    /// A real piano keybed: seven equal white keys per octave, black keys over them.
+    pub fn paint_keybed(&self, ui: &Ui, cursor: Option<u8>) {
+        let painter = ui.painter_at(self.keys);
+        painter.rect_filled(self.keys, 0.0, theme::BACKGROUND);
+        let white = 12.0 * self.row / 7.0;
+        let range = self.visible();
+        let first = range.start() - range.start() % 12;
+        for octave in (first..=*range.end()).step_by(12) {
+            let bottom = self.top(octave) + self.row;
+            for (index, class) in WHITE.iter().enumerate() {
+                let pitch = octave + class;
+                if pitch > 127 {
+                    break;
+                }
+                let key_bottom = bottom - index as f32 * white;
+                let key = Rect::from_min_max(
+                    egui::pos2(self.keys.left(), key_bottom - white + 0.5),
+                    egui::pos2(self.keys.right(), key_bottom - 0.5),
+                );
+                painter.rect_filled(key, 1.0, theme::CAP);
+                if cursor == Some(pitch) {
+                    painter.rect_filled(key, 1.0, theme::ACCENT.gamma_multiply(0.45));
+                }
+                if *class == 0 && self.row >= NAME_ROW {
+                    painter.text(
+                        egui::pos2(self.keys.right() - 3.0, key.center().y),
+                        Align2::RIGHT_CENTER,
+                        format!("C{}", i16::from(pitch / 12) - 1),
+                        theme::text::font(theme::ROLL_CAPTION),
+                        theme::BACKGROUND,
+                    );
+                }
+            }
+            for class in [1u8, 3, 6, 8, 10] {
+                let pitch = octave + class;
+                if pitch > 127 {
+                    break;
+                }
+                let top = self.top(pitch);
+                let key = Rect::from_min_max(
+                    egui::pos2(self.keys.left(), top),
+                    egui::pos2(
+                        self.keys.left() + self.keys.width() * BLACK_WIDTH,
+                        top + self.row,
+                    ),
+                );
+                painter.rect_filled(
+                    key.translate(egui::vec2(1.0, 1.0)),
+                    1.0,
+                    egui::Color32::from_black_alpha(60),
+                );
+                painter.rect_filled(key, 1.0, theme::BACKGROUND);
+                if cursor == Some(pitch) {
+                    painter.rect_filled(key, 1.0, theme::ACCENT.gamma_multiply(0.45));
+                }
+            }
         }
-        self.time.paint_playhead(ui, self.grid, playhead);
+    }
+
+    /// Clip start and end markers.
+    pub fn paint_bounds(&self, ui: &Ui, bounds: [u64; 2]) {
+        for tick in bounds {
+            paint_marker(ui, self.grid, self.time, tick, theme::SECONDARY);
+        }
     }
 }
 
@@ -123,7 +209,7 @@ pub fn note_focus(
         ui.painter_at(rect).rect_stroke(
             rect,
             theme::ROLL_RADIUS,
-            Stroke::new(theme::ROLL_LINE, colors::ACCENT),
+            Stroke::new(theme::ROLL_LINE, theme::ACCENT),
             egui::StrokeKind::Inside,
         );
         Some(id)
@@ -138,13 +224,15 @@ pub fn summary(ui: &mut Ui, name: &str, active: bool, repeated: bool) -> bool {
     } else {
         format!("{name} · MIDI")
     };
-    ui.add(egui::Button::new(&label).selected(active).truncate())
-        .on_hover_text(label)
+    super::text_button::TextButton::new(&label)
+        .toggle(active)
+        .tooltip(&label)
+        .show(ui)
         .clicked()
 }
 
 pub fn heading(ui: &mut Ui, title: &str) {
-    ui.label(title);
+    super::text::body(ui, title);
 }
 
 pub fn button(ui: &mut Ui, text: &str, enabled: bool) -> bool {
@@ -167,22 +255,34 @@ pub fn number<T: egui::emath::Numeric + PartialOrd>(
     value: &mut T,
     range: std::ops::RangeInclusive<T>,
 ) {
-    let name = ui.label(label);
-    ui.add(egui::DragValue::new(value).range(range))
-        .labelled_by(name.id);
+    ui.label(label);
+    super::value_slider::ValueSlider::new(label, value, range)
+        .width(64.0)
+        .show(ui);
 }
 
 pub fn cc_picker(ui: &mut Ui, current: &mut u8) {
-    let label = ui.label("Controller");
-    egui::ComboBox::from_id_salt("piano-roll-controller")
-        .selected_text(cc_name(*current))
-        .show_ui(ui, |ui| {
-            for cc in 0..128 {
-                ui.selectable_value(current, cc, cc_name(cc));
-            }
-        })
-        .response
-        .labelled_by(label.id);
+    let selected = *current;
+    let (_, cc) = super::menu_button::menu_button(
+        ui,
+        "piano-roll-controller",
+        "Controller",
+        Some("Controller"),
+        &cc_name(selected),
+        true,
+        |ui| {
+            egui::ScrollArea::vertical()
+                .max_height(320.0)
+                .show(ui, |ui| {
+                    (0..128)
+                        .find(|&cc| super::menu_button::choice(ui, &cc_name(cc), cc == selected))
+                })
+                .inner
+        },
+    );
+    if let Some(Some(cc)) = cc {
+        *current = cc;
+    }
 }
 
 pub fn cc_name(cc: u8) -> String {
@@ -195,40 +295,32 @@ pub fn cc_name(cc: u8) -> String {
     }
 }
 
-pub fn ruler(ui: &mut Ui, time: &Viewport, width: f32, tick: u64, timeline: &Timeline) {
+/// The roll's ruler beside a keybed-wide spacer; returns the playhead tick it shows.
+pub fn ruler(ui: &mut Ui, time: &Viewport, width: f32, tick: u64, timeline: &Timeline) -> u64 {
     ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::ZERO;
         ui.allocate_space(Vec2::new(theme::ROLL_KEYBED, super::timeline::RULER_HEIGHT));
-        time.ruler(ui, width, tick, timeline, false);
-    });
+        time.ruler(ui, width, tick, timeline, false).1
+    })
+    .inner
 }
 
-pub struct Lane<'a> {
-    pub time: &'a Viewport,
-    pub width: f32,
-    pub height: f32,
-    pub lowest: u8,
-    pub rows: u8,
-    pub enabled: bool,
-    pub name: &'a str,
-}
-
-pub fn pitch_lane<'a>(ui: &mut Ui, lane: Lane<'a>) -> (PitchGrid<'a>, Response, Response) {
-    let Lane {
-        time,
-        width,
-        height,
-        lowest,
-        rows,
-        enabled,
-        name,
-    } = lane;
-    let result = ui.horizontal(|ui| {
+/// Allocates the keybed and the grid side by side at `height`.
+pub fn pitch_area<'a>(
+    ui: &mut Ui,
+    time: &'a Viewport,
+    [width, height]: [f32; 2],
+    [row, scroll]: [f32; 2],
+    enabled: bool,
+) -> (PitchGrid<'a>, Response, Response) {
+    let result = ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::ZERO;
         let (keys, audition) =
             ui.allocate_exact_size(Vec2::new(theme::ROLL_KEYBED, height), Sense::click());
         let (grid, edit) =
             ui.allocate_exact_size(Vec2::new(width, height), Sense::click_and_drag());
-        labelled(&audition, enabled, &format!("{name} piano keyboard"));
-        labelled(&edit, enabled, &format!("{name} MIDI note grid"));
+        labelled(&audition, enabled, "Piano keyboard");
+        labelled(&edit, enabled, "MIDI note grid");
         super::timeline::paint_focus(ui, &audition);
         super::timeline::paint_focus(ui, &edit);
         (
@@ -236,8 +328,8 @@ pub fn pitch_lane<'a>(ui: &mut Ui, lane: Lane<'a>) -> (PitchGrid<'a>, Response, 
                 keys,
                 grid,
                 time,
-                lowest,
-                rows,
+                row,
+                scroll,
             },
             audition,
             edit,
@@ -250,32 +342,39 @@ pub fn labelled(response: &Response, enabled: bool, name: &str) {
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, enabled, name));
 }
 
-pub fn paint_note(
-    ui: &Ui,
-    grid: Rect,
-    area: Rect,
-    selected: bool,
-    active: bool,
-    primary: bool,
-    preview: bool,
-) {
+pub struct NoteStyle {
+    pub colour: egui::Color32,
+    pub selected: bool,
+    pub active: bool,
+    pub primary: bool,
+    pub preview: bool,
+}
+
+pub fn paint_note(ui: &Ui, grid: Rect, area: Rect, style: NoteStyle) {
+    let NoteStyle {
+        colour,
+        selected,
+        active,
+        primary,
+        preview,
+    } = style;
     if !area.intersects(grid) {
         return;
     }
     let painter = ui.painter_at(grid);
     let fill = if preview {
-        colors::ACCENT.gamma_multiply(0.54)
+        theme::ACCENT.gamma_multiply(0.54)
     } else if active {
-        colors::PEACOCK
+        colour
     } else {
-        colors::PEACOCK.gamma_multiply(if selected { 0.5 } else { 0.35 })
+        colour.gamma_multiply(if selected { 0.5 } else { 0.35 })
     };
     painter.rect_filled(area, theme::ROLL_RADIUS, fill);
     if selected || preview {
         painter.rect_stroke(
             area,
             theme::ROLL_RADIUS,
-            Stroke::new(theme::ROLL_SELECTION, colors::TEXT),
+            Stroke::new(theme::ROLL_SELECTION, theme::CAP_LIGHT),
             egui::StrokeKind::Inside,
         );
     }
@@ -287,17 +386,17 @@ pub fn paint_note(
             painter.vline(
                 x,
                 area.y_range(),
-                Stroke::new(theme::ROLL_LINE, colors::TEXT),
+                Stroke::new(theme::ROLL_LINE, theme::TEXT),
             );
         }
     }
 }
 
-pub fn comp_strip(ui: &mut Ui, time: &Viewport, width: f32, ranges: &[[u64; 2]], playhead: u64) {
+pub fn comp_strip(ui: &mut Ui, time: &Viewport, width: f32, ranges: &[[u64; 2]]) {
     let rect = Rect::from_min_size(ui.cursor().min, Vec2::new(width, 3.0));
     ui.allocate_space(rect.size());
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 0.0, colors::CANVAS);
+    painter.rect_filled(rect, 0.0, theme::CANVAS);
     for [start, end] in ranges {
         let left = rect.left() + time.x(*start);
         let right = rect.left() + time.x(*end);
@@ -307,14 +406,9 @@ pub fn comp_strip(ui: &mut Ui, time: &Viewport, width: f32, ranges: &[[u64; 2]],
                 egui::pos2(right.min(rect.right()), rect.bottom()),
             ),
             0.0,
-            colors::ACCENT.gamma_multiply(0.7),
+            theme::ACCENT.gamma_multiply(0.7),
         );
     }
-    painter.vline(
-        rect.left() + time.x(playhead),
-        rect.y_range(),
-        Stroke::new(1.0_f32, colors::TEXT),
-    );
 }
 
 pub fn paint_marker(ui: &Ui, rect: Rect, time: &Viewport, tick: u64, color: egui::Color32) {
@@ -334,7 +428,7 @@ pub fn repeat_markers(ui: &Ui, rect: Rect, time: &Viewport, clip: &Clip, window:
         let step = period.saturating_mul(minimum.div_ceil(period).max(1));
         let first = origin + window[0].saturating_sub(origin).div_ceil(step) * step;
         for tick in (first..end.min(window[1])).step_by(step as usize) {
-            paint_marker(ui, rect, time, tick, colors::SECONDARY.gamma_multiply(0.6));
+            paint_marker(ui, rect, time, tick, theme::SECONDARY.gamma_multiply(0.6));
         }
     }
 }
@@ -355,9 +449,9 @@ pub fn resize_gutter(ui: &mut Ui, height: f32, ratio: &mut f32) {
         Stroke::new(
             theme::ROLL_LINE,
             if hovering {
-                colors::ACCENT
+                theme::ACCENT
             } else {
-                colors::DIVIDER
+                theme::DIVIDER
             },
         ),
     );
@@ -368,6 +462,7 @@ pub fn resize_gutter(ui: &mut Ui, height: f32, ratio: &mut f32) {
 
 pub fn value_lane(ui: &mut Ui, name: &str, width: f32, enabled: bool) -> (Rect, Response) {
     ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
         ui.add_sized(
             [theme::ROLL_KEYBED, theme::ROLL_CONTROLLER_HEIGHT],
             egui::Label::new(name).truncate(),
@@ -378,27 +473,11 @@ pub fn value_lane(ui: &mut Ui, name: &str, width: f32, enabled: bool) -> (Rect, 
             Sense::click_and_drag(),
         );
         labelled(&response, enabled, name);
-        ui.painter_at(rect).rect_filled(rect, 0.0, colors::CANVAS);
+        ui.painter_at(rect).rect_filled(rect, 0.0, theme::CANVAS);
         super::timeline::paint_focus(ui, &response);
         (rect, response)
     })
     .inner
-}
-
-pub fn paint_key_cursor(ui: &Ui, keys: Rect, lowest: u8, rows: u8, key: u8) {
-    if key < lowest || key >= lowest.saturating_add(rows) {
-        return;
-    }
-    let row = keys.height() / f32::from(rows);
-    let bottom = keys.bottom() - f32::from(key - lowest) * row;
-    ui.painter_at(keys).rect_filled(
-        Rect::from_min_max(
-            egui::pos2(keys.left(), bottom - row),
-            egui::pos2(keys.right(), bottom),
-        ),
-        0.0,
-        colors::ACCENT.gamma_multiply(0.30),
-    );
 }
 
 pub struct ValueFocus<'a> {
@@ -470,7 +549,7 @@ pub fn point_focus(ui: &Ui, focus: ValueFocus<'_>) -> Option<(EventId, egui::Id)
             ui.painter_at(hit).rect_stroke(
                 hit,
                 theme::ROLL_RADIUS,
-                Stroke::new(theme::ROLL_LINE, colors::ACCENT),
+                Stroke::new(theme::ROLL_LINE, theme::ACCENT),
                 egui::StrokeKind::Inside,
             );
             found = Some((event.id, id));
@@ -513,7 +592,7 @@ pub fn paint_values(
     events: &[RollEvent],
     selection: &BTreeSet<EventId>,
     cc: Option<u8>,
-    clip: &Clip,
+    (clip, colour): (&Clip, egui::Color32),
 ) {
     let painter = ui.painter_at(rect);
     let value = |event: &RollEvent| match event.source.message {
@@ -521,7 +600,7 @@ pub fn paint_values(
         message => message.control().unwrap()[2],
     };
     if let Some(cc) = cc {
-        let stroke = Stroke::new(theme::ROLL_LINE, colors::PEACOCK);
+        let stroke = Stroke::new(theme::ROLL_LINE, colour);
         for pair in events.windows(2) {
             let [from, to] = [pair[0], pair[1]];
             if discrete_cc(cc)
@@ -554,7 +633,7 @@ pub fn paint_values(
                         painter.circle_stroke(
                             next,
                             theme::ROLL_POINT,
-                            Stroke::new(theme::ROLL_LINE, colors::ACCENT),
+                            Stroke::new(theme::ROLL_LINE, theme::ACCENT),
                         );
                     }
                     last = next;
@@ -569,9 +648,9 @@ pub fn paint_values(
     for event in events {
         let position = point(rect, time, event.tick, value(event));
         let color = if selection.contains(&event.id) {
-            colors::ACCENT
+            theme::ACCENT
         } else {
-            colors::PEACOCK
+            colour
         };
         let color = if event.active {
             color
@@ -598,6 +677,49 @@ pub fn paint_values(
 mod tests {
     use super::*;
     use clef_model::midi::Snap;
+
+    fn grid(time: &Viewport) -> PitchGrid<'_> {
+        PitchGrid {
+            keys: Rect::from_min_size(egui::pos2(0.0, 0.0), Vec2::new(56.0, 240.0)),
+            grid: Rect::from_min_size(egui::pos2(56.0, 0.0), Vec2::new(400.0, 240.0)),
+            time,
+            row: 12.0,
+            // Pitch 71 (B4) at the top edge.
+            scroll: 12.0 * f32::from(127_u8 - 71),
+        }
+    }
+
+    #[test]
+    fn rows_map_pitches_and_back_through_the_scroll() {
+        let timeline = Timeline::default();
+        let time = Viewport::with_snap(&timeline, 0, 96.0, 400.0, Snap::Off);
+        let grid = grid(&time);
+        assert_eq!(grid.top(71), 0.0);
+        assert_eq!(grid.key(0.5), 71);
+        assert_eq!(grid.key(12.5), 70);
+        assert_eq!(grid.visible(), 52..=71);
+        for pitch in grid.visible() {
+            assert_eq!(grid.key(grid.top(pitch) + 6.0), pitch);
+        }
+    }
+
+    #[test]
+    fn keybed_hits_black_keys_where_drawn_and_white_keys_by_their_wide_body() {
+        let timeline = Timeline::default();
+        let time = Viewport::with_snap(&timeline, 0, 96.0, 400.0, Snap::Off);
+        let grid = grid(&time);
+        let middle = |pitch: u8| grid.top(pitch) + 6.0;
+        // C♯4 is drawn 57 % wide: inside it is black, beside it the white key under it.
+        assert_eq!(grid.keybed_key(egui::pos2(10.0, middle(61))), 61);
+        assert!(!is_black(grid.keybed_key(egui::pos2(50.0, middle(61)))));
+        // Seven equal white keys per octave: each white key spans 12/7 rows.
+        let c4_bottom = grid.top(60) + 12.0;
+        let white = 12.0 * 12.0 / 7.0;
+        for (index, pitch) in [60, 62, 64, 65, 67, 69, 71].into_iter().enumerate() {
+            let y = c4_bottom - white * (index as f32 + 0.5);
+            assert_eq!(grid.keybed_key(egui::pos2(50.0, y)), pitch);
+        }
+    }
 
     #[test]
     fn velocity_extent_runs_from_the_note_start_to_its_projected_end() {

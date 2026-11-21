@@ -26,7 +26,6 @@ reference and remains a planning draft.
 | T28 — FX Rack and Virtual Cable Graph | Todo | [T28 specification](docs/specs/T28-fx-rack.md) | P2. After T12 and T15; audio and MIDI nodes connected by virtual cables. |
 | T16 — Plugin Management and Hosting Robustness | Todo | [T16 specification](docs/specs/T16-plugin-management.md) | P2. After T12; compatibility target required. |
 | T17 — Device Resilience and Preferences | Todo | [T17 specification](docs/specs/T17-device-resilience.md) | P2. After T04; extends T03 device handling. |
-| T18 — egui Design System, Commands, and Accessibility | Todo | [T18 specification](docs/specs/T18-ui-foundation.md) | P2. UI docs normalized to Rust/egui on 2026-11-17; Phase 1 (8 primitives) proposed, awaiting approval. |
 | T19 — Performance, Scale, and Realtime Safety | Todo | [T19 specification](docs/specs/T19-performance.md) | P2. After T04/T11/T12/T14; measurable targets must be agreed first. |
 | T20 — Automated App Regression Harness | Todo | [T20 specification](docs/specs/T20-regression-harness.md) | P2. Build from T04 onward; keep evidence categories separate. |
 | T21 — AU Hosting | Todo | [T21 specification](docs/specs/T21-au-hosting.md) | P3. After T12; needs AU validation decision. |

@@ -67,8 +67,10 @@ Every component and view file has two independent facts:
   **app** — implemented inline in `crates/ui/src/lib.rs`, provisional; **gallery** — implemented in
   `crates/ui/src/primitives/` with a golden image and tests, reuse it as is.
 
-`status: shared` does not mean the code exists. `impl` answers that question. No component is
-`gallery` yet.
+`status: shared` does not mean the code exists. `impl` answers that question. Since T18 Phase 1
+(2026-11-21) eleven components are `gallery`: text button, tool button, chip, menu button, text
+field, caption and heading, list row, selection edge, scroll and zoom bars, notice box and window
+frame.
 
 ## File template
 

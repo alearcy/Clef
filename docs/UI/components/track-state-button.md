@@ -3,15 +3,17 @@ name: Track state button
 kind: component
 reference: composer::style::TrackStateButton
 status: shared
-impl: planned
+impl: gallery
 tokens: [panel, field, oxblood, accent, text]
 used-in: [track-header, channel-strip, mixer]
-snapshot: snapshots/shared-controls.png, snapshots/monitor-states.png
+snapshot: snapshots/egui/t18-track-state-1024.png
+api: ui::primitives::track_state::record_arm
+evidence: [t18-track-state]
 ---
 
-> **Legacy reference (C++).** The symbols and code here describe the original Composer
-> implementation; they are not in this repository and are not an API. Clef builds this in
-> Rust + egui. See [README](../README.md) and the [UI contract](../contract.md).
+> **Migrated to Rust/egui (T18 Phase 3, 2026-11-21).** The Clef section at the end of this file is
+> the implementation contract. Earlier sections keep the legacy design intent; their C++ symbols are
+> not in this repository.
 
 # Track state button
 
@@ -53,3 +55,24 @@ The D24 badge stays in the lower-right corner. Hosts set lamp, mark and wording 
 `showMonitorState` (`Source/MonitorButtonState.h`). Approved board:
 [D67 Automatic Monitoring](https://claude.ai/artifact/QEHnZ665SSL5voPRhg1NHS); real render
 `snapshots/monitor-states.png` (Auto live, Auto idle, On, Off, recording, disabled).
+
+## Clef Rust/egui — T18 Phase 3
+
+**API**
+
+```rust
+pub fn record_arm(ui: &mut egui::Ui, track: &str, enabled: bool, armed: bool, recording: bool, keyboard: bool) -> bool;
+```
+
+The record target as the lamp (UI10, no filled tile): outer ring and small inner ring in `secondary`
+when off, `danger` with a filled centre when armed, a `danger` square while its take records,
+`disabled` when disabled; hover draws a `field` hover frame, keyboard focus an `accent` one. The
+accessible name says what a click does ("Arm Piano for MIDI recording", "Disarm Piano",
+"Recording MIDI on Piano") and the armed state is exposed as selected, so the state never depends
+on colour alone. Returns true when clicked.
+
+**States:** off, armed, recording, disabled. **Adoption:** record arm in the arrangement track
+headers (`transport.rs`). Monitor and notes buttons are not in Clef yet.
+
+**Evidence:** gallery `snapshots/egui/t18-track-state-{1024,760}.png` and `t18-track-state-1024@2x.png`
+(Retina); accessible names checked by `gallery::tests::every_gallery_control_has_an_accessible_name`.

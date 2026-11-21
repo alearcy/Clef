@@ -60,6 +60,14 @@ const ARRANGEMENT_CASES: &[&str] = &[
     "arrangement-split-confirm",
     "arrangement-refused",
 ];
+const EDITING_CASES: &[&str] = &[
+    "arrangement-five",
+    "arrangement-height-24",
+    "arrangement-height-160",
+    "roll-empty",
+    "roll-rows-6",
+    "roll-rows-24",
+];
 const ROLL_CASES: &[&str] = &[
     "dock",
     "single",
@@ -128,10 +136,61 @@ fn piano_roll_fixture(app: &mut App, case: &str) {
     app.piano_roll.gallery_state(case, &model.clips(1)[0]);
 }
 
+/// T40 editing-surface cases: five adjacent tracks at three heights, and the one-grid roll.
+fn editing_fixture(app: &mut App, case: &str) {
+    if let Some(rows) = case.strip_prefix("roll-") {
+        piano_roll_fixture(app, if rows == "empty" { "empty" } else { "single" });
+        app.view.project.piano_roll_view.row_height = match rows {
+            "rows-6" => 6,
+            "rows-24" => 24,
+            _ => clef_model::project::DEFAULT_ROW_HEIGHT,
+        };
+        return;
+    }
+    arrangement_fixture(app, "");
+    let names = ["Bass", "Pads", "Drums"];
+    for (index, name) in names.into_iter().enumerate() {
+        let id = 3 + index as u64;
+        let mut track = app.view.project.tracks[1].clone();
+        track.id = id;
+        track.name = name.into();
+        track.colour = Some(clef_model::project::next_track_colour(id as usize - 1));
+        app.view.project.tracks.push(track);
+        std::sync::Arc::make_mut(&mut app.view.project.midi)
+            .record(
+                id,
+                Mode::Merge,
+                [index as u64 * 960, index as u64 * 960 + 1_920],
+                vec![vec![Event {
+                    tick: index as u64 * 960,
+                    order: 0,
+                    message: Message::Note {
+                        channel: 0,
+                        key: 48 + index as u8 * 5,
+                        velocity: 96,
+                        end: index as u64 * 960 + 960,
+                        release: 0,
+                        release_order: 1,
+                    },
+                }]],
+                false,
+            )
+            .unwrap();
+    }
+    app.view.project.next_id = 6;
+    app.view.project.arrangement_view.track_height = match case {
+        "arrangement-height-24" => 24,
+        "arrangement-height-160" => 160,
+        _ => clef_model::project::DEFAULT_TRACK_HEIGHT,
+    };
+    app.arrangement_ui.settings = app.view.project.arrangement_view;
+}
+
 fn arrangement_fixture(app: &mut App, case: &str) {
     let mut view = history_fixture("history-empty");
     view.selected = Some(1);
     view.project.tracks.push(clef_model::project::Track {
+        colour: Some(clef_model::project::TRACK_COLOURS[2]),
         id: 2,
         name: "Piano".into(),
         plugin: None,
@@ -426,6 +485,7 @@ fn routing_fixture(app: &mut App, case: &str) {
     app.view.project.tracks[0].output = Some(3);
     app.view.project.tracks[1].output = Some(4);
     let bus = |id, name: &str| Track {
+        colour: Some(clef_model::project::TRACK_COLOURS[4]),
         id,
         name: name.into(),
         plugin: None,
@@ -501,6 +561,7 @@ fn routing_fixture(app: &mut App, case: &str) {
 fn history_fixture(case: &str) -> Snapshot {
     let mut project = clef_model::project::Project::default();
     project.tracks.push(clef_model::project::Track {
+        colour: Some(clef_model::project::TRACK_COLOURS[0]),
         id: 1,
         name: "Strings".into(),
         plugin: None,
@@ -599,15 +660,28 @@ struct Gallery {
     app: App,
     output: PathBuf,
     width: u32,
+    scale: u32,
     cases: &'static [&'static str],
     prefix: &'static str,
     case: usize,
     frames: usize,
+    specimens: crate::primitives::specimens::Specimens,
     result: std::sync::Arc<std::sync::Mutex<Option<Result<()>>>>,
 }
 impl Gallery {
     fn install(&mut self, ctx: &egui::Context) {
         let case = self.cases[self.case];
+        if self.prefix == "t18" {
+            egui::Popup::close_all(ctx);
+            self.frames = 0;
+            return;
+        }
+        if self.prefix == "t40" {
+            egui::Popup::close_all(ctx);
+            editing_fixture(&mut self.app, case);
+            self.frames = 0;
+            return;
+        }
         if self.prefix == "t34" {
             arrangement_fixture(&mut self.app, "");
             let view = &mut self.app.view;
@@ -705,8 +779,11 @@ impl eframe::App for Gallery {
             let result = icon.to_png_bytes().map_err(Into::into).and_then(|bytes| {
                 std::fs::write(
                     self.output.join(format!(
-                        "{}-{}-{}.png",
-                        self.prefix, self.cases[self.case], self.width
+                        "{}-{}-{}{}.png",
+                        self.prefix,
+                        self.cases[self.case],
+                        self.width,
+                        if self.scale == 2 { "@2x" } else { "" }
                     )),
                     bytes,
                 )?;
@@ -728,7 +805,36 @@ impl eframe::App for Gallery {
             return;
         }
         let ctx = ui.ctx().clone();
-        if self.prefix == "t10" && self.cases[self.case] != "dock" {
+        self.draw(ui, &ctx);
+        self.frames += 1;
+        if self.frames == 4 {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
+        }
+        ctx.request_repaint_after(Duration::from_millis(40));
+    }
+}
+
+impl Gallery {
+    /// Draws the current case; shared by the screenshot run and the accessibility walk.
+    fn draw(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let ctx = ctx.clone();
+        if self.prefix == "t18" {
+            crate::paint::set_keyboard(&ctx, true);
+            self.specimens.show(ui, &ctx, self.cases[self.case]);
+        } else if self.prefix == "t40" && self.cases[self.case].starts_with("roll-") {
+            egui::Frame::new().inner_margin(12.0).show(ui, |ui| {
+                let height = ui.available_height() - 24.0;
+                let app = &mut self.app;
+                app.piano_roll.show(
+                    ui,
+                    height,
+                    &app.view,
+                    &app.arrangement_ui.selected,
+                    app.view.edit_history.available,
+                    &mut app.piano_roll_open,
+                );
+            });
+        } else if self.prefix == "t10" && self.cases[self.case] != "dock" {
             egui::Frame::new().inner_margin(12.0).show(ui, |ui| {
                 let height = ui.available_height() - 100.0;
                 let app = &mut self.app;
@@ -743,7 +849,7 @@ impl eframe::App for Gallery {
             });
         } else if matches!(
             self.prefix,
-            "t08" | "t09" | "t10" | "t11" | "t12" | "t15" | "t34"
+            "t08" | "t09" | "t10" | "t11" | "t12" | "t15" | "t34" | "t40"
         ) {
             egui::Frame::new()
                 .inner_margin(12.0)
@@ -760,54 +866,69 @@ impl eframe::App for Gallery {
         } else {
             self.app.startup_surface(ui, &ctx);
         }
-        self.frames += 1;
-        if self.frames == 4 {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
-        }
-        ctx.request_repaint_after(Duration::from_millis(40));
     }
 }
 
-pub fn render_startup(output: PathBuf, width: u32) -> Result<()> {
-    render(output, width, "t07", CASES)
+pub fn render_startup(output: PathBuf, width: u32, scale: u32) -> Result<()> {
+    render(output, width, scale, "t07", CASES)
 }
 
-pub fn render_history(output: PathBuf, width: u32) -> Result<()> {
-    render(output, width, "t08", HISTORY_CASES)
+pub fn render_history(output: PathBuf, width: u32, scale: u32) -> Result<()> {
+    render(output, width, scale, "t08", HISTORY_CASES)
 }
 
-pub fn render_arrangement(output: PathBuf, width: u32) -> Result<()> {
-    render(output, width, "t09", ARRANGEMENT_CASES)
+pub fn render_arrangement(output: PathBuf, width: u32, scale: u32) -> Result<()> {
+    render(output, width, scale, "t09", ARRANGEMENT_CASES)
 }
 
-pub fn render_piano_roll(output: PathBuf, width: u32) -> Result<()> {
-    render(output, width, "t10", ROLL_CASES)
+pub fn render_piano_roll(output: PathBuf, width: u32, scale: u32) -> Result<()> {
+    render(output, width, scale, "t10", ROLL_CASES)
 }
 
-pub fn render_mixer(output: PathBuf, width: u32) -> Result<()> {
-    render(output, width, "t11", MIXER_CASES)
+pub fn render_mixer(output: PathBuf, width: u32, scale: u32) -> Result<()> {
+    render(output, width, scale, "t11", MIXER_CASES)
 }
 
-pub fn render_inserts(output: PathBuf, width: u32) -> Result<()> {
-    render(output, width, "t12", INSERT_CASES)
+pub fn render_inserts(output: PathBuf, width: u32, scale: u32) -> Result<()> {
+    render(output, width, scale, "t12", INSERT_CASES)
 }
 
-pub fn render_routing(output: PathBuf, width: u32) -> Result<()> {
-    render(output, width, "t15", ROUTING_CASES)
+pub fn render_routing(output: PathBuf, width: u32, scale: u32) -> Result<()> {
+    render(output, width, scale, "t15", ROUTING_CASES)
 }
 
-pub fn render_transport(output: PathBuf, width: u32) -> Result<()> {
-    render(output, width, "t34", TRANSPORT_CASES)
+pub fn render_primitives(output: PathBuf, width: u32, scale: u32) -> Result<()> {
+    render(
+        output,
+        width,
+        scale,
+        "t18",
+        crate::primitives::specimens::CASES,
+    )
 }
 
+pub fn render_editing(output: PathBuf, width: u32, scale: u32) -> Result<()> {
+    render(output, width, scale, "t40", EDITING_CASES)
+}
+
+pub fn render_transport(output: PathBuf, width: u32, scale: u32) -> Result<()> {
+    render(output, width, scale, "t34", TRANSPORT_CASES)
+}
+
+/// Renders every case of a stage. `scale` 2 renders at `pixels_per_point = 2.0` (Retina) and
+/// names the files `…-1024@2x.png`; the window is then twice the size in physical pixels.
 fn render(
     output: PathBuf,
     width: u32,
+    scale: u32,
     prefix: &'static str,
     cases: &'static [&'static str],
 ) -> Result<()> {
     if !matches!(width, 1024 | 760) {
         return Err("gallery width must be 1024 or 760 points".into());
+    }
+    if !matches!(scale, 1 | 2) {
+        return Err("gallery scale must be 1 or 2".into());
     }
     std::fs::create_dir_all(&output)?;
     let height = if prefix == "t15" {
@@ -822,18 +943,25 @@ fn render(
     eframe::run_native(
         "Clef Gallery",
         eframe::NativeOptions {
-            viewport: egui::ViewportBuilder::default().with_inner_size([width as f32, height]),
+            viewport: egui::ViewportBuilder::default()
+                .with_inner_size([(width * scale) as f32, height * scale as f32]),
             ..Default::default()
         },
         Box::new(move |cc| {
+            // The gallery display reports 1.0; the zoom factor gives the requested scale.
+            cc.egui_ctx.set_zoom_factor(
+                scale as f32 / cc.egui_ctx.native_pixels_per_point().unwrap_or(1.0),
+            );
             let mut gallery = Gallery {
                 app: App::new(cc.egui_ctx.clone(), PathBuf::new()),
                 output,
                 width,
+                scale,
                 prefix,
                 cases,
                 frames: 0,
                 case: 0,
+                specimens: crate::primitives::specimens::Specimens::for_screenshots(),
                 result: completion,
             };
             gallery.install(&cc.egui_ctx);
@@ -851,6 +979,196 @@ fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every gallery stage and case, as `render` runs them.
+    const STAGES: &[(&str, &[&str])] = &[
+        ("t07", CASES),
+        ("t08", HISTORY_CASES),
+        ("t09", ARRANGEMENT_CASES),
+        ("t10", ROLL_CASES),
+        ("t11", MIXER_CASES),
+        ("t12", INSERT_CASES),
+        ("t15", ROUTING_CASES),
+        ("t18", crate::primitives::specimens::CASES),
+        ("t34", TRANSPORT_CASES),
+        ("t40", EDITING_CASES),
+    ];
+
+    /// Interactive accesskit nodes without a name, or sliders without a value, in one case.
+    fn unnamed(prefix: &'static str, cases: &'static [&'static str], case: usize) -> Vec<String> {
+        use egui::accesskit::{Action, Role};
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut gallery = Gallery {
+            app: App::new(ctx.clone(), PathBuf::new()),
+            output: PathBuf::new(),
+            width: 1024,
+            scale: 1,
+            prefix,
+            cases,
+            frames: 0,
+            case,
+            specimens: crate::primitives::specimens::Specimens::for_screenshots(),
+            result: Default::default(),
+        };
+        gallery.install(&ctx);
+        let mut tree = None;
+        for _ in 0..3 {
+            let output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1024.0, 900.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| gallery.draw(ui, &ctx),
+            );
+            tree = output.platform_output.accesskit_update;
+        }
+        let tree = tree.expect("accesskit tree");
+        let mut problems = Vec::new();
+        for (id, node) in &tree.nodes {
+            // egui's own ScrollArea bars carry no name; the scrolled content is what is read.
+            let interactive = node.role() != Role::ScrollBar
+                && (node.supports_action(Action::Click) || node.supports_action(Action::Focus));
+            let named = node.label().is_some_and(|label| !label.trim().is_empty())
+                || node
+                    .value()
+                    .is_some_and(|value| !value.trim().is_empty() && node.role() != Role::Slider);
+            if interactive && !named {
+                problems.push(format!(
+                    "{prefix}-{}: {:?} {id:?} without a name at {:?}",
+                    cases[case],
+                    node.role(),
+                    node.bounds()
+                ));
+            }
+            if node.role() == Role::Slider
+                && node.numeric_value().is_none()
+                && node.value().is_none()
+            {
+                problems.push(format!(
+                    "{prefix}-{}: slider {:?} without a value",
+                    cases[case],
+                    node.label()
+                ));
+            }
+        }
+        problems
+    }
+
+    #[test]
+    fn resizing_to_the_minimum_width_and_back_keeps_controls_in_the_window() {
+        use egui::accesskit::Action;
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut app = App::new(ctx.clone(), PathBuf::new());
+        let mut outside = Vec::new();
+        // The arrangement fits its window; mixer strips scroll, and its docked Master is covered by
+        // `mixer_master_stays_docked_and_track_meters_line_up_at_both_widths`.
+        arrangement_fixture(&mut app, "arrangement-selected");
+        for width in [1024.0, 760.0, 1024.0, 760.0] {
+            let mut tree = None;
+            for _ in 0..3 {
+                let output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(width, 480.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |ui| app.main_surface(ui, &ctx),
+                );
+                tree = output.platform_output.accesskit_update;
+            }
+            for (_, node) in tree.unwrap().nodes {
+                let interactive =
+                    node.supports_action(Action::Click) || node.supports_action(Action::Focus);
+                if let Some(bounds) = node.bounds().filter(|_| interactive)
+                    && (bounds.x0 < -0.5 || bounds.x1 > f64::from(width) + 0.5)
+                {
+                    outside.push(format!(
+                        "{width}: {:?} {:?} {:?} {:?}",
+                        node.role(),
+                        node.label(),
+                        node.value(),
+                        bounds
+                    ));
+                }
+            }
+        }
+        assert!(
+            outside.is_empty(),
+            "controls outside the window: {outside:#?}"
+        );
+    }
+
+    #[test]
+    fn every_gallery_control_has_an_accessible_name() {
+        let mut problems = Vec::new();
+        for (prefix, cases) in STAGES {
+            for case in 0..cases.len() {
+                problems.extend(unnamed(prefix, cases, case));
+            }
+        }
+        assert!(
+            problems.is_empty(),
+            "{} unnamed controls:\n{}",
+            problems.len(),
+            problems.join("\n")
+        );
+    }
+
+    #[test]
+    fn arrangement_and_roll_each_paint_one_continuous_playhead() {
+        let ctx = egui::Context::default();
+        let mut app = App::new(ctx.clone(), PathBuf::new());
+        editing_fixture(&mut app, "arrangement-five");
+        let lower = app.view.project.midi.clips(1)[0].id();
+        app.piano_roll
+            .open(lower, app.view.project.midi.find_clip(lower).unwrap().1);
+        app.piano_roll_open = true;
+        let mut output = None;
+        for _ in 0..3 {
+            output = Some(ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1024.0, 1000.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| app.main_surface(ui, &ctx),
+            ));
+        }
+        let playheads: Vec<_> = output
+            .unwrap()
+            .shapes
+            .into_iter()
+            .filter_map(|clipped| match clipped.shape {
+                egui::Shape::LineSegment { points, stroke }
+                    if stroke.color == crate::theme::ACCENT
+                        && points[0].x == points[1].x
+                        && (points[1].y - points[0].y).abs() > 60.0 =>
+                {
+                    Some((points[0].y.min(points[1].y), points[0].y.max(points[1].y)))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            playheads.len(),
+            2,
+            "one playhead per surface: {playheads:?}"
+        );
+        let tracks = 5.0 * f32::from(clef_model::project::DEFAULT_TRACK_HEIGHT);
+        assert!(
+            playheads.iter().any(|(top, bottom)| bottom - top > tracks),
+            "the arrangement playhead runs through every track to the Master row"
+        );
+    }
 
     #[test]
     fn pointer_hover_and_click_open_the_effect_picker_at_the_visible_gap() {
@@ -898,7 +1216,7 @@ mod tests {
             let hovered = render(&mut app, vec![egui::Event::PointerMoved(pos)]);
             assert!(hovered.shapes.iter().any(|shape| matches!(&shape.shape,
                 egui::Shape::LineSegment { points, stroke }
-                    if stroke.color == crate::colors::ACCENT && stroke.width == 3.0
+                    if stroke.color == crate::theme::ACCENT && stroke.width == 3.0
                         && (points[0].y - pos.y).abs() < 1.0
             )));
             for pressed in [true, false] {

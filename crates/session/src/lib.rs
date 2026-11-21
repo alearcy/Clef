@@ -23,7 +23,7 @@ use clef_plugin_host::{
     rpc::Instrument,
 };
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     path::PathBuf,
     sync::mpsc,
     sync::{
@@ -40,6 +40,7 @@ pub use inserts::{InsertAction, InsertView};
 mod mixer;
 pub use mixer::{Meter, MixChange};
 mod recovery;
+mod shortcuts;
 pub use edit_history::HistoryView;
 use edit_history::{
     ClipChange, Edit, History, InstrumentState, SourceRoute, SourceSend, TrackSlot,
@@ -175,6 +176,8 @@ pub enum Action {
         velocity: u8,
     },
     ArrangementView(ArrangementView),
+    /// T40: the piano roll's saved zoom and pitch-row height (view state).
+    PianoRollView(clef_model::project::PianoRollView),
     TrackView {
         track: u64,
         lanes: TakeLanes,
@@ -201,6 +204,8 @@ pub enum Action {
         audio: AudioSettings,
         project: bool,
     },
+    /// Replace the saved keyboard-shortcut changes (T18).
+    SetShortcuts(BTreeMap<String, Option<String>>),
     Editor(u64, bool),
     Restart(u64),
     Reactivate(Plugin),
@@ -308,6 +313,9 @@ pub struct Snapshot {
     pub audio: Option<AudioSettings>,
     /// Clef's global audio preferences, when saved.
     pub audio_preferences: Option<AudioSettings>,
+    /// The user's keyboard-shortcut changes by command id (`None` = cleared), as saved in the
+    /// global preferences (T18). The UI owns their meaning.
+    pub shortcuts: Arc<BTreeMap<String, Option<String>>>,
     pub transport: TransportView,
     pub armed: Option<u64>,
     pub recording: bool,
@@ -374,6 +382,7 @@ impl Snapshot {
         }
         Self {
             project: Project {
+                piano_roll_view: Default::default(),
                 version: self.project.version,
                 next_id: self.project.next_id,
                 audio: self.project.audio.clone(),
@@ -388,6 +397,7 @@ impl Snapshot {
                     .tracks
                     .iter()
                     .map(|t| Track {
+                        colour: t.colour,
                         id: t.id,
                         name: t.name.clone(),
                         plugin: t.plugin.clone(),
@@ -429,6 +439,7 @@ impl Snapshot {
             actual: self.actual.clone(),
             audio: self.audio.clone(),
             audio_preferences: self.audio_preferences.clone(),
+            shortcuts: self.shortcuts.clone(),
             transport: self.transport,
             armed: self.armed,
             recording: self.recording,
@@ -525,11 +536,15 @@ pub struct Session {
     mixer: mixer::Mixer,
     send_preview: Option<SendPreview>,
     other_changes: bool,
-    /// The arrangement view as last written to or read from the project file.
-    saved_view: clef_model::project::ArrangementView,
+    /// The editor views as last written to or read from the project file.
+    saved_view: (
+        clef_model::project::ArrangementView,
+        clef_model::project::PianoRollView,
+    ),
     volatile: Volatile,
     paths: Paths,
     preferences: audio::Preferences,
+    shortcuts_path: Option<PathBuf>,
     /// Start audio automatically when a project opens (the app; tests start it explicitly).
     auto_audio: bool,
     audio_pending: bool,
@@ -574,13 +589,26 @@ impl Session {
             .filter(|p| p.is_absolute())
             .map(|p| audio::Preferences::read(p.join("audio.json")))
             .unwrap_or_default();
+        let shortcuts_path = registry
+            .parent()
+            .filter(|p| p.is_absolute())
+            .map(|p| p.join("shortcuts.json"));
+        let (shortcuts, shortcuts_error) = shortcuts_path
+            .as_deref()
+            .map(shortcuts::read)
+            .unwrap_or_default();
         Self {
             executable,
             silence: Arc::new(AtomicBool::new(true)),
             view: Snapshot {
                 quarantine: entries,
                 audio_preferences: preferences.audio.clone(),
-                message: preferences_error.unwrap_or_default(),
+                shortcuts: Arc::new(shortcuts),
+                message: [preferences_error, shortcuts_error]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join(" "),
                 ..Default::default()
             },
             runtimes: HashMap::new(),
@@ -608,6 +636,7 @@ impl Session {
             volatile: Volatile::default(),
             paths: Paths::default(),
             preferences,
+            shortcuts_path,
             auto_audio: false,
             audio_pending: false,
             worker_rate: clef_plugin_host::protocol::RATE,
@@ -734,7 +763,7 @@ impl Session {
         self.file_stamp = stamp;
         self.view.selected = project.tracks.first().map(|t| t.id);
         self.view.armed = None;
-        self.saved_view = project.arrangement_view;
+        self.saved_view = (project.arrangement_view, project.piano_roll_view);
         self.view.project = project;
         self.view.transport = TransportView::default();
         self.view.read_only = path.as_deref().is_some_and(recovery::read_only);
@@ -753,7 +782,10 @@ impl Session {
         self.view.project_open
             && !self.view.read_only
             && self.view.path.is_some()
-            && self.view.project.arrangement_view != self.saved_view
+            && (
+                self.view.project.arrangement_view,
+                self.view.project.piano_roll_view,
+            ) != self.saved_view
     }
 
     /// When leaving a clean, saved project whose only change is the arrangement view, write
@@ -782,7 +814,10 @@ impl Session {
         match result {
             Ok(stamp) => {
                 self.file_stamp = Some(stamp);
-                self.saved_view = self.view.project.arrangement_view;
+                self.saved_view = (
+                    self.view.project.arrangement_view,
+                    self.view.project.piano_roll_view,
+                );
             }
             Err(error) => eprintln!("Arrangement view not saved: {error}"),
         }
@@ -1519,7 +1554,7 @@ impl Session {
                     return Err("project changed during capture; use Save As".into());
                 }
                 candidate.save(&path, replace)?;
-                self.saved_view = candidate.arrangement_view;
+                self.saved_view = (candidate.arrangement_view, candidate.piano_roll_view);
                 self.view.project = candidate;
                 self.file_stamp = Some(FileStamp::read(&path)?);
                 self.note_recent(&path);
@@ -1553,6 +1588,9 @@ impl Session {
                 let next = id.checked_add(1).ok_or("track ID exhausted")?;
                 self.select(None)?;
                 let track = Track {
+                    colour: Some(clef_model::project::next_track_colour(
+                        self.view.project.tracks.len(),
+                    )),
                     id,
                     name: format!(
                         "Instrument {}",
@@ -1718,6 +1756,13 @@ impl Session {
                 // View-only: saved with the next save or autosave, but never a reason for one.
                 self.view.project.arrangement_view = view;
             }
+            Action::PianoRollView(view) => {
+                view.validate()?;
+                if !self.view.project_open {
+                    return Err("Open a project before changing its piano-roll view.".into());
+                }
+                self.view.project.piano_roll_view = view;
+            }
             Action::TrackView { track, lanes } => {
                 lanes.validate()?;
                 if !self.view.project_open {
@@ -1778,6 +1823,15 @@ impl Session {
                 if self.view.message == "Audio active." {
                     self.view.message = "Settings applied. Audio restarted.".into();
                 }
+            }
+            Action::SetShortcuts(saved) => {
+                let path = self
+                    .shortcuts_path
+                    .as_deref()
+                    .ok_or("Clef's Application Support directory is unavailable.")?;
+                shortcuts::write(path, &saved)
+                    .map_err(|error| format!("Keyboard shortcuts were not saved: {error}"))?;
+                self.view.shortcuts = Arc::new(saved);
             }
             Action::Editor(id, open) => {
                 if self.track(id)?.instrument_offline {
@@ -1968,6 +2022,9 @@ impl Session {
         let next = id.checked_add(1).ok_or("track ID exhausted")?;
         let clips = std::sync::Arc::make_mut(&mut candidate.midi).copy_take_clips(track, lane)?;
         let new_track = Track {
+            colour: Some(clef_model::project::next_track_colour(
+                candidate.tracks.len(),
+            )),
             id,
             name,
             plugin: None,
@@ -2589,6 +2646,9 @@ impl Session {
             .count()
             + 1;
         let bus = Track {
+            colour: Some(clef_model::project::next_track_colour(
+                self.view.project.tracks.len(),
+            )),
             id,
             name: format!("Bus {count}"),
             plugin: None,
@@ -3453,6 +3513,7 @@ mod tests {
         .unwrap();
         let id = session.view.clip_edit_selection.as_ref().unwrap()[0];
         let settings = ArrangementView {
+            track_height: 44,
             snap: clef_model::midi::Snap::Sixteenth,
             offset: 240,
             zoom_milli: 72_000,
@@ -4027,6 +4088,7 @@ mod tests {
         let (_directory, mut session) = isolated();
         session.apply(Action::New).unwrap();
         let view = ArrangementView {
+            track_height: 44,
             snap: clef_model::midi::Snap::Sixteenth,
             offset: 960,
             zoom_milli: 48_000,
@@ -4045,9 +4107,58 @@ mod tests {
     }
 
     #[test]
+    fn new_tracks_take_cycling_colours_and_the_roll_view_is_view_state() {
+        let (directory, mut session) = isolated();
+        session.apply(Action::New).unwrap();
+        for _ in 0..3 {
+            session.apply(Action::AddTrack(None)).unwrap();
+        }
+        let colours: Vec<_> = session
+            .view
+            .project
+            .tracks
+            .iter()
+            .map(|track| track.colour)
+            .collect();
+        assert_eq!(
+            colours,
+            clef_model::project::TRACK_COLOURS[..3]
+                .iter()
+                .copied()
+                .map(Some)
+                .collect::<Vec<_>>()
+        );
+        let path = directory.0.join("Roll.clef");
+        save(&mut session, path.clone(), false, false).unwrap();
+        let roll = clef_model::project::PianoRollView {
+            zoom_milli: 150_000,
+            row_height: 20,
+        };
+        session.apply(Action::PianoRollView(roll)).unwrap();
+        session.refresh();
+        assert!(session.view.view_unsaved && !session.view.dirty);
+        assert!(
+            session
+                .apply(Action::PianoRollView(clef_model::project::PianoRollView {
+                    row_height: 30,
+                    ..roll
+                }))
+                .is_err()
+        );
+        session.apply(Action::SaveViewBeforeClose).unwrap();
+        let saved = Project::read(&path).unwrap();
+        assert_eq!(saved.piano_roll_view, roll);
+        assert_eq!(
+            saved.tracks[2].colour,
+            Some(clef_model::project::TRACK_COLOURS[2])
+        );
+    }
+
+    #[test]
     fn a_view_only_change_is_saved_silently_when_leaving_a_clean_saved_project() {
         let (directory, mut session) = isolated();
         let view = ArrangementView {
+            track_height: 44,
             snap: clef_model::midi::Snap::Sixteenth,
             offset: 960,
             zoom_milli: 48_000,

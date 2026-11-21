@@ -48,3 +48,10 @@ hit-tested; take notes the comp doesn't play at 35 %.
 ## Behaviour
 Lifts with a [lift shadow](shadows.md) while dragged. Identity, selection and quantization stay in
 the application.
+
+## Clef T40
+
+`primitives::piano_roll::paint_note(ui, grid, area, NoteStyle { colour, selected, active, primary,
+preview })` fills a note with its clip's track colour (35 % when outside the comp, 50 % when
+selected there), outlines selected and previewed notes in `CAP_LIGHT`, and paints the primary
+note's resize handles. Notes of inactive clips in the one-grid roll pass their colour at 45 %.

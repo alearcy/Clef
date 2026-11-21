@@ -2180,6 +2180,7 @@ mod callback_proof {
     fn bus_output_and_send_sum_in_the_callback_without_allocation() {
         use clef_model::project::{Project, Send, Track, TrackKind};
         let track = |id, output, sends| Track {
+            colour: None,
             id,
             name: format!("Track {id}"),
             plugin: None,
@@ -2195,6 +2196,7 @@ mod callback_proof {
             state: Default::default(),
         };
         let bus = Track {
+            colour: None,
             id: 3,
             name: "Reverb".into(),
             plugin: None,
@@ -2285,6 +2287,7 @@ mod callback_proof {
     fn bus_project(trim: i16) -> clef_model::project::Project {
         use clef_model::project::{Project, Track, TrackKind};
         let track = |id, kind, output| Track {
+            colour: None,
             id,
             name: format!("Track {id}"),
             plugin: None,
@@ -2551,6 +2554,7 @@ mod callback_proof {
                 .id
                 .store(id, Ordering::Release);
             project.tracks.push(Track {
+                colour: None,
                 id,
                 name: format!("Instrument {id}"),
                 plugin: None,

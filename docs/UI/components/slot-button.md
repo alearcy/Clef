@@ -3,20 +3,24 @@ name: Slot button
 kind: component
 reference: composer::style::SlotButton, setSidechainOutline, setQuarantineMark
 status: shared
-impl: app
+impl: gallery
 reference-source: [Source/ChannelStrip.cpp, Source/Mixer.cpp] (callers)
 tokens: [field, peacock, text, disabled, sidechain, accent, controlEdge, danger]
 used-in: [channel-strip, mixer]
-snapshot: snapshots/shared-controls.png
+snapshot: snapshots/egui/t18-slot-button-1024.png
+api: ui::primitives::slot_button::slot
+evidence: [t18-slot-button]
 ---
 
-> **Legacy reference (C++).** The symbols and code here describe the original Composer
-> implementation; they are not in this repository and are not an API. Clef builds this in
-> Rust + egui. See [README](../README.md) and the [UI contract](../contract.md).
+> **Migrated to Rust/egui (T18 Phase 3, 2026-11-21).** The Clef section at the end of this file is
+> the implementation contract. Earlier sections keep the legacy design intent; their C++ symbols are
+> not in this repository.
 
 # Slot button
 
 ## Clef T12
+
+*Superseded where it differs by the T18 Phase 3 section at the end of this file.*
 
 The provisional T12 insert slot is `clef_ui::primitives::inserts::slot`. It is one
 20-point full-width row with a 16-point power column. The `role` argument separates the
@@ -81,3 +85,23 @@ An empty send "+" keeps the upper send row, disabled, so sends read apart from i
 Labels take the text colour the host sets on the button (`textColourOffId`): a bypassed slot sets `disabled`. The kit `LookAndFeel` honours a button's own text colour since UI10.3.
 
 Raised (UI10 Fix 7): a body 2 px shorter than its bounds with a 1-pixel top light and a soft 2-pixel shadow under it (`paintControlBody`, `ControlDepth::raised`); hover lifts the body to `field` without an edge; lit or pressed keeps the body and shadow and drops the top light; disabled is flat `panel` with a `divider` edge. See control depth in [foundations](../foundations.md).
+
+## Clef Rust/egui — T18 Phase 3
+
+**API**
+
+```rust
+pub fn slot(ui: &mut egui::Ui, name: &str, channel: &str, role: &str, state: State, description: &str, edge_inset: f32) -> (egui::Response, bool, bool);
+```
+
+A 20-point slot: `peacock` while the processor runs (Active, Late) or is bypassed (with a `disabled`
+name), `field` when missing, empty or offline; Late adds a 1.5-point `danger` edge and Failed a
+`danger` name and edge; keyboard focus an `accent` edge; the [power button](power-button.md) sits at
+the right. Returns the slot response, whether it was activated (click, Return or Space) and whether
+the power button was pressed. Accessible: a button named "<channel>, <role> <name>, <description>",
+so Late, Failed and Missing are said, not only drawn.
+
+**States:** active, late, bypassed, missing, failed, empty.
+
+**Evidence:** gallery `snapshots/egui/t18-slot-button-{1024,760}.png` and `t18-slot-button-1024@2x.png`
+(Retina); accessible names checked by `gallery::tests::every_gallery_control_has_an_accessible_name`.

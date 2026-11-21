@@ -3,15 +3,17 @@ name: Glyph toggle
 kind: component
 reference: composer::style::GlyphToggle
 status: shared
-impl: planned
+impl: gallery
 tokens: [field, peacock, text, secondary, disabled, controlEdge]
 used-in: [midi-functions, tool-row]
-snapshot: snapshots/midi-functions-sections.png
+snapshot: snapshots/egui/t18-glyph-toggle-1024.png
+api: ui::primitives::glyph_toggle::glyph_toggle
+evidence: [t18-glyph-toggle]
 ---
 
-> **Legacy reference (C++).** The symbols and code here describe the original Composer
-> implementation; they are not in this repository and are not an API. Clef builds this in
-> Rust + egui. See [README](../README.md) and the [UI contract](../contract.md).
+> **Migrated to Rust/egui (T18 Phase 3, 2026-11-21).** The Clef section at the end of this file is
+> the implementation contract. Earlier sections keep the legacy design intent; their C++ symbols are
+> not in this repository.
 
 # Glyph toggle
 
@@ -41,3 +43,23 @@ The host owns the state and the exclusivity of a pair. The accessible name is th
 
 ## Code
 `style::GlyphToggle triplet { style::Icon::triplet, "Triplet" };` in `UI/ComposerStyleKit/Source/ComposerStyle.h`.
+
+## Clef Rust/egui — T18 Phase 3
+
+**API**
+
+```rust
+pub fn glyph_toggle(ui: &mut egui::Ui, icon: Icon, name: &str, lit: bool, enabled: bool) -> egui::Response;
+```
+
+24 × 22 raised body through `paint::control_body`, a 14-point [icon](icons.md) centred: `secondary`
+at rest, `text` on hover, `peacock` body with `text` glyph when lit, flat with a `disabled` glyph when
+disabled. `name` is the accessible name and tooltip; the lit state is exposed as selected. The host
+owns the state and the exclusivity of a pair.
+
+**States:** rest, lit, disabled, disabled lit (triplet and dotted). **Adoption:** none — Clef has no
+triplet/dotted feel yet, and its tool-row toggles (Follow, MIDI Functions) are words, which this
+component's own rule keeps as words (T18 Phase 3 finding).
+
+**Evidence:** gallery `snapshots/egui/t18-glyph-toggle-{1024,760}.png` and `t18-glyph-toggle-1024@2x.png`
+(Retina); accessible names checked by `gallery::tests::every_gallery_control_has_an_accessible_name`.

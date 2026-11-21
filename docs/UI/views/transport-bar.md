@@ -38,6 +38,9 @@ Return to Start, Play, Stop, Record, Loop and Metronome are individual
 from the command registry. Below 860 points of available width, Metronome and 1 Bar are available
 in Transport Settings. See [T34](../../specs/T34-transport-glyphs.md) for state and gallery evidence.
 
+Since T18 Phase 3 the musical position is a [segment display](../components/segment-display.md)
+(`danger` only while a take records) and the count-in state is a `Count-in` caption beside it.
+
 ## T06 MIDI recording
 
 Record and the project-wide REC menu sit after Stop. The menu offers Merge, Replace, and New take

@@ -8,286 +8,76 @@ use clef_plugin_host::{
     quarantine,
 };
 use clef_session::{Action, Backend, Devices, Snapshot, TransportAction};
-use eframe::egui::{self, Color32, Key, KeyboardShortcut, Modifiers};
+use eframe::egui::{self, Key, KeyboardShortcut, Modifiers};
 use std::{
     path::PathBuf,
     sync::mpsc,
     time::{Duration, Instant},
 };
 mod primitives {
+    pub mod checkbox;
+    pub mod chip;
+    pub mod fader;
+    pub mod glyph_toggle;
     pub mod history;
+    pub mod icons;
     pub(crate) mod inserts;
+    pub mod knob;
+    pub mod level_meter;
+    pub mod list_row;
+    pub mod menu;
+    pub mod menu_bar;
+    pub mod menu_button;
     pub mod mixer;
+    pub mod mute_solo;
+    pub mod notice_box;
     pub mod piano_roll;
+    pub mod power_button;
     pub mod project;
+    pub mod range_overlay;
+    pub mod scroll_zoom_bars;
+    pub mod search_field;
+    pub mod segment_display;
+    pub mod segmented;
+    pub mod slot_button;
+    pub mod specimens;
+    pub mod tabs;
+    pub mod text;
+    pub mod text_button;
+    pub mod text_field;
     pub mod timeline;
+    pub mod tool_button;
+    pub mod track_state;
     pub mod transport;
+    pub mod value_slider;
+    pub mod window_frame;
 }
 mod arrangement;
+mod commands;
+mod menus;
+mod palette;
+use commands::{Command, Context, Keymap};
 #[doc(hidden)]
 pub mod gallery;
 mod mixer;
+mod paint;
 mod piano_roll;
 mod startup;
 mod theme;
+use primitives::{
+    list_row::ListRow,
+    menu_button::{choice, menu_button},
+    notice_box::{NoticeBox, Outcome},
+    search_field::SearchField,
+    text,
+    text_button::TextButton,
+    text_field::TextField,
+    window_frame::{ToolWindow, frame},
+};
 mod transport;
 
 const BUSY_FEEDBACK_DELAY: Duration = Duration::from_millis(100);
 
-mod colors {
-    use super::Color32;
-    pub const BACKGROUND: Color32 = Color32::from_rgb(0x10, 0x1a, 0x1c);
-    pub const PANEL: Color32 = Color32::from_rgb(0x17, 0x23, 0x26);
-    pub const FIELD: Color32 = Color32::from_rgb(0x1f, 0x2f, 0x32);
-    pub const CANVAS: Color32 = Color32::from_rgb(0x11, 0x1c, 0x1f);
-    pub const TEXT: Color32 = Color32::from_rgb(0xe3, 0xe8, 0xe5);
-    pub const SECONDARY: Color32 = Color32::from_rgb(0xa4, 0xb5, 0xae);
-    pub const ACCENT: Color32 = Color32::from_rgb(0x78, 0xb5, 0xaa);
-    pub const PEACOCK: Color32 = Color32::from_rgb(0x33, 0x6a, 0x64);
-    pub const DISABLED: Color32 = Color32::from_rgb(0x74, 0x84, 0x7d);
-    pub const DANGER: Color32 = Color32::from_rgb(0xc7, 0x84, 0x7c);
-    pub const DIVIDER: Color32 = Color32::from_rgb(0x2b, 0x3b, 0x3d);
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Command {
-    New,
-    Open,
-    Save,
-    Undo,
-    Redo,
-    EditHistory,
-    ShowMixer,
-    MixerPrevious,
-    MixerNext,
-    MixerMute,
-    MixerSolo,
-    ResetMixerClip,
-    InsertAdd,
-    InsertAfter,
-    InsertOpen,
-    InsertBypass,
-    InsertMoveUp,
-    InsertMoveDown,
-    InsertRemove,
-    InstrumentBypass,
-    InstrumentOffline,
-    CreateClip,
-    SelectAllClips,
-    DuplicateClips,
-    DeleteClips,
-    SplitClips,
-    MoveClipsLeft,
-    MoveClipsRight,
-    MoveClipsUp,
-    MoveClipsDown,
-    ResizeClipShorter,
-    ResizeClipLonger,
-    LoopClipShorter,
-    LoopClipLonger,
-    SaveAs,
-    Close,
-    OpenRecent,
-    LocateRecent,
-    RemoveRecent,
-    ShowRecovery,
-    RecoverProject,
-    DiscardRecovery,
-    RecoveryLater,
-    Settings,
-    Commands,
-    AddTrack,
-    AddBus,
-    Instrument,
-    Editor,
-    CloseEditor,
-    Restart,
-    Rescan,
-    Refresh,
-    Rename,
-    ApplySettings,
-    RemoveTrack,
-    MoveUp,
-    MoveDown,
-    PreviousTrack,
-    NextTrack,
-    Quarantine,
-    Reactivate,
-    Play,
-    Record,
-    ArmTrack,
-    RecordMerge,
-    RecordReplace,
-    RecordNewTake,
-    RecordTrackGlobal,
-    RecordTrackMerge,
-    RecordTrackReplace,
-    RecordTrackNewTake,
-    ShowTakeLanes,
-    UseWholeTake,
-    DeleteTake,
-    FlattenComp,
-    TakeToNewTrack,
-    RenameTake,
-    EditTake,
-    Stop,
-    PlayStop,
-    ReturnToStart,
-    ToggleLoop,
-    ToggleClick,
-    ToggleCountIn,
-    TempoMap,
-    TransportSettings,
-    KeepStopPosition,
-    ReturnStopPosition,
-}
-
-impl Command {
-    fn is_clip(self) -> bool {
-        use Command::*;
-        matches!(
-            self,
-            CreateClip
-                | SelectAllClips
-                | DuplicateClips
-                | DeleteClips
-                | SplitClips
-                | MoveClipsLeft
-                | MoveClipsRight
-                | MoveClipsUp
-                | MoveClipsDown
-                | ResizeClipShorter
-                | ResizeClipLonger
-                | LoopClipShorter
-                | LoopClipLonger
-        )
-    }
-}
-
-struct Binding {
-    command: Command,
-    title: &'static str,
-    shortcut: Option<KeyboardShortcut>,
-}
-fn commands() -> Vec<Binding> {
-    use Command::*;
-    [
-        (New, "New Project", Some(Key::N)),
-        (Open, "Open Project…", Some(Key::O)),
-        (Save, "Save", Some(Key::S)),
-        (SaveAs, "Save As…", None),
-        (Redo, "Redo", Some(Key::Z)),
-        (Undo, "Undo", Some(Key::Z)),
-        (EditHistory, "Edit History…", None),
-        (ShowMixer, "Show Mixer", Some(Key::M)),
-        (MixerPrevious, "Mixer: Previous Channel", None),
-        (MixerNext, "Mixer: Next Channel", None),
-        (MixerMute, "Mixer: Toggle Mute", None),
-        (MixerSolo, "Mixer: Toggle Solo", None),
-        (ResetMixerClip, "Mixer: Clear Clip Indicator", None),
-        (InsertAdd, "Add Audio Effect…", None),
-        (InsertAfter, "Insert Effect After…", None),
-        (InsertOpen, "Open Effect Editor", None),
-        (InsertBypass, "Toggle Effect Bypass", None),
-        (InsertMoveUp, "Move Effect Up", None),
-        (InsertMoveDown, "Move Effect Down", None),
-        (InsertRemove, "Remove Effect", None),
-        (InstrumentBypass, "Toggle Instrument Bypass", None),
-        (InstrumentOffline, "Toggle Instrument Offline", None),
-        (CreateClip, "Create Clip", Some(Key::Enter)),
-        (SelectAllClips, "Select All Clips", Some(Key::A)),
-        (DuplicateClips, "Duplicate", Some(Key::D)),
-        (DeleteClips, "Delete", Some(Key::Backspace)),
-        (SplitClips, "Split at Playhead", Some(Key::E)),
-        (MoveClipsLeft, "Move Clips Earlier", Some(Key::ArrowLeft)),
-        (MoveClipsRight, "Move Clips Later", Some(Key::ArrowRight)),
-        (MoveClipsUp, "Move Clips Up a Track", Some(Key::ArrowUp)),
-        (
-            MoveClipsDown,
-            "Move Clips Down a Track",
-            Some(Key::ArrowDown),
-        ),
-        (ResizeClipShorter, "Shorten Clip", Some(Key::ArrowLeft)),
-        (ResizeClipLonger, "Lengthen Clip", Some(Key::ArrowRight)),
-        (LoopClipShorter, "Shorten Clip Loop", Some(Key::ArrowLeft)),
-        (LoopClipLonger, "Extend Clip Loop", Some(Key::ArrowRight)),
-        (Close, "Close Clef", Some(Key::Q)),
-        (OpenRecent, "Open", None),
-        (LocateRecent, "Locate…", None),
-        (RemoveRecent, "Remove", None),
-        (ShowRecovery, "Recovery…", None),
-        (RecoverProject, "Recover", None),
-        (DiscardRecovery, "Discard…", None),
-        (RecoveryLater, "Later", None),
-        (Settings, "Audio/MIDI Settings", None),
-        (Commands, "Commands / Keyboard Shortcuts", Some(Key::K)),
-        (AddTrack, "Add Instrument Track", None),
-        (AddBus, "Add Bus", None),
-        (Instrument, "Choose Instrument", None),
-        (Editor, "Open Editor", None),
-        (CloseEditor, "Close Editor", None),
-        (Restart, "Restart Instrument", None),
-        (Rescan, "Rescan Plugins", None),
-        (Refresh, "Refresh Devices", None),
-        (Rename, "Rename Track", None),
-        (ApplySettings, "Apply Audio/MIDI Settings", None),
-        (RemoveTrack, "Remove Track…", None),
-        (MoveUp, "Move Track Up", None),
-        (MoveDown, "Move Track Down", None),
-        (PreviousTrack, "Select Previous Track", None),
-        (NextTrack, "Select Next Track", None),
-        (Quarantine, "Show Quarantined Plugins…", None),
-        (Reactivate, "Reactivate Plugin…", None),
-        (Play, "Play", None),
-        (Record, "Record MIDI", None),
-        (ArmTrack, "Toggle Record Arm for Selected Track", None),
-        (RecordMerge, "Record Mode: Merge", None),
-        (RecordReplace, "Record Mode: Replace", None),
-        (RecordNewTake, "Record Mode: New take", None),
-        (RecordTrackGlobal, "Track Record Mode: Global", None),
-        (RecordTrackMerge, "Track Record Mode: Merge", None),
-        (RecordTrackReplace, "Track Record Mode: Replace", None),
-        (RecordTrackNewTake, "Track Record Mode: New take", None),
-        (ShowTakeLanes, "Show/Hide Take Lanes", None),
-        (UseWholeTake, "Use Whole Take", None),
-        (DeleteTake, "Delete Take", None),
-        (FlattenComp, "Flatten Comp", None),
-        (TakeToNewTrack, "Take to New Track", None),
-        (RenameTake, "Rename Take", None),
-        (EditTake, "Edit Take", None),
-        (Stop, "Stop", None),
-        (PlayStop, "Play / Stop", Some(Key::Space)),
-        (ReturnToStart, "Return to Start", None),
-        (ToggleLoop, "Loop", None),
-        (ToggleClick, "Metronome", None),
-        (ToggleCountIn, "One-Bar Count-In", None),
-        (TempoMap, "Tempo and Meter Map…", None),
-        (TransportSettings, "Transport Settings…", None),
-        (KeepStopPosition, "Stop Mode: Keep Position", None),
-        (ReturnStopPosition, "Stop Mode: Return to Play Start", None),
-    ]
-    .into_iter()
-    .map(|(command, title, key)| Binding {
-        command,
-        title,
-        shortcut: key.map(|key| {
-            KeyboardShortcut::new(
-                match command {
-                    ShowMixer => Modifiers::COMMAND | Modifiers::SHIFT,
-                    PlayStop => Modifiers::NONE,
-                    DeleteClips => Modifiers::NONE,
-                    MoveClipsLeft | MoveClipsRight | MoveClipsUp | MoveClipsDown => Modifiers::ALT,
-                    ResizeClipShorter | ResizeClipLonger => Modifiers::ALT | Modifiers::SHIFT,
-                    LoopClipShorter | LoopClipLonger => Modifiers::COMMAND | Modifiers::ALT,
-                    Redo => Modifiers::COMMAND | Modifiers::SHIFT,
-                    _ => Modifiers::COMMAND,
-                },
-                key,
-            )
-        }),
-    })
-    .collect()
-}
 #[derive(Clone)]
 enum Transition {
     New,
@@ -429,11 +219,20 @@ struct App {
     catalog: Catalog,
     scan_job: Option<crate::catalog::ScanJob>,
     plugin_search: String,
-    bindings: Vec<Binding>,
+    keymap: Keymap,
     commands_open: bool,
+    /// Debug builds only: the primitive gallery window (Window › Primitive Gallery). A cell, so
+    /// the menu bar can open it while it draws through `&self`.
+    primitive_gallery_open: std::cell::Cell<bool>,
+    primitive_gallery: primitives::specimens::Specimens,
     history_window: primitives::history::HistoryWindow,
     command_search: String,
-    rebinding: Option<usize>,
+    rebinding: Option<Command>,
+    /// The shortcut being assigned and the command that already uses it.
+    rebind_conflict: Option<(KeyboardShortcut, Command)>,
+    shortcuts_seen: std::sync::Arc<std::collections::BTreeMap<String, Option<String>>>,
+    shortcuts_unsaved: bool,
+    palette: Option<palette::Palette>,
     rename: String,
     status: String,
     retained_approved: Vec<(u64, u64)>,
@@ -446,35 +245,35 @@ struct App {
 }
 impl App {
     fn new(context: egui::Context, executable: PathBuf) -> Self {
-        primitives::project::install_font(&context);
+        theme::install_fonts(&context);
         let mut style = (*context.global_style()).clone();
         style.visuals = egui::Visuals::dark();
-        style.visuals.panel_fill = colors::BACKGROUND;
-        style.visuals.window_fill = colors::PANEL;
-        style.visuals.extreme_bg_color = colors::FIELD;
-        style.visuals.faint_bg_color = colors::PANEL;
-        style.visuals.override_text_color = Some(colors::TEXT);
-        style.visuals.selection.bg_fill = colors::PEACOCK;
-        style.visuals.selection.stroke = egui::Stroke::new(1.0_f32, colors::ACCENT);
+        style.visuals.panel_fill = theme::BACKGROUND;
+        style.visuals.window_fill = theme::PANEL;
+        style.visuals.extreme_bg_color = theme::FIELD;
+        style.visuals.faint_bg_color = theme::PANEL;
+        style.visuals.override_text_color = Some(theme::TEXT);
+        style.visuals.selection.bg_fill = theme::PEACOCK;
+        style.visuals.selection.stroke = egui::Stroke::new(1.0_f32, theme::ACCENT);
         for widget in [
             &mut style.visuals.widgets.inactive,
             &mut style.visuals.widgets.active,
             &mut style.visuals.widgets.hovered,
             &mut style.visuals.widgets.open,
         ] {
-            widget.bg_fill = colors::PANEL;
-            widget.weak_bg_fill = colors::PANEL;
+            widget.bg_fill = theme::PANEL;
+            widget.weak_bg_fill = theme::PANEL;
             widget.bg_stroke = egui::Stroke::NONE;
             widget.corner_radius = egui::CornerRadius::same(2);
         }
-        style.visuals.widgets.inactive.bg_fill = colors::PANEL;
-        style.visuals.widgets.inactive.weak_bg_fill = colors::PANEL;
-        style.visuals.widgets.hovered.bg_fill = colors::FIELD;
-        style.visuals.widgets.hovered.weak_bg_fill = colors::FIELD;
-        style.visuals.widgets.active.bg_fill = colors::FIELD;
-        style.visuals.widgets.active.weak_bg_fill = colors::FIELD;
-        style.visuals.widgets.open.bg_fill = colors::FIELD;
-        style.visuals.widgets.open.weak_bg_fill = colors::FIELD;
+        style.visuals.widgets.inactive.bg_fill = theme::PANEL;
+        style.visuals.widgets.inactive.weak_bg_fill = theme::PANEL;
+        style.visuals.widgets.hovered.bg_fill = theme::FIELD;
+        style.visuals.widgets.hovered.weak_bg_fill = theme::FIELD;
+        style.visuals.widgets.active.bg_fill = theme::FIELD;
+        style.visuals.widgets.active.weak_bg_fill = theme::FIELD;
+        style.visuals.widgets.open.bg_fill = theme::FIELD;
+        style.visuals.widgets.open.weak_bg_fill = theme::FIELD;
         style.spacing.item_spacing = egui::vec2(12.0, 8.0);
         style.spacing.button_padding = egui::vec2(8.0, 4.0);
         style.spacing.interact_size.y = 24.0;
@@ -509,11 +308,17 @@ impl App {
             catalog: Catalog::default(),
             scan_job: None,
             plugin_search: String::new(),
-            bindings: commands(),
+            keymap: Keymap::default(),
             commands_open: false,
+            primitive_gallery_open: std::cell::Cell::new(false),
+            primitive_gallery: Default::default(),
             history_window: primitives::history::HistoryWindow::default(),
             command_search: String::new(),
             rebinding: None,
+            rebind_conflict: None,
+            shortcuts_seen: Default::default(),
+            shortcuts_unsaved: false,
+            palette: None,
             rename: String::new(),
             status: "Create a project or open an existing .clef file.".into(),
             retained_approved: Vec::new(),
@@ -667,33 +472,33 @@ impl App {
             UseWholeTake | DeleteTake | FlattenComp | TakeToNewTrack | RenameTake | EditTake => {
                 self.take_command_enabled(command)
             }
+            FitArrangementWidth | FitArrangementHeight => self.view.project_open,
+            FitRollWidth | FitRollHeight => self.view.project_open && self.piano_roll_open,
+            RollSelectAll | RollDelete | RollCopy | RollPaste | RollDuplicate | RollEnter
+            | RollEarlier | RollLater | RollUp | RollDown | RollShorten | RollLengthen => {
+                self.piano_roll_open
+                    && (self.piano_roll.had_focus
+                        || self.palette.as_ref().is_some_and(|palette| palette.roll))
+            }
             _ => true,
         }
     }
     fn button(&self, ui: &mut egui::Ui, command: Command) -> bool {
-        let binding = self.bindings.iter().find(|b| b.command == command).unwrap();
-        let hint = binding
-            .shortcut
-            .map(|s| ui.ctx().format_shortcut(&s))
-            .unwrap_or_default();
+        let hint = self.keymap.text(ui.ctx(), command);
         let title = match command {
             Command::ShowMixer if self.mixer_ui.open => "Sequencer",
             Command::ShowMixer => "Mixer",
             Command::Settings if self.mixer_ui.open => "Settings",
             Command::Commands if self.mixer_ui.open => "Commands",
-            _ => binding.title,
+            _ => command.title(),
         };
-        let description = self.command_label(binding);
-        ui.add_enabled(
-            self.command_available(command, false),
-            egui::Button::new(title),
-        )
-        .on_hover_text(if hint.is_empty() {
-            description
-        } else {
-            format!("{description} ({hint})")
-        })
-        .clicked()
+        let description = self.command_label(command);
+        TextButton::new(title)
+            .enabled(self.command_available(command, false))
+            .tooltip(&description)
+            .shortcut(&hint)
+            .show(ui)
+            .clicked()
             && self.enabled(command)
     }
     fn has_unsaved_changes(&self) -> bool {
@@ -819,6 +624,10 @@ impl App {
             | ResizeClipLonger | LoopClipShorter | LoopClipLonger => {
                 self.dispatch_clip_command(command)
             }
+            FitArrangementWidth => self.arrangement_ui.fit = Some(crate::arrangement::Fit::Width),
+            FitArrangementHeight => self.arrangement_ui.fit = Some(crate::arrangement::Fit::Height),
+            FitRollWidth => self.piano_roll.fit = Some(crate::arrangement::Fit::Width),
+            FitRollHeight => self.piano_roll.fit = Some(crate::arrangement::Fit::Height),
             New => self.transition(Transition::New, ctx),
             Open => self.file = Some(FilePicker::new(FileMode::Open, self.view.path.as_ref())),
             Save => self.save(false),
@@ -850,6 +659,11 @@ impl App {
                 self.refresh_devices(ctx.clone());
             }
             Commands => self.commands_open = true,
+            Palette => self.open_palette(ctx),
+            RollSelectAll | RollDelete | RollCopy | RollPaste | RollDuplicate | RollEnter
+            | RollEarlier | RollLater | RollUp | RollDown | RollShorten | RollLengthen => {
+                self.piano_roll.requested.set(Some(command));
+            }
             AddTrack => {
                 let rename = self
                     .view
@@ -1127,129 +941,171 @@ impl App {
             self.device_job = None;
         }
     }
+    /// Dispatch the one command whose live shortcut was pressed. Roll commands are consumed by
+    /// the focused piano-roll lane itself; arrangement commands need arrangement focus.
     fn shortcuts(&mut self, ctx: &egui::Context) {
-        if let Some(index) = self.rebinding {
-            let event = ctx.input(|i| {
-                i.events.iter().find_map(|e| {
-                    if let egui::Event::Key {
-                        key,
-                        modifiers,
-                        pressed: true,
-                        repeat: false,
-                        ..
-                    } = e
-                    {
-                        Some((*key, *modifiers))
-                    } else {
-                        None
-                    }
-                })
-            });
-            if let Some((key, modifiers)) = event {
-                if key == Key::Escape {
-                    self.rebinding = None;
-                } else if modifiers.command || modifiers.ctrl || modifiers.alt {
-                    let shortcut = KeyboardShortcut::new(modifiers, key);
-                    for binding in &mut self.bindings {
-                        if binding.shortcut == Some(shortcut) {
-                            binding.shortcut = None;
-                        }
-                    }
-                    self.bindings[index].shortcut = Some(shortcut);
-                    self.rebinding = None;
-                }
-            }
+        if self.rebinding.is_some() {
+            self.capture_shortcut(ctx);
+            return;
+        }
+        if self.palette.is_some() {
             return;
         }
         let text_has_focus = ctx
             .memory(|memory| memory.focused())
             .is_some_and(|id| egui::TextEdit::load_state(ctx, id).is_some());
-        let selected = self
-            .bindings
+        let composing = ctx.output(|output| output.ime.is_some());
+        let arrangement = self.arrangement_ui.focused(ctx);
+        let mixer_activation = self.mixer_ui.open && primitives::mixer::activation_has_focus(ctx);
+        // The most specific context first, so a global binding never shadows a local one.
+        let selected = commands::SPECS
             .iter()
-            .filter(|b| self.enabled(b.command))
-            .filter(|b| b.command != Command::PlayStop || !self.mixer_ui.open || !primitives::mixer::activation_has_focus(ctx))
-            .filter(|b| !b.command.is_clip() || !text_has_focus && self.arrangement_ui.focused(ctx))
-            .filter(|b| !text_has_focus || !matches!(b.command, Command::Undo | Command::Redo))
-            .find_map(|b| {
-                b.shortcut
-                    .filter(|s| {
-                        (s.modifiers != Modifiers::NONE
-                            || !ctx.output(|output| output.ime.is_some()))
-                            && ctx.input_mut(|i| {
-                                if !b.command.is_clip() && !matches!(b.command, Command::Undo | Command::Redo) {
-                                    return i.consume_shortcut(s);
-                                }
-                                let mut consumed = false;
-                                i.events.retain(|event| {
-                                    let matched = matches!(event, egui::Event::Key {
-                                        key, modifiers, pressed: true, ..
-                                    } if *key == s.logical_key && modifiers.matches_exact(s.modifiers));
-                                    consumed |= matched;
-                                    !matched
-                                });
-                                consumed
-                            })
-                    })
-                    .map(|_| b.command)
-            });
+            .filter(|spec| spec.context != Context::Global)
+            .chain(
+                commands::SPECS
+                    .iter()
+                    .filter(|spec| spec.context == Context::Global),
+            )
+            .map(|spec| spec.command)
+            .filter(|&command| match command.context() {
+                Context::PianoRoll => false,
+                Context::Arrangement => arrangement && !text_has_focus,
+                Context::Mixer => self.mixer_ui.open,
+                Context::Global => true,
+            })
+            .filter(|&command| {
+                self.keymap.shortcut(command).is_some_and(|shortcut| {
+                    !commands::unmodified(shortcut) || !text_has_focus && !composing
+                })
+            })
+            .filter(|&command| command != Command::PlayStop || !mixer_activation)
+            .filter(|&command| !text_has_focus || !matches!(command, Command::Undo | Command::Redo))
+            .filter(|&command| self.enabled(command))
+            .find(|&command| ctx.input_mut(|input| self.keymap.consume(input, command)));
         if let Some(command) = selected {
             self.dispatch(command, ctx);
         }
     }
-    fn track_row(
-        ui: &mut egui::Ui,
-        name: &str,
-        caption: &str,
-        width: f32,
-        selected: bool,
-        enabled: bool,
-        keyboard_mode: bool,
-    ) -> egui::Response {
-        let full = format!("{name}\n{caption}");
-        let response = ui.add_enabled(
-            enabled,
-            egui::Button::new("")
-                .fill(colors::PANEL)
-                .stroke(if selected {
-                    egui::Stroke::new(1.5_f32, colors::ACCENT.gamma_multiply(0.8))
-                } else {
-                    egui::Stroke::NONE
-                })
-                .min_size(egui::vec2(width, theme::ARRANGEMENT_TRACK_HEIGHT)),
-        );
-        if response.hovered() && !selected {
-            ui.painter()
-                .rect_filled(response.rect.shrink(2.0), 2.0, colors::FIELD);
+    fn open_palette(&mut self, ctx: &egui::Context) {
+        self.palette = Some(palette::Palette::new(
+            ctx.memory(|memory| memory.focused()),
+            self.piano_roll.had_focus,
+        ));
+    }
+    /// The open command palette: every registry command with its live name and shortcut.
+    fn command_palette(&mut self, ctx: &egui::Context) {
+        if self.palette.is_none() {
+            return;
         }
-        if response.has_focus() && keyboard_mode {
-            ui.painter().rect_stroke(
-                response.rect.shrink(4.0),
-                2.0,
-                egui::Stroke::new(1.0_f32, colors::ACCENT),
-                egui::StrokeKind::Inside,
-            );
+        let rows: Vec<palette::Row> = commands::SPECS
+            .iter()
+            .map(|spec| palette::Row {
+                command: spec.command,
+                label: self.command_label(spec.command),
+                shortcut: self.keymap.text(ctx, spec.command),
+                enabled: self.enabled(spec.command),
+            })
+            .collect();
+        let Some(outcome) = self
+            .palette
+            .as_mut()
+            .and_then(|palette| palette.show(ctx, &rows))
+        else {
+            return;
+        };
+        // Give focus back first, so context commands act where the user was.
+        match self.palette.as_ref().and_then(|palette| palette.origin) {
+            Some(origin) => ctx.memory_mut(|memory| memory.request_focus(origin)),
+            None => {
+                if let Some(focused) = ctx.memory(|memory| memory.focused()) {
+                    ctx.memory_mut(|memory| memory.surrender_focus(focused));
+                }
+            }
         }
-        response.widget_info(|| {
-            egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, enabled, selected, &full)
+        if let palette::Outcome::Run(command) = outcome {
+            self.dispatch(command, ctx);
+        }
+        if !matches!(outcome, palette::Outcome::Run(Command::Palette)) {
+            self.palette = None;
+        }
+    }
+    /// The Commands window is waiting for a key for `rebinding`: Escape cancels, any other key
+    /// is assigned, or asks first when it clashes.
+    fn capture_shortcut(&mut self, ctx: &egui::Context) {
+        let Some(command) = self.rebinding else {
+            return;
+        };
+        if self.rebind_conflict.is_some() {
+            return;
+        }
+        let pressed = ctx.input_mut(|input| {
+            let found = input.events.iter().position(|event| {
+                matches!(
+                    event,
+                    egui::Event::Key {
+                        pressed: true,
+                        repeat: false,
+                        ..
+                    }
+                )
+            })?;
+            match input.events.remove(found) {
+                egui::Event::Key { key, modifiers, .. } => Some((key, modifiers)),
+                _ => None,
+            }
         });
-        for (text, size, color, y) in [
-            (name, 13.0, colors::TEXT, 6.0),
-            (caption, 11.0, colors::SECONDARY, 24.0),
-        ] {
-            let color = if enabled { color } else { colors::DISABLED };
-            let mut job = egui::text::LayoutJob::simple_singleline(
-                text.to_owned(),
-                egui::FontId::proportional(size),
-                color,
-            );
-            job.wrap.max_width = (width - 16.0).max(1.0);
-            job.wrap.max_rows = 1;
-            let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
-            ui.painter()
-                .galley(response.rect.left_top() + egui::vec2(8.0, y), galley, color);
+        let Some((key, modifiers)) = pressed else {
+            return;
+        };
+        if key == Key::Escape {
+            self.rebinding = None;
+            return;
         }
-        response.on_hover_text(full)
+        let shortcut = commands::captured(key, modifiers);
+        match self.keymap.conflict(command, shortcut) {
+            Some(other) => self.rebind_conflict = Some((shortcut, other)),
+            None => self.assign_shortcut(command, Some(shortcut)),
+        }
+    }
+    fn assign_shortcut(&mut self, command: Command, shortcut: Option<KeyboardShortcut>) {
+        self.keymap.set(command, shortcut);
+        self.rebinding = None;
+        self.rebind_conflict = None;
+        self.save_shortcuts();
+    }
+    /// Send the saved form to the session; retried from `poll` while the session is busy.
+    fn save_shortcuts(&mut self) {
+        self.piano_roll.keys = self.keymap.clone();
+        let overrides = self.keymap.overrides();
+        if *self.view.shortcuts == overrides {
+            self.shortcuts_unsaved = false;
+            return;
+        }
+        let sent = self.actions_in_flight;
+        self.send(Action::SetShortcuts(overrides));
+        self.shortcuts_unsaved = self.actions_in_flight == sent;
+    }
+    /// Apply the saved shortcuts when the session reports a new set (at launch, after a save).
+    fn sync_shortcuts(&mut self) {
+        if std::sync::Arc::ptr_eq(&self.shortcuts_seen, &self.view.shortcuts) {
+            if self.shortcuts_unsaved && self.busy_since.is_none() {
+                self.save_shortcuts();
+            }
+            return;
+        }
+        self.shortcuts_seen = self.view.shortcuts.clone();
+        if self.shortcuts_unsaved {
+            return;
+        }
+        let (keymap, problems) = Keymap::from_overrides(&self.view.shortcuts);
+        self.piano_roll.keys = keymap.clone();
+        self.keymap = keymap;
+        if !problems.is_empty() {
+            self.status = format!(
+                "Some saved keyboard shortcuts were ignored: {}.",
+                problems.join("; ")
+            );
+        }
     }
     fn select_track(&mut self, id: u64) {
         let rename = self
@@ -1264,16 +1120,41 @@ impl App {
         if self.quarantine_notice {
             let mut dismiss = false;
             let mut show = false;
-            let notice=egui::Modal::new(egui::Id::new("quarantine-notice")).show(ctx,|ui| {
-                ui.set_max_width(560.0); ui.heading("This project contains quarantined plugins");
-                ui.label("Saved states are retained. These instruments will not load until explicitly reactivated.");
-                egui::ScrollArea::vertical().max_height(240.0).show(ui,|ui| {
-                    for track in &self.view.project.tracks { if let Some(plugin)=&track.plugin && let Some(entry)=self.view.quarantine.iter().find(|e|crate::quarantine::same(&e.plugin,plugin)) {ui.label(format!("{} · {} · {}",plugin.name,track.name,entry.reason));} }
-                });
-                if ui.button("Show Quarantined Plugins…").clicked() {show=true; dismiss=true;}
-                if ui.button("Continue").clicked() || ui.input(|i|i.key_pressed(Key::Enter)||i.key_pressed(Key::Escape)) {dismiss=true;}
-            });
-            if dismiss || notice.should_close() {
+            let rows: Vec<[String; 3]> = self
+                .view
+                .project
+                .tracks
+                .iter()
+                .filter_map(|track| {
+                    let plugin = track.plugin.as_ref()?;
+                    let entry = self
+                        .view
+                        .quarantine
+                        .iter()
+                        .find(|e| crate::quarantine::same(&e.plugin, plugin))?;
+                    Some([
+                        plugin.name.clone(),
+                        track.name.clone(),
+                        entry.reason.clone(),
+                    ])
+                })
+                .collect();
+            let outcome = NoticeBox::new(
+                "quarantine-notice",
+                "This project contains quarantined plugins",
+                "Saved states are retained. These instruments will not load until explicitly reactivated.",
+                "Continue ↩",
+            )
+            .rows(&["Plugin", "Track", "Reason"], &rows)
+            .secondary("Show Quarantined Plugins…")
+            .show(ctx);
+            if outcome == Some(Outcome::Secondary) {
+                show = true;
+            }
+            if outcome.is_some() {
+                dismiss = true;
+            }
+            if dismiss {
                 self.quarantine_notice = false;
             }
             if show {
@@ -1283,10 +1164,9 @@ impl App {
         if self.quarantine_open {
             let mut open = true;
             let mut reactivate = None;
-            egui::Window::new("Quarantined Plugins")
-                .open(&mut open)
-                .default_width(560.0)
-                .show(ctx, |ui| {
+            ToolWindow::new("Quarantined Plugins")
+                .width(560.0)
+                .show(ctx, &mut open, |ui| {
                     ui.label(
                         "Reactivation clears the block; instruments load only on explicit use.",
                     );
@@ -1301,12 +1181,10 @@ impl App {
                                     "{} · {}",
                                     entry.plugin.name, entry.plugin.format
                                 ));
-                                ui.colored_label(colors::SECONDARY, &entry.reason);
-                                if ui
-                                    .add_enabled(
-                                        self.busy_since.is_none(),
-                                        egui::Button::new("Reactivate Plugin…"),
-                                    )
+                                text::caption(ui, &entry.reason);
+                                if TextButton::new("Reactivate Plugin…")
+                                    .enabled(self.busy_since.is_none())
+                                    .show(ui)
                                     .clicked()
                                 {
                                     reactivate = Some(entry.plugin.clone());
@@ -1314,7 +1192,7 @@ impl App {
                             }
                         });
                     if !self.view.quarantine_error.is_empty() {
-                        ui.colored_label(colors::DANGER, &self.view.quarantine_error);
+                        text::danger(ui, &self.view.quarantine_error);
                     }
                 });
             self.quarantine_open = open;
@@ -1324,44 +1202,12 @@ impl App {
         }
     }
     fn main_surface(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        let mut selected = None;
-        ui.horizontal_wrapped(|ui| {
-            for command in [Command::New, Command::Open, Command::Save, Command::SaveAs] {
-                if self.button(ui, command) {
-                    selected = Some(command);
-                }
-            }
-            let commands = [Command::Undo, Command::Redo, Command::EditHistory];
-            let rows = commands.map(|command| {
-                let binding = self
-                    .bindings
-                    .iter()
-                    .find(|binding| binding.command == command)
-                    .unwrap();
-                let label = self.command_label(binding);
-                let shortcut = binding
-                    .shortcut
-                    .map(|shortcut| ctx.format_shortcut(&shortcut))
-                    .unwrap_or_default();
-                (label, shortcut, self.enabled(command))
-            });
-            if let Some(index) = primitives::history::edit_menu(
-                ui,
-                rows.each_ref().map(|(label, shortcut, enabled)| {
-                    (label.as_str(), shortcut.as_str(), *enabled)
-                }),
-            ) {
-                selected = Some(commands[index]);
-            }
-            for command in [Command::ShowMixer, Command::Settings, Command::Commands] {
-                if self.button(ui, command) {
-                    selected = Some(command);
-                }
-            }
-        });
+        let mut selected = self.menu_bar(ui);
         let project_title = |ui: &mut egui::Ui| {
-            ui.heading(
-                self.view
+            text::heading(
+                ui,
+                &self
+                    .view
                     .path
                     .as_ref()
                     .and_then(|p| p.file_stem())
@@ -1369,16 +1215,16 @@ impl App {
                     .unwrap_or_else(|| "Untitled".into()),
             );
             if self.has_unsaved_changes() {
-                ui.colored_label(colors::SECONDARY, "Unsaved changes");
+                text::caption(ui, "Unsaved changes");
             }
         };
         let audio_control = |ui: &mut egui::Ui| {
             ui.set_min_height(ui.spacing().interact_size.y);
             ui.colored_label(
                 if self.view.active {
-                    colors::ACCENT
+                    theme::ACCENT
                 } else {
-                    colors::SECONDARY
+                    theme::SECONDARY
                 },
                 if self.view.active {
                     "Audio active"
@@ -1436,13 +1282,13 @@ impl App {
                 transport_action = result.2;
                 if result.1 { selected = Some(Command::AddTrack); }
             });
-            egui::Frame::new().fill(colors::PANEL).inner_margin(12.0).show(ui, |ui| { ui.vertical(|ui| {
+            egui::Frame::new().fill(theme::PANEL).inner_margin(12.0).show(ui, |ui| { ui.vertical(|ui| {
                 ui.set_width(details_width - 24.0);
                 egui::ScrollArea::vertical().id_salt("track-details").max_height(arrangement_height).show(ui,|ui| {
                     if let Some(track) = self.view.track().cloned() {
-                        ui.label(egui::RichText::new("Selected instrument track").size(16.0));
-                        let label = ui.label("Track name");
-                        let edit = ui.add_enabled(!self.busy_visible,egui::TextEdit::singleline(&mut self.rename).id_salt(("track-name",track.id)).desired_width(f32::INFINITY)).labelled_by(label.id);
+                        text::heading(ui, "Selected instrument track");
+                        text::caption(ui, "Track name");
+                        let edit = TextField::new(&mut self.rename, "Track name").id(ui.make_persistent_id(("track-name",track.id))).enabled(!self.busy_visible).show(ui);
                         if self.rename_focus { edit.request_focus(); self.rename_focus=false; }
                         if edit.has_focus() && ui.input_mut(|i|i.consume_key(Modifiers::NONE,Key::Escape)) { self.rename=track.name.clone(); }
                         if edit.lost_focus() && ui.input(|i|i.key_pressed(Key::Enter)) { selected=Some(Command::Rename); }
@@ -1452,30 +1298,31 @@ impl App {
                         ui.add_space(12.0);
                         ui.label(track.plugin.as_ref().map(|p|format!("{} · {}",p.name,p.format)).unwrap_or_else(||"No instrument".into()));
                         let state = self.view.state(track.id).map(|s|s.status.as_str()).unwrap_or("Empty");
-                        ui.colored_label(if self.view.failed {colors::DANGER} else {colors::SECONDARY},state);
+                        if self.view.failed { text::danger(ui, state); } else { text::caption(ui, state); }
                         ui.add_space(8.0);
-                        ui.label("Record mode");
                         let mode_enabled = !self.view.recording
                             && !self.view.transport.pending
                             && self.busy_since.is_none()
                             && self.view.tracks.iter().all(|track| !track.loading);
-                        ui.add_enabled_ui(mode_enabled, |ui| {
-                            let mut chosen = track.record_mode;
-                            egui::ComboBox::from_id_salt(("track-record-mode", track.id))
-                                .selected_text(chosen.label())
-                                .show_ui(ui, |ui| {
-                                    for mode in TrackMode::ALL {
-                                        ui.selectable_value(&mut chosen, mode, mode.label());
-                                    }
-                                });
-                            if chosen != track.record_mode {
-                                track_mode = Some(chosen);
-                            }
-                        });
-                        ui.colored_label(
-                            colors::SECONDARY,
-                            "Global follows the transport record mode.",
+                        let (_, chosen) = menu_button(
+                            ui,
+                            ("track-record-mode", track.id),
+                            "Record mode",
+                            Some("Record mode"),
+                            track.record_mode.label(),
+                            mode_enabled,
+                            |ui| {
+                                TrackMode::ALL
+                                    .into_iter()
+                                    .find(|&mode| choice(ui, mode.label(), mode == track.record_mode))
+                            },
                         );
+                        if let Some(Some(mode)) = chosen
+                            && mode != track.record_mode
+                        {
+                            track_mode = Some(mode);
+                        }
+                        text::caption(ui, "Global follows the transport record mode.");
                         ui.horizontal_wrapped(|ui| { for command in [Command::Instrument,Command::Editor,Command::CloseEditor] {if self.button(ui,command) {selected=Some(command);}} });
                         ui.horizontal_wrapped(|ui| { for command in [Command::Restart,Command::Reactivate,Command::Quarantine] {if self.button(ui,command) {selected=Some(command);}} });
                         ui.add_space(12.0);
@@ -1542,14 +1389,14 @@ impl App {
                         });
                 });
                 if !self.view.quarantine_error.is_empty() {
-                    ui.colored_label(colors::DANGER, &self.view.quarantine_error);
+                    text::danger(ui, &self.view.quarantine_error);
                 }
                 if !self.view.history_message.is_empty() {
-                    ui.colored_label(colors::DANGER, &self.view.history_message);
+                    text::danger(ui, &self.view.history_message);
                 }
                 ui.add_space(8.0);
                 if !self.view.actual.is_empty() {
-                    ui.colored_label(colors::SECONDARY, &self.view.actual);
+                    ui.colored_label(theme::SECONDARY, &self.view.actual);
                 }
                 if self.view.recording {
                     let label = match self.view.transport.phase {
@@ -1561,9 +1408,9 @@ impl App {
                         }
                         _ => "Preparing MIDI recording",
                     };
-                    ui.colored_label(colors::DANGER, label);
+                    ui.colored_label(theme::DANGER, label);
                 } else if let Some(reason) = self.view.record_unavailable {
-                    ui.colored_label(colors::SECONDARY, reason);
+                    ui.colored_label(theme::SECONDARY, reason);
                 }
                 let message = if self.status.is_empty() {
                     &self.view.message
@@ -1572,9 +1419,9 @@ impl App {
                 };
                 ui.colored_label(
                     if self.view.failed {
-                        colors::DANGER
+                        theme::DANGER
                     } else {
-                        colors::SECONDARY
+                        theme::SECONDARY
                     },
                     message,
                 );
@@ -1596,19 +1443,26 @@ impl App {
         let mut open = true;
         let mut picked = None;
         let mut rescan = false;
-        egui::Window::new("Choose Instrument").open(&mut open).default_width(560.0).show(ctx,|ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.plugin_search).hint_text("Search instruments by name or format"));
-            if self.button(ui,Command::Rescan) { rescan = true; }
-            if ui.button("Show Quarantined Plugins…").clicked() { self.quarantine_open=true; }
+        ToolWindow::new("Choose Instrument").width(560.0).show(ctx, &mut open, |ui| {
+            SearchField::new(&mut self.plugin_search, "Search instruments").hint("Search instruments by name or format").show(ui);
+            ui.horizontal(|ui| {
+                if self.button(ui,Command::Rescan) { rescan = true; }
+                if TextButton::new("Show Quarantined Plugins…").show(ui).clicked() { self.quarantine_open=true; }
+            });
             if self.scan_job.is_some() { ui.horizontal(|ui| { ui.spinner(); ui.label("Scanning plugins in isolated processes…"); }); }
             let search = self.plugin_search.to_lowercase();
             egui::ScrollArea::vertical().max_height(320.0).show(ui,|ui| {
                 for plugin in &self.catalog.plugins {
-                    if format!("{} {}",plugin.name,plugin.format).to_lowercase().contains(&search) && ui.add_enabled(self.busy_since.is_none() && !self.view.quarantine.iter().any(|e| crate::quarantine::same(&e.plugin,plugin)),egui::Button::new(format!("{} · {}{}",plugin.name,plugin.format,if self.view.quarantine.iter().any(|e| crate::quarantine::same(&e.plugin,plugin)) {" · Quarantined"} else {""})).frame(false)).on_hover_text(plugin.path.display().to_string()).clicked() { picked = Some(plugin.clone()); }
+                    let quarantined = self.view.quarantine.iter().any(|e| crate::quarantine::same(&e.plugin,plugin));
+                    if !format!("{} {}",plugin.name,plugin.format).to_lowercase().contains(&search) { continue; }
+                    let label = format!("{} · {}{}", plugin.name, plugin.format, if quarantined {" · Quarantined"} else {""});
+                    let path = plugin.path.display().to_string();
+                    let full = format!("{label}, {path}");
+                    if ListRow::new(&label).accessible(&full).enabled(self.busy_since.is_none() && !quarantined).show(ui).clicked() { picked = Some(plugin.clone()); }
                 }
                 if self.catalog.plugins.is_empty() && self.scan_job.is_none() { ui.label("No instruments found. Install a VST3 or CLAP instrument, then Rescan."); }
             });
-            if !self.catalog.failures.is_empty() { ui.collapsing(format!("{} scan failures",self.catalog.failures.len()),|ui| { egui::ScrollArea::vertical().id_salt("scan-failures").max_height(120.0).show(ui, |ui| { for failure in &self.catalog.failures { ui.colored_label(colors::DANGER,failure); } }); }); }
+            if !self.catalog.failures.is_empty() { ui.collapsing(format!("{} scan failures",self.catalog.failures.len()),|ui| { egui::ScrollArea::vertical().id_salt("scan-failures").max_height(120.0).show(ui, |ui| { for failure in &self.catalog.failures { text::danger(ui, failure); } }); }); }
         });
         self.picker_open = open;
         if rescan {
@@ -1631,41 +1485,56 @@ impl App {
         }
         let mut open = true;
         let mut action = None;
-        egui::Window::new("Audio/MIDI Settings").open(&mut open).default_width(580.0).show(ctx,|ui| {
+        ToolWindow::new("Audio/MIDI Settings").width(580.0).show(ctx, &mut open, |ui| {
             ui.horizontal(|ui| {
                 ui.label("Applies to");
-                ui.selectable_value(&mut self.settings_project, false, "All projects");
-                ui.selectable_value(&mut self.settings_project, true, "This project");
+                primitives::segmented::Segmented::new(
+                    "Applies to",
+                    &mut self.settings_project,
+                    &[(false, "All projects"), (true, "This project")],
+                )
+                .show(ui);
             });
-            ui.colored_label(colors::SECONDARY, "All projects saves Clef's audio preferences. This project saves an override in the project file.");
+            text::caption(ui, "All projects saves Clef's audio preferences. This project saves an override in the project file.");
             ui.label("Applying restarts audio.");
             if self.button(ui,Command::Refresh) { action = Some(Command::Refresh); }
             if self.device_job.is_some() { ui.spinner(); }
             ui.add_space(12.0);
             let name = self.devices.audio.iter().find(|d| d.id == self.settings.device).map(|d| d.name.as_str()).unwrap_or("Choose an audio output");
-            egui::ComboBox::from_label("Audio output").selected_text(name).show_ui(ui,|ui| { for device in &self.devices.audio { ui.selectable_value(&mut self.settings.device,device.id.clone(),&device.name); } });
+            let (_, device) = menu_button(ui, "audio-output", "Audio output", Some("Audio output"), name, true, |ui| {
+                self.devices.audio.iter().find(|device| choice(ui, &device.name, device.id == self.settings.device)).map(|device| device.id.clone())
+            });
+            if let Some(Some(device)) = device { self.settings.device = device; }
             let selected = self.devices.audio.iter().find(|d| d.id == self.settings.device);
             let channels = selected.and_then(|d| d.configurations.iter().map(|c| c.channels).max()).unwrap_or(0);
-            egui::ComboBox::from_label("Stereo output pair").selected_text(format!("{}–{}",self.settings.pair[0]+1,self.settings.pair[1]+1)).show_ui(ui,|ui| {
-                for left in (0..channels.saturating_sub(1) as usize).step_by(2) { ui.selectable_value(&mut self.settings.pair,[left,left+1],format!("{}–{}",left+1,left+2)); }
+            let pair = self.settings.pair;
+            let (_, chosen) = menu_button(ui, "output-pair", "Stereo output pair", Some("Stereo output pair"), &format!("{}–{}",pair[0]+1,pair[1]+1), true, |ui| {
+                (0..channels.saturating_sub(1) as usize).step_by(2).find(|&left| choice(ui, &format!("{}–{}",left+1,left+2), pair == [left,left+1]))
             });
-            egui::ComboBox::from_label("Sample rate").selected_text(format!("{} Hz",self.settings.rate)).show_ui(ui,|ui| {
+            if let Some(Some(left)) = chosen { self.settings.pair = [left, left+1]; }
+            let current = self.settings.rate;
+            let (_, chosen) = menu_button(ui, "sample-rate", "Sample rate", Some("Sample rate"), &format!("{current} Hz"), true, |ui| {
                 let mut rates = vec![8000,11025,16000,22050,32000,44100,48000,88200,96000,176400,192000,352800,384000];
                 if let Some(device) = selected { for c in &device.configurations { rates.extend([c.min_rate,c.max_rate]); } } rates.sort();rates.dedup();
-                for rate in rates { if selected.is_some_and(|d| d.configurations.iter().any(|c| (c.min_rate..=c.max_rate).contains(&rate))) { ui.selectable_value(&mut self.settings.rate,rate,format!("{rate} Hz")); } }
+                rates.into_iter().filter(|rate| selected.is_some_and(|d| d.configurations.iter().any(|c| (c.min_rate..=c.max_rate).contains(rate)))).find(|&rate| choice(ui, &format!("{rate} Hz"), rate == current))
             });
-            egui::ComboBox::from_label("Buffer size").selected_text(format!("{} frames",self.settings.buffer)).show_ui(ui,|ui| {
+            if let Some(Some(rate)) = chosen { self.settings.rate = rate; }
+            let settings = self.settings.clone();
+            let (_, chosen) = menu_button(ui, "buffer-size", "Buffer size", Some("Buffer size"), &format!("{} frames", settings.buffer), true, |ui| {
                 let mut values = vec![16,32,64,128,256,512,1024,2048,4096];
                 if let Some(device) = selected { for c in &device.configurations { if let clef_audio_io::SupportedBufferSize::Range { min,max } = c.buffer { values.extend([min,max]); } } } values.sort(); values.dedup();
-                for frames in values { let mut candidate = self.settings.clone(); candidate.buffer = frames;
-                    if selected.is_some_and(|d| d.configurations.iter().any(|c| c.supports(&candidate))) { ui.selectable_value(&mut self.settings.buffer,frames,format!("{frames} frames")); }
-                }
+                values.into_iter().filter(|&frames| { let mut candidate = settings.clone(); candidate.buffer = frames; selected.is_some_and(|d| d.configurations.iter().any(|c| c.supports(&candidate))) })
+                    .find(|&frames| choice(ui, &format!("{frames} frames"), frames == settings.buffer))
             });
+            if let Some(Some(frames)) = chosen { self.settings.buffer = frames; }
             ui.add_space(12.0);
             let midi = self.devices.midi.iter().find(|(id,_)| id == &self.settings.midi).map(|(_,n)| n.as_str()).unwrap_or("Choose a MIDI input");
-            egui::ComboBox::from_label("MIDI input").selected_text(midi).show_ui(ui,|ui| { for (id,name) in &self.devices.midi { ui.selectable_value(&mut self.settings.midi,id.clone(),name); } });
+            let (_, chosen) = menu_button(ui, "midi-input", "MIDI input", Some("MIDI input"), midi, true, |ui| {
+                self.devices.midi.iter().find(|(id, name)| choice(ui, name, id == &self.settings.midi)).map(|(id, _)| id.clone())
+            });
+            if let Some(Some(id)) = chosen { self.settings.midi = id; }
             ui.add_space(12.0);
-            match self.devices.validate(&self.settings) { Ok(()) => { if self.button(ui,Command::ApplySettings) { action = Some(Command::ApplySettings); } }, Err(e) => { ui.colored_label(colors::SECONDARY,e.to_string()); } }
+            match self.devices.validate(&self.settings) { Ok(()) => { if self.button(ui,Command::ApplySettings) { action = Some(Command::ApplySettings); } }, Err(e) => { text::caption(ui, &e.to_string()); } }
             if !self.view.actual.is_empty() { ui.label(&self.view.actual); }
             ui.label("The device may use a different callback size; actual values appear after audio starts.");
         });
@@ -1686,12 +1555,11 @@ impl App {
             FileMode::Locate => "Locate Project",
             FileMode::Save => "Save Project",
         };
-        egui::Window::new(title)
-            .open(&mut open)
-            .default_width(620.0)
-            .show(ctx, |ui| {
-                ui.label(picker.folder.display().to_string());
-                if ui.button("Parent Folder").clicked() {
+        ToolWindow::new(title)
+            .width(620.0)
+            .show(ctx, &mut open, |ui| {
+                text::caption(ui, &picker.folder.display().to_string());
+                if TextButton::new("Parent Folder").show(ui).clicked() {
                     navigate = picker.folder.parent().map(|p| p.to_owned());
                 }
                 let listing = picker
@@ -1702,15 +1570,14 @@ impl App {
                     .show(ui, |ui| match listing {
                         Ok(entries) => {
                             for entry in entries.iter() {
-                                if ui
-                                    .selectable_label(
-                                        picker.name == entry.name,
-                                        format!(
-                                            "{}{}",
-                                            entry.name,
-                                            if entry.folder { "/" } else { "" }
-                                        ),
-                                    )
+                                let label = format!(
+                                    "{}{}",
+                                    entry.name,
+                                    if entry.folder { "/" } else { "" }
+                                );
+                                if ListRow::new(&label)
+                                    .selected(picker.name == entry.name)
+                                    .show(ui)
                                     .clicked()
                                 {
                                     if entry.folder {
@@ -1722,16 +1589,15 @@ impl App {
                             }
                         }
                         Err(error) => {
-                            ui.colored_label(colors::DANGER, error.as_str());
+                            text::danger(ui, error.as_str());
                         }
                     });
-                ui.horizontal(|ui| {
-                    let label = ui.label("File name or absolute path");
-                    ui.text_edit_singleline(&mut picker.name)
-                        .labelled_by(label.id);
-                });
-                ui.colored_label(colors::DANGER, &picker.error);
-                if ui.button(title).clicked() {
+                text::caption(ui, "File name or absolute path");
+                TextField::new(&mut picker.name, "File name or absolute path").show(ui);
+                if !picker.error.is_empty() {
+                    text::danger(ui, &picker.error);
+                }
+                if TextButton::new(title).primary(true).show(ui).clicked() {
                     let mut path = picker.folder.join(picker.name.trim());
                     if picker.name.trim().is_empty() {
                         picker.error = "Enter a project file name.".into();
@@ -1802,38 +1668,39 @@ impl App {
             }
         };
         let mut choice = None;
-        egui::Modal::new(egui::Id::new("confirmation")).show(ctx, |ui| {
-            ui.set_max_width(460.0);
-            ui.label(message);
-            match confirm {
-                Confirm::Remove(id) => {
-                    if let Some(track) = self.view.project.tracks.iter().find(|t| t.id == *id) {
-                        ui.label(&track.name);
-                    }
-                }
-                Confirm::Reactivate(plugin) => {
-                    ui.label(&plugin.name);
-                    for track in &self.view.project.tracks {
-                        if track
-                            .plugin
-                            .as_ref()
-                            .is_some_and(|p| crate::quarantine::same(p, plugin))
-                        {
+        egui::Modal::new(egui::Id::new("confirmation"))
+            .frame(frame().inner_margin(16))
+            .show(ctx, |ui| {
+                ui.set_max_width(460.0);
+                ui.label(message);
+                match confirm {
+                    Confirm::Remove(id) => {
+                        if let Some(track) = self.view.project.tracks.iter().find(|t| t.id == *id) {
                             ui.label(&track.name);
                         }
                     }
-                }
-                Confirm::Retained(_) => {
-                    for name in self.view.losses() {
-                        ui.label(name);
+                    Confirm::Reactivate(plugin) => {
+                        ui.label(&plugin.name);
+                        for track in &self.view.project.tracks {
+                            if track
+                                .plugin
+                                .as_ref()
+                                .is_some_and(|p| crate::quarantine::same(p, plugin))
+                            {
+                                ui.label(&track.name);
+                            }
+                        }
                     }
+                    Confirm::Retained(_) => {
+                        for name in self.view.losses() {
+                            ui.label(name);
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
-            }
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                if ui
-                    .button(if matches!(confirm, Confirm::Unsaved(_)) {
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    let primary = if matches!(confirm, Confirm::Unsaved(_)) {
                         "Save"
                     } else if matches!(confirm, Confirm::Retained(_)) {
                         "Save Using Retained State"
@@ -1841,19 +1708,20 @@ impl App {
                         "Split Notes"
                     } else {
                         "Continue"
-                    })
-                    .clicked()
-                {
-                    choice = Some(0);
-                }
-                if matches!(confirm, Confirm::Unsaved(_)) && ui.button("Discard").clicked() {
-                    choice = Some(1);
-                }
-                if ui.button("Cancel").clicked() {
-                    choice = Some(2);
-                }
+                    };
+                    if TextButton::new(primary).primary(true).show(ui).clicked() {
+                        choice = Some(0);
+                    }
+                    if matches!(confirm, Confirm::Unsaved(_))
+                        && TextButton::new("Discard").show(ui).clicked()
+                    {
+                        choice = Some(1);
+                    }
+                    if TextButton::new("Cancel").show(ui).clicked() {
+                        choice = Some(2);
+                    }
+                });
             });
-        });
         if matches!(confirm, Confirm::SplitClips(_, _))
             && ctx.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape))
         {
@@ -1917,12 +1785,13 @@ impl App {
         self.history_window.pending = self.busy_since.is_some();
     }
 
-    fn command_label(&self, binding: &Binding) -> String {
+    /// The live name of a command: Undo and Redo name the edit, Show Mixer flips.
+    fn command_label(&self, command: Command) -> String {
         let history = &self.view.edit_history;
-        if binding.command == Command::ShowMixer && self.mixer_ui.open {
+        if command == Command::ShowMixer && self.mixer_ui.open {
             return "Show Sequencer".into();
         }
-        let edit = match binding.command {
+        let edit = match command {
             Command::Undo => history
                 .cursor
                 .checked_sub(1)
@@ -1931,46 +1800,108 @@ impl App {
             _ => None,
         };
         edit.map_or_else(
-            || binding.title.into(),
-            |edit| format!("{} {edit}", binding.title),
+            || command.title().into(),
+            |edit| format!("{} {edit}", command.title()),
         )
     }
 
+    /// Debug builds only: every T18 primitive on one scrolling page.
+    fn primitive_gallery_window(&mut self, ctx: &egui::Context) {
+        let mut open = self.primitive_gallery_open.get();
+        if !open {
+            return;
+        }
+        let height = ctx.content_rect().height() * 0.8;
+        ToolWindow::new("Primitive Gallery (Debug)")
+            .width(760.0)
+            .show(ctx, &mut open, |ui| {
+                egui::ScrollArea::vertical()
+                    .max_height(height)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| self.primitive_gallery.show_all(ui, ctx));
+            });
+        self.primitive_gallery_open.set(open);
+    }
+
+    /// Commands / Keyboard Shortcuts: remap only. Running commands belongs to the palette.
     fn command_window(&mut self, ctx: &egui::Context) {
         if !self.commands_open {
             return;
         }
         let mut open = true;
-        let mut selected = None;
         let mut rebind = None;
-        egui::Window::new("Commands / Keyboard Shortcuts").open(&mut open).default_width(560.0).show(ctx,|ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.command_search).hint_text("Search commands"));
-            ui.label("Bindings apply to this Clef session. Set: press Command/Ctrl/Option + key; Escape cancels.");
-            egui::ScrollArea::vertical().max_height(420.0).show(ui,|ui| {
-                for (index,binding) in self.bindings.iter().enumerate() {
-                    let title = self.command_label(binding);
-                    if !title.to_lowercase().contains(&self.command_search.to_lowercase()) { continue; }
+        let mut clear = None;
+        let mut restore = false;
+        let search = self.command_search.to_lowercase();
+        ToolWindow::new("Commands / Keyboard Shortcuts").width(560.0).show(ctx, &mut open, |ui| {
+            SearchField::new(&mut self.command_search, "Search commands").show(ui);
+            text::caption(ui, "Set, then press the new shortcut; Escape cancels. Changes apply to every project.");
+            egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                for spec in commands::SPECS {
+                    let command = spec.command;
+                    if !spec.title.to_lowercase().contains(&search) { continue; }
+                    let waiting = self.rebinding == Some(command);
                     ui.horizontal(|ui| {
-                        if ui.add_enabled(self.enabled(binding.command),egui::Button::new(title)).clicked() { selected = Some(binding.command); }
-                        ui.label(binding.shortcut.map(|s| ctx.format_shortcut(&s)).unwrap_or_else(|| "Unbound".into()));
-                        if ui.button(if self.rebinding == Some(index) { "Press keys…" } else { "Set" }).clicked() { rebind = Some(index); }
+                        ui.add_sized([300.0, ui.spacing().interact_size.y], egui::Label::new(spec.title).truncate());
+                        let shortcut = self.keymap.text(ctx, command);
+                        text::caption(ui, if waiting { "Press a shortcut…" } else if shortcut.is_empty() { "Unbound" } else { &shortcut });
+                        if TextButton::new("Set").toggle(waiting).accessible(&format!("Set shortcut for {}", spec.title)).show(ui).clicked() { rebind = Some(command); }
+                        if TextButton::new("Clear").enabled(!shortcut.is_empty()).accessible(&format!("Clear shortcut for {}", spec.title)).show(ui).clicked() { clear = Some(command); }
                     });
                 }
             });
+            if TextButton::new("Restore Defaults").show(ui).clicked() { restore = true; }
         });
-        self.commands_open = open;
-        if let Some(index) = rebind {
-            self.rebinding = Some(index);
+        if let Some((shortcut, other)) = self.rebind_conflict
+            && let Some(command) = self.rebinding
+        {
+            let body = format!(
+                "{} is already used by {}. Replace it there, or cancel and keep both as they are.",
+                ctx.format_shortcut(&shortcut),
+                other.title()
+            );
+            match NoticeBox::new(
+                "shortcut-conflict",
+                "Shortcut already in use",
+                &body,
+                "Replace",
+            )
+            .question()
+            .secondary("Cancel")
+            .show(ctx)
+            {
+                Some(Outcome::Primary) => {
+                    self.keymap.set(other, None);
+                    self.assign_shortcut(command, Some(shortcut));
+                }
+                Some(_) => {
+                    self.rebind_conflict = None;
+                    self.rebinding = None;
+                }
+                None => {}
+            }
         }
-        if let Some(command) = selected {
-            self.commands_open = false;
-            self.dispatch(command, ctx);
+        self.commands_open = open;
+        if !open {
+            self.rebinding = None;
+            self.rebind_conflict = None;
+        }
+        if let Some(command) = rebind {
+            self.rebinding = (self.rebinding != Some(command)).then_some(command);
+        }
+        if let Some(command) = clear {
+            self.assign_shortcut(command, None);
+        }
+        if restore {
+            self.keymap = Keymap::default();
+            self.rebinding = None;
+            self.save_shortcuts();
         }
     }
 }
 impl eframe::App for App {
     fn clear_color(&self, _: &egui::Visuals) -> [f32; 4] {
-        colors::BACKGROUND.to_normalized_gamma_f32()
+        theme::BACKGROUND.to_normalized_gamma_f32()
     }
     fn logic(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         ctx.input(|input| {
@@ -1982,7 +1913,9 @@ impl eframe::App for App {
                 }
             }
         });
+        paint::set_keyboard(ctx, self.keyboard_mode);
         self.poll(ctx);
+        self.sync_shortcuts();
         if self.confirm.is_none() && self.file.is_none() {
             self.arrangement_ui.cancel(ctx);
         }
@@ -2031,6 +1964,10 @@ impl eframe::App for App {
         self.settings(&ctx);
         self.transport_windows(&ctx);
         self.command_window(&ctx);
+        self.command_palette(&ctx);
+        if cfg!(debug_assertions) {
+            self.primitive_gallery_window(&ctx);
+        }
         let history_enabled =
             self.view.edit_history.available && self.enabled(Command::EditHistory);
         if self.view.project_open
@@ -2059,6 +1996,7 @@ mod tests {
     #[test]
     fn redo_shortcut_never_falls_through_to_undo() {
         let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx);
         let mut app = App::new(ctx.clone(), PathBuf::new());
         app.view.project_open = true;
         app.view.edit_history = clef_session::HistoryView {
@@ -2090,6 +2028,95 @@ mod tests {
         press_z(&mut app, Modifiers::MAC_CMD | Modifiers::COMMAND);
         assert_eq!(app.actions_in_flight, 1);
     }
+    fn press(key: Key, modifiers: Modifiers) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        }
+    }
+
+    #[test]
+    fn unmodified_shortcuts_wait_while_text_is_typed() {
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx);
+        let mut app = App::new(ctx.clone(), PathBuf::new());
+        app.view.project_open = true;
+        app.keymap.set(
+            Command::Commands,
+            Some(KeyboardShortcut::new(Modifiers::NONE, Key::K)),
+        );
+        let field = egui::Id::new("typing");
+        let mut text = String::new();
+        let mut frame = |app: &mut App, events, focus: bool| {
+            let _ = ctx.run_ui(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    app.shortcuts(&ctx);
+                    let response = ui.add(egui::TextEdit::singleline(&mut text).id(field));
+                    if focus {
+                        response.request_focus();
+                    } else {
+                        response.surrender_focus();
+                    }
+                },
+            );
+        };
+        frame(&mut app, vec![], true);
+        frame(&mut app, vec![press(Key::K, Modifiers::NONE)], true);
+        assert!(!app.commands_open, "a plain key fired while typing");
+        frame(&mut app, vec![], false);
+        frame(&mut app, vec![press(Key::K, Modifiers::NONE)], false);
+        assert!(app.commands_open);
+    }
+
+    #[test]
+    fn palette_shortcut_opens_it_and_a_clashing_assignment_asks_first() {
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx);
+        let mut app = App::new(ctx.clone(), PathBuf::new());
+        app.view.project_open = true;
+        let run = |app: &mut App, events| {
+            let _ = ctx.run_ui(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |_| app.shortcuts(&ctx),
+            );
+        };
+        let command = Modifiers::MAC_CMD | Modifiers::COMMAND;
+        run(&mut app, vec![press(Key::P, command | Modifiers::SHIFT)]);
+        assert!(app.palette.is_some());
+        app.palette = None;
+
+        app.rebinding = Some(Command::Play);
+        run(&mut app, vec![press(Key::N, command)]);
+        let new = KeyboardShortcut::new(Modifiers::COMMAND, Key::N);
+        assert_eq!(app.rebind_conflict, Some((new, Command::New)));
+        assert_eq!(app.keymap.shortcut(Command::Play), None);
+        assert_eq!(app.keymap.shortcut(Command::New), Some(new));
+
+        app.rebind_conflict = None;
+        app.rebinding = Some(Command::Play);
+        // (P is still held from the palette shortcut, so egui would report a repeat.)
+        run(&mut app, vec![press(Key::L, Modifiers::NONE)]);
+        assert_eq!(
+            app.keymap.shortcut(Command::Play),
+            Some(KeyboardShortcut::new(Modifiers::NONE, Key::L))
+        );
+        assert!(app.rebinding.is_none());
+        assert_eq!(
+            app.piano_roll.keys, app.keymap,
+            "the roll sees remapped shortcuts"
+        );
+    }
+
     #[test]
     fn file_picker_lists_a_folder_once_until_navigation() {
         let folder = std::env::temp_dir().join(format!("clef-picker-{}", std::process::id()));
@@ -2103,6 +2130,7 @@ mod tests {
             _ => Vec::new(),
         };
         let context = egui::Context::default();
+        crate::theme::install_fonts(&context);
         let mut app = App::new(context.clone(), PathBuf::new());
         let mut picker = FilePicker::new(FileMode::Open, None);
         picker.folder.clone_from(&folder);
@@ -2124,6 +2152,7 @@ mod tests {
     #[test]
     fn dirty_project_transition_waits_for_confirmation_and_cancel_keeps_it() {
         let context = egui::Context::default();
+        crate::theme::install_fonts(&context);
         let mut app = App::new(context.clone(), PathBuf::new());
         app.view.dirty = true;
         app.transition(Transition::New, &context);
@@ -2140,6 +2169,7 @@ mod tests {
     #[test]
     fn closing_a_clean_project_with_only_view_changes_saves_without_a_prompt() {
         let context = egui::Context::default();
+        crate::theme::install_fonts(&context);
         let mut app = App::new(context.clone(), PathBuf::new());
         app.view.view_unsaved = true;
         app.transition(Transition::Close, &context);
@@ -2154,6 +2184,7 @@ mod tests {
     #[test]
     fn save_before_close_waits_for_success_and_failed_save_cancels_close() {
         let context = egui::Context::default();
+        crate::theme::install_fonts(&context);
         let mut app = App::new(context.clone(), PathBuf::new());
         app.view.dirty = true;
         app.transition(Transition::Close, &context);
@@ -2184,6 +2215,7 @@ mod tests {
     #[test]
     fn rejected_record_acknowledgement_clears_the_transport_lamp() {
         let context = egui::Context::default();
+        crate::theme::install_fonts(&context);
         let mut app = App::new(context.clone(), PathBuf::new());
         // The session has no audio engine, so it rejects the submitted command.
         app.send(Action::Transport(TransportAction::Record));
@@ -2200,6 +2232,7 @@ mod tests {
     #[test]
     fn discard_close_exits_and_commands_respect_session_state() {
         let context = egui::Context::default();
+        crate::theme::install_fonts(&context);
         let mut app = App::new(context.clone(), PathBuf::new());
         assert!(!app.enabled(Command::Editor));
         app.view.dirty = true;
@@ -2216,6 +2249,7 @@ mod tests {
     #[test]
     fn buttons_share_a_borderless_hover_background() {
         let context = egui::Context::default();
+        crate::theme::install_fonts(&context);
         let _app = App::new(context.clone(), PathBuf::new());
         let style = context.global_style();
         for widget in [
@@ -2226,9 +2260,9 @@ mod tests {
         ] {
             assert_eq!(widget.bg_stroke, egui::Stroke::NONE);
         }
-        assert_eq!(style.visuals.widgets.inactive.bg_fill, colors::PANEL);
-        assert_eq!(style.visuals.widgets.hovered.bg_fill, colors::FIELD);
-        assert_eq!(style.visuals.widgets.active.bg_fill, colors::FIELD);
+        assert_eq!(style.visuals.widgets.inactive.bg_fill, theme::PANEL);
+        assert_eq!(style.visuals.widgets.hovered.bg_fill, theme::FIELD);
+        assert_eq!(style.visuals.widgets.active.bg_fill, theme::FIELD);
         assert!(!style.interaction.selectable_labels);
     }
 
@@ -2236,10 +2270,12 @@ mod tests {
     fn take_commands_need_a_lane_and_have_no_default_shortcut() {
         use clef_model::midi::{Event, Message, Mode};
         let context = egui::Context::default();
+        crate::theme::install_fonts(&context);
         let mut app = App::new(context, PathBuf::new());
         app.view.project_open = true;
         app.view.selected = Some(1);
         app.view.project.tracks.push(crate::project::Track {
+            colour: None,
             id: 1,
             name: "Strings".into(),
             plugin: None,
@@ -2294,12 +2330,7 @@ mod tests {
         ] {
             assert!(!app.enabled(command), "take command without a lane");
             assert!(
-                app.bindings
-                    .iter()
-                    .find(|binding| binding.command == command)
-                    .unwrap()
-                    .shortcut
-                    .is_none(),
+                app.keymap.shortcut(command).is_none(),
                 "take command gained a default shortcut"
             );
         }
@@ -2319,10 +2350,12 @@ mod tests {
     #[test]
     fn staged_name_requires_unsaved_confirmation() {
         let context = egui::Context::default();
+        crate::theme::install_fonts(&context);
         let mut app = App::new(context.clone(), PathBuf::new());
         app.view.project.next_id = 2;
         app.view.selected = Some(1);
         app.view.project.tracks = vec![crate::project::Track {
+            colour: None,
             id: 1,
             name: "Old".into(),
             plugin: None,
@@ -2349,10 +2382,12 @@ mod tests {
     #[test]
     fn switching_arrangement_clip_does_not_flash_a_widget_rect_warning() {
         let context = egui::Context::default();
+        crate::theme::install_fonts(&context);
         let mut app = App::new(context.clone(), PathBuf::new());
         app.view.project_open = true;
         app.view.project.tracks = vec![
             crate::project::Track {
+                colour: None,
                 id: 1,
                 name: "One".into(),
                 plugin: None,
@@ -2368,6 +2403,7 @@ mod tests {
                 state: Default::default(),
             },
             crate::project::Track {
+                colour: None,
                 id: 2,
                 name: "Two".into(),
                 plugin: None,
@@ -2429,7 +2465,7 @@ mod tests {
             .iter()
             .filter_map(|clipped| match &clipped.shape {
                 egui::Shape::Rect(rect)
-                    if rect.fill == colors::PEACOCK
+                    if rect.fill == theme::track_colour(clef_model::project::TRACK_COLOURS[0])
                         && rect.rect.width() > 40.0
                         && rect.rect.height() > 30.0 =>
                 {

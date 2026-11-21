@@ -23,47 +23,64 @@ The product's core surface.
 Open the lower dock by double-clicking a selected clip or by pressing Enter from a focused
 arrangement clip; focus moves into the editor so arrangement commands stop firing. The dock
 updates with the arrangement selection, and replacing the edit target scrolls the view to
-the new clip's start so its notes are visible. Each selected clip has a separate pitch lane,
-including clips that overlap or belong to the same track, and a lane name appends an
-ordinal when two lanes would read the same. Click a lane label or grid, or tab to it, to
-make that clip the edit target. Use the split handle between the arrangement and the editor
-to redistribute height.
+the new clip's start so its notes are visible. Use the split handle between the arrangement
+and the editor to redistribute height.
+
+**One grid (T40, 2026-11-21).** All selected clips share one keybed and one pitch/time grid
+covering the 128 pitches. The active clip is in front in its track colour and is the edit
+target; the other selected clips draw behind it at reduced opacity, and clicking one of their
+notes makes that clip active. With two or more clips, a row of clip chips (with ordinals when
+two names would read the same) chooses the active clip. Opening or switching a clip scrolls
+time to its start and centres its notes vertically, or C4 when the clip is empty.
 
 ```text
 surface Piano Roll
-  row wrap: heading + Snap + Follow + MIDI Functions + Close + Scroll + Zoom
-  row: keybed column + project-time ruler
+  row wrap: heading + Snap + Follow + MIDI Functions + Fit width + Fit height + Close
+  optional row wrap: clip chips (two or more selected clips)
+  row: keybed-wide spacer + project-time ruler
+  optional row: comp strip (take view)
   optional row wrap: MIDI functions
-  column vertical scroll
-    row per selected clip: clip identity + active clip pitch controls
-    row per selected clip: keybed + pitch and time grid
-    row: Velocity + editable velocity bars
-    rows: open CC lanes for the active clip
-    row wrap: controller selector + channel + Add Lane
+  row: keybed (56) + pitch/time grid (fills the remaining height) + vertical scroll/zoom bar
+  row: Velocity + editable velocity bars
+  rows: open CC lanes for the active clip
+  row wrap: controller selector + channel + Add Lane
+  row: keybed-wide spacer + horizontal scroll/zoom bar
+  overlay: one playhead from the ruler to the last controller lane
 ```
 
 - Double-click to create a note. Click to select and audition, Command or Shift to extend
   selection, drag empty space for a marquee, and drag a note or a resize handle to edit.
   Option temporarily bypasses snap for pointer and keyboard edits. A repeat source edit
   previews on visible occurrences.
-- Shift with the wheel moves the lane's pitch window; Lowest pitch and Rows set it directly.
-- The keybed keeps a pitch cursor while it has focus: arrows move it, a 30 % accent band
-  marks it, and Enter or Space auditions it on the clip channel. Clicking the keybed
-  auditions the clicked pitch and focuses it.
+- The wheel and trackpad scroll pitch and time; ⌘-wheel or pinch zooms time at the pointer,
+  ⌘⇧-wheel steps the pitch-row height (6–24, ×1.25) at the pointer. The bars' −/+ step from the
+  view centre; Fit width and Fit height frame the selected clips. Zoom and row height are saved
+  with the project as view state; scroll is not.
+- The keybed is a real piano: seven equal white keys per octave (12/7 rows each), black keys
+  57 % wide and one row tall over them with a faint shadow, C names when rows are 9 points or
+  more. Clicking auditions the key under the pointer (black where drawn) and moves the keybed
+  cursor there; with keyboard focus, arrows move the cursor (an `accent` wash on the key) and
+  Enter or Space auditions it on the clip channel.
+- Notes, velocity bars and controller curves use the clip's track colour; selected notes add
+  the `CAP_LIGHT` outline.
 - Tab can reach visible notes and named controls. Enter on a note auditions it while stopped.
   With the grid focused, Enter or Insert creates, arrows adjust position or pitch, Shift with
   a horizontal arrow adjusts length, and Command-A/C/V/D selects, copies, pastes or duplicates.
   Delete and Backspace remove the selection. Undo and redo use project edit history.
 - Empty clips retain the pitch grid. An unavailable clip has readable notes and values, with
   time and pitch navigation available and the MIDI functions disabled. The dock keeps ruler
-  and grid alignment at 760 points. Additional lanes and controller controls are reachable
-  through vertical scrolling.
+  and grid alignment at 760 points.
 - [Docked arrangement at 760 points](../snapshots/egui/t10-dock-760.png),
   [multiple clips at 1024 points](../snapshots/egui/t10-multiple-1024.png),
   [selection at 760 points](../snapshots/egui/t10-selection-760.png),
   [snap preview at 1024 points](../snapshots/egui/t10-snap-preview-1024.png),
   [empty clip at 760 points](../snapshots/egui/t10-empty-760.png), and
   [disabled MIDI functions at 1024 points](../snapshots/egui/t10-unavailable-1024.png).
+
+## Clef T18 Phase 3
+
+The marquee is the [range overlay](../components/range-overlay.md): `accent` at 12 % with an 80 %
+edge (the edge was full `accent` before).
 
 ## Clef T26 Edit Take
 

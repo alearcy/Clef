@@ -42,7 +42,8 @@ Dependencies point downward only. A primitive never knows about a surface; a sur
 - Fonts: the system SF Pro is loaded at startup as `FontFamily::Name("sf-pro")`; egui's default
   font is a development fallback only, flagged in the gallery header, never shipped.
 - A test parses the tables in `foundations.md` and fails when a value differs from `theme.rs`
-  (`tests/ui_tokens.rs`, T18). The document stays human-readable; the test makes it non-optional.
+  (`theme::tests` in `crates/ui/src/theme.rs`, T18), and a second test rejects `Color32::from_rgb`
+  outside `theme.rs`. The document stays human-readable; the test makes it non-optional.
 
 ## Primitive contract
 
@@ -63,8 +64,9 @@ not "done" until every one is filled and the gallery case renders.
 
 ### Example: text button
 
-The example below is the target format, not an existing implementation: no primitive is `gallery`
-yet. It doubles as the template to copy when the first batch lands.
+The example below is the target format written before the first batch; the implemented
+[text button](components/text-button.md) follows it with a builder (`TextButton::new(..).show(ui)`)
+and leaves command dispatch to the caller.
 
 ```yaml
 ---
@@ -248,6 +250,8 @@ These rules apply to the timeline, arrangement, and piano roll:
   `ViewportCommand::Screenshot`. No new dependency.
 - **First batch:** the eight primitives T04 needs — text button, notice box, list row, selection
   edge, text field, chip, window frame, caption.
+  Extended on 2026-11-21 ([T18](../specs/T18-ui-foundation.md) Phase 1 refresh) with tool button,
+  menu button and scroll and zoom bars, and with adoption on the existing surfaces.
 - **Order:** primitives first, then the T04 surface. Until the batch lands, T04 UI stays functional
   but provisional; no new surface may add raw egui widgets.
 - **Theme name:** "Composer Dark" stays as the historical name of the look; Clef is the product.

@@ -3,16 +3,18 @@ name: Search field
 kind: component
 reference: SearchField, paintMatchHighlight, Icon::search, Icon::hidden
 status: shared
-impl: planned
+impl: gallery
 reference-source: [UI/ComposerStyleKit/Source/ComposerStyle.cpp, Source/Arrangement.cpp, Source/Mixer.cpp]
 tokens: [field, text, secondary, accent, create]
 used-in: [arrangement, mixer]
-snapshot: none yet (D101 mockup: https://claude.ai/artifact/CbWF2PXKiXCPw3KUzAWTeN)
+snapshot: snapshots/egui/t18-search-field-1024.png
+api: ui::primitives::search_field::SearchField
+evidence: [t18-search-field]
 ---
 
-> **Legacy reference (C++).** The symbols and code here describe the original Composer
-> implementation; they are not in this repository and are not an API. Clef builds this in
-> Rust + egui. See [README](../README.md) and the [UI contract](../contract.md).
+> **Migrated to Rust/egui (T18 Phase 3, 2026-11-21).** The Clef section at the end of this file is
+> the implementation contract. Earlier sections keep the legacy design intent; their C++ symbols are
+> not in this repository.
 
 # Search field
 
@@ -44,3 +46,25 @@ the band's "+" is a flat `plus` glyph in `create` orange, in the global lanes' "
 ## Do / Don't
 - Don't filter the pinned bottom block or the mixer dock.
 - Don't add a second search field style: reuse this one (the plugin list's field predates it).
+
+## Clef Rust/egui — T18 Phase 3
+
+**API**
+
+```rust
+SearchField::new(&mut text, "Find track").hint(..).shortcut("⌘F").width(240.0).id(id).show(ui) -> egui::Response
+```
+
+The [text field](text-field.md) in its search form (`TextField::search`): the 12-point `search`
+[icon](icons.md) in the left indent (`secondary`, `accent` while the text is not blank), the hint in
+`secondary`, the live binding right-aligned in `caption` `disabled` while empty, and a 9-point `close`
+glyph at the right while it holds text (`secondary`, `text` on hover, pointing hand). Escape clears
+the text and gives up focus; the clear glyph clears and keeps focus. Accessible: the field is named
+by `name`; the clear glyph is a button named "Clear search". Filtering is the host's: trimmed,
+case-insensitive substring.
+
+**States:** empty with binding, filtering. **Adoption:** Choose Instrument's search, the Commands /
+Keyboard Shortcuts window's search and the command palette field.
+
+**Evidence:** gallery `snapshots/egui/t18-search-field-{1024,760}.png` and `t18-search-field-1024@2x.png`
+(Retina); accessible names checked by `gallery::tests::every_gallery_control_has_an_accessible_name`.

@@ -3,15 +3,17 @@ name: Notice box
 kind: component
 reference: composer::style::NoticeBox, composer::style::NoticeContent
 status: shared
-impl: planned
+impl: gallery
 tokens: [panel, divider, text, secondary, danger, peacock]
 used-in: [quarantine-notice, arrangement, ara-editor]
-snapshot: snapshots/audio-missing-notice.png
+snapshot: snapshots/egui/t18-notice-box-1024.png
+api: ui::primitives::notice_box::NoticeBox
+evidence: [t18-notice-box, t18-notice-question]
 ---
 
-> **Legacy reference (C++).** The symbols and code here describe the original Composer
-> implementation; they are not in this repository and are not an API. Clef builds this in
-> Rust + egui. See [README](../README.md) and the [UI contract](../contract.md).
+> **Migrated to Rust/egui (T18, 2026-11-21).** The Clef section at the end of this file is the
+> implementation contract. Earlier sections keep the legacy design intent; their C++ symbols are
+> not in this repository.
 
 # Notice box
 
@@ -42,12 +44,23 @@ Return runs the primary button; Escape, a click outside the box or the secondary
 secondary button runs its action first). While it shows it takes the keyboard. The owner keeps the one-line
 form in the status row.
 
-## Code
-```cpp
-style::NoticeContent content;
-content.heading = "1 audio file is missing";
-content.captions = { "File", "Parts", "Last location" };
-content.rows.push_back({ "Room take 2.wav", "Room mics · 1 part", "Audio/ in this project" });
-content.secondary = "Later"; content.primary = juce::String::fromUTF8("Relink… ↩");
-auto box = std::make_unique<style::NoticeBox>(content, nullptr, relink, close);
+## Clef Rust/egui — T18
+
+**API**
+
+```rust
+impl<'a> NoticeBox<'a> {
+    pub fn new(id: &'a str, heading: &'a str, body: &'a str, primary: &'a str) -> Self;
+    pub fn question(self) -> Self;                 // no glyph, no rows (D87)
+    pub fn rows(self, columns: &'a [&'a str], rows: &'a [[String; 3]]) -> Self;
+    pub fn secondary(self, label: &'a str) -> Self; // omitted: stopped form (D106)
+    pub fn show(self, ctx: &egui::Context) -> Option<Outcome>; // Primary | Secondary | Dismissed
+}
 ```
+
+An `egui::Modal` with a `PANEL` frame, 1-point `DIVIDER` edge, 4-point corners, padded 16, at most
+560 wide. Warning glyph 16 in `DANGER`, `heading` text, body in `SECONDARY`, `section` column
+captions, up to twelve rows (`DANGER` / `TEXT` / `SECONDARY`) then "… and N more", buttons right
+aligned with the primary [text button](text-button.md) last. Return chooses the primary button;
+Escape or a click outside returns `Dismissed`. Used by the quarantine notice; the
+[question form](../snapshots/egui/t18-notice-question-1024.png) is ready for the ARA render question.

@@ -1,6 +1,8 @@
+use crate::commands::Command;
 use crate::{
-    Action, Snapshot, colors,
-    primitives::{piano_roll as draw, timeline, transport},
+    Action, Snapshot,
+    arrangement::Fit,
+    primitives::{icons::Icon, piano_roll as draw, scroll_zoom_bars, timeline, transport},
     theme,
 };
 use clef_model::{
@@ -8,7 +10,7 @@ use clef_model::{
         Clip, ClipEdit, ClipId, Event, EventChange, EventId, Message, RollEvent, Snap,
         continuous_cc,
     },
-    project::Track,
+    project::{ROW_HEIGHT, Track},
     timeline::{MAX_TICK, QUARTER, Timeline},
 };
 use eframe::egui::{self, Id, Key, Modifiers, Pos2, Rect, Ui};
@@ -39,9 +41,20 @@ pub struct PianoRoll {
     snap: Snap,
     offset: u64,
     zoom: f32,
-    pitch: HashMap<ClipId, u8>,
+    /// Pitch-row height in points (T40, saved with the project).
+    row: f32,
+    /// Points scrolled down from the top of pitch 127.
+    v_scroll: f32,
+    /// A pitch range to centre vertically on the next frame.
+    center: Option<(u8, u8)>,
+    /// A clip whose notes are centred vertically on the next frame.
+    reveal_pitch: Option<ClipId>,
+    /// Zoom and row height have been read from the project.
+    view_synced: bool,
+    /// Heights measured on the previous frame, so the grid fills what is left.
+    lanes_height: f32,
+    functions_height: f32,
     key_cursor: HashMap<ClipId, u8>,
-    rows: u8,
     follow: bool,
     strength: u8,
     transpose: i8,
@@ -59,6 +72,13 @@ pub struct PianoRoll {
     focus_lane: bool,
     takes: BTreeMap<ClipId, u64>,
     take_lane: Option<usize>,
+    pub fit: Option<crate::arrangement::Fit>,
+    /// The live roll shortcuts, copied from the app's key map when it changes (T18).
+    pub(crate) keys: crate::commands::Keymap,
+    /// A roll command chosen in the palette, run by the focused lane on the next frame.
+    pub(crate) requested: std::cell::Cell<Option<Command>>,
+    /// A roll lane had keyboard focus on the last frame.
+    pub(crate) had_focus: bool,
 }
 
 impl Default for PianoRoll {
@@ -73,9 +93,14 @@ impl Default for PianoRoll {
             snap: Snap::Sixteenth,
             offset: 0,
             zoom: 96.0,
-            pitch: HashMap::new(),
+            row: f32::from(clef_model::project::DEFAULT_ROW_HEIGHT),
+            v_scroll: 0.0,
+            center: None,
+            reveal_pitch: None,
+            view_synced: false,
+            lanes_height: 0.0,
+            functions_height: 0.0,
             key_cursor: HashMap::new(),
-            rows: 16,
             follow: false,
             strength: 100,
             transpose: 1,
@@ -93,6 +118,10 @@ impl Default for PianoRoll {
             focus_lane: false,
             takes: BTreeMap::new(),
             take_lane: None,
+            fit: None,
+            keys: crate::commands::Keymap::default(),
+            requested: std::cell::Cell::new(None),
+            had_focus: false,
         }
     }
 }
@@ -104,6 +133,7 @@ struct LaneContext<'a> {
     width: f32,
     playhead: u64,
     enabled: bool,
+    colour: egui::Color32,
 }
 
 impl PianoRoll {
@@ -177,6 +207,7 @@ impl PianoRoll {
 
     pub fn open(&mut self, id: ClipId, clip: &Clip) {
         self.activate(id);
+        self.reveal_pitch = Some(id);
         self.offset = clip.start;
         self.focus_lane = true;
         self.takes.clear();
@@ -245,10 +276,42 @@ impl PianoRoll {
         enabled: bool,
         open: &mut bool,
     ) -> Option<Action> {
+        let action = self.show_lanes(ui, height, view, selected, enabled, open);
+        // A palette request no focused lane took this frame is dropped.
+        self.requested.set(None);
+        action
+    }
+
+    /// True when `command`'s shortcut was pressed, or the palette asked for it.
+    fn fired(&self, ui: &Ui, command: Command) -> bool {
+        if self.requested.get() == Some(command) {
+            self.requested.set(None);
+            return true;
+        }
+        ui.input_mut(|input| self.keys.consume(input, command))
+    }
+
+    fn show_lanes(
+        &mut self,
+        ui: &mut Ui,
+        height: f32,
+        view: &Snapshot,
+        selected: &BTreeSet<ClipId>,
+        enabled: bool,
+        open: &mut bool,
+    ) -> Option<Action> {
+        self.had_focus = false;
         self.cancel(ui);
+        let start_top = ui.cursor().top();
         let timeline = &view.project.timeline;
         let arrangement = &view.project.midi;
         let playhead = view.transport.audible_tick;
+        if !self.view_synced {
+            let saved = view.project.piano_roll_view;
+            self.zoom = saved.zoom_milli as f32 / 1_000.0;
+            self.row = f32::from(saved.row_height);
+            self.view_synced = true;
+        }
         let mut clips = selected
             .iter()
             .filter_map(|&id| arrangement.find_clip(id))
@@ -279,16 +342,11 @@ impl PianoRoll {
             && self.active.is_none_or(|id| !selected.contains(&id))
         {
             self.activate(first.id());
+            self.reveal_pitch = Some(first.id());
             self.offset = first.start;
         }
         let mut action = None;
-        let right = clips
-            .iter()
-            .map(|(_, clip)| clip.end)
-            .max()
-            .unwrap_or(playhead)
-            .max(playhead);
-        let max_offset = right.max(self.offset);
+        let mut fit = self.fit.take();
         ui.horizontal_wrapped(|ui| {
             draw::heading(ui, "Piano Roll");
             if let Some(lane) = self.take_lane {
@@ -300,7 +358,7 @@ impl PianoRoll {
                     .map(|track| track.take_lanes.name(lane))
                     .unwrap_or_else(|| format!("Take {}", lane + 1));
                 ui.colored_label(
-                    colors::ACCENT,
+                    theme::ACCENT,
                     format!(
                         "Editing Take {} · {name} · {} clips",
                         lane + 1,
@@ -314,132 +372,368 @@ impl PianoRoll {
             timeline::snap_control(ui, &mut self.snap);
             draw::toggle(ui, "Follow", &mut self.follow);
             draw::toggle(ui, "MIDI Functions", &mut self.functions);
+            for (glyph, name, kind) in [
+                (Icon::FitWidth, "Fit Piano Roll to Width", Fit::Width),
+                (Icon::FitHeight, "Fit Piano Roll to Height", Fit::Height),
+            ] {
+                if transport::tool_button(ui, glyph, name, true, false, false).clicked() {
+                    fit = Some(kind);
+                }
+            }
             if draw::close(ui) {
                 *open = false;
                 self.gesture = None;
             }
-            transport::navigation(ui, &mut self.offset, &mut self.zoom, max_offset);
         });
-        let Some((_, active)) = clips
+        let names = lane_names(&view.project.tracks, timeline, &clips);
+        if clips.len() > 1 {
+            ui.horizontal_wrapped(|ui| {
+                for (index, &(_, clip)) in clips.iter().enumerate() {
+                    let focused = self.active == Some(clip.id());
+                    if draw::summary(ui, &names[index], focused, clip.cycle().is_some()) {
+                        self.activate(clip.id());
+                        self.reveal_pitch = Some(clip.id());
+                        self.offset = clip.start;
+                    }
+                }
+            });
+        }
+        let Some(&(active_track, active)) = clips
             .iter()
             .find(|(_, clip)| Some(clip.id()) == self.active)
         else {
             draw::heading(ui, "Select a MIDI clip in the arrangement.");
             return None;
         };
-        let width = (ui.available_width()
-            - theme::ROLL_KEYBED
-            - ui.spacing().item_spacing.x
-            - ui.spacing().scroll.bar_width)
-            .max(theme::ROLL_KEYBED);
-        let mut time =
-            timeline::Viewport::with_snap(timeline, self.offset, self.zoom, width, self.snap);
-        if self.follow
-            && view.transport.phase != clef_session::TransportPhase::Stopped
-            && !(0.0..width).contains(&time.x(playhead))
-        {
-            self.offset = playhead;
-            time =
+        let bar = theme::metric::SCROLL_BAR;
+        let width = (ui.available_width() - theme::ROLL_KEYBED - bar).max(theme::ROLL_KEYBED);
+        let colour_of = |track: u64| {
+            theme::track_colour(
+                view.project
+                    .tracks
+                    .iter()
+                    .find(|item| item.id == track)
+                    .map_or(clef_model::project::TRACK_COLOURS[0], |item| item.colour()),
+            )
+        };
+        if self.follow && view.transport.phase != clef_session::TransportPhase::Stopped {
+            let time =
                 timeline::Viewport::with_snap(timeline, self.offset, self.zoom, width, self.snap);
+            if !(0.0..width).contains(&time.x(playhead)) {
+                self.offset = playhead;
+            }
         }
-        draw::ruler(ui, &time, width, playhead, timeline);
-        if let (Some(lane), Some(take)) = (self.take_lane, self.takes.get(&active.id()).copied()) {
-            let _ = lane;
-            draw::comp_strip(ui, &time, width, &active.take_active_ranges(take), playhead);
+        let column_top = ui.cursor().top();
+        let grid_left = ui.cursor().left() + theme::ROLL_KEYBED;
+        // Horizontal zoom, scroll and fit happen before the time transform is built.
+        let remaining = height - (column_top - start_top);
+        let fixed = theme::roll::RULER_HEIGHT
+            + if self.take_lane.is_some() { 3.0 } else { 0.0 }
+            + self.functions_height
+            + self.lanes_height
+            + bar;
+        let grid_height = (remaining - fixed)
+            .max(self.row * 6.0)
+            .max(theme::roll::LANE_MINIMUM_HEIGHT);
+        let grid_top = column_top
+            + theme::roll::RULER_HEIGHT
+            + if self.take_lane.is_some() { 3.0 } else { 0.0 }
+            + self.functions_height;
+        let pitch_rect = Rect::from_min_size(
+            egui::pos2(grid_left - theme::ROLL_KEYBED, grid_top),
+            egui::vec2(theme::ROLL_KEYBED + width, grid_height),
+        );
+        let wheel = scroll_zoom_bars::wheel(ui, pitch_rect);
+        let before =
+            timeline::Viewport::with_snap(timeline, self.offset, self.zoom, width, self.snap);
+        if let Some(factor) = wheel.zoom_horizontal {
+            let next = (self.zoom * factor)
+                .clamp(*transport::ZOOM_RANGE.start(), *transport::ZOOM_RANGE.end());
+            let anchor = wheel.pointer.map_or(width / 2.0, |pointer| {
+                (pointer.x - grid_left).clamp(0.0, width)
+            });
+            self.offset = before.offset_for_zoom(next, anchor);
+            self.zoom = next;
         }
-        let mut active_context = LaneContext {
+        if wheel.scroll.x != 0.0 {
+            self.offset = before.offset_scrolled(-wheel.scroll.x);
+        }
+        self.v_scroll -= wheel.scroll.y;
+        let anchor = wheel.pointer.map_or(grid_height / 2.0, |pointer| {
+            (pointer.y - grid_top).clamp(0.0, grid_height)
+        });
+        self.zoom_rows(wheel.zoom_vertical, anchor);
+        let range = |clip: &Clip| {
+            clip.roll_events([clip.start, clip.end])
+                .into_iter()
+                .filter_map(|event| match event.source.message {
+                    Message::Note { key, .. } => Some(key),
+                    _ => None,
+                })
+                .fold(None, |range: Option<(u8, u8)>, key| {
+                    Some(range.map_or((key, key), |(low, high)| (low.min(key), high.max(key))))
+                })
+        };
+        match fit {
+            Some(Fit::Width) => {
+                let start = clips.iter().map(|(_, clip)| clip.start).min().unwrap_or(0);
+                let end = clips
+                    .iter()
+                    .map(|(_, clip)| clip.end)
+                    .max()
+                    .unwrap_or(start + 1);
+                self.zoom = (width * QUARTER as f32 / (end - start).max(1) as f32)
+                    .clamp(*transport::ZOOM_RANGE.start(), *transport::ZOOM_RANGE.end());
+                self.offset = start;
+            }
+            Some(Fit::Height) => {
+                let (low, high) = clips
+                    .iter()
+                    .filter_map(|(_, clip)| range(clip))
+                    .fold((60, 60), |(low, high), (a, b)| (low.min(a), high.max(b)));
+                let rows = f32::from(high - low) + 3.0;
+                self.row = (grid_height / rows)
+                    .floor()
+                    .clamp(f32::from(*ROW_HEIGHT.start()), f32::from(*ROW_HEIGHT.end()));
+                self.center = Some((low, high));
+            }
+            None => {}
+        }
+        if let Some(id) = self.reveal_pitch.take()
+            && let Some((_, clip)) = clips.iter().find(|(_, clip)| clip.id() == id)
+        {
+            self.center = Some(range(clip).unwrap_or((60, 60)));
+        }
+        let centred = self.center.take();
+        if let Some((low, high)) = centred {
+            let middle = (f32::from(127 - high) + f32::from(127 - low) + 1.0) / 2.0;
+            self.v_scroll = middle * self.row - grid_height / 2.0;
+        }
+        let content = 128.0 * self.row;
+        self.v_scroll = self.v_scroll.clamp(0.0, (content - grid_height).max(0.0));
+        let right = clips
+            .iter()
+            .map(|(_, clip)| clip.end)
+            .max()
+            .unwrap_or(playhead)
+            .max(playhead);
+        let max_offset = right.max(self.offset);
+        self.offset = self.offset.min(max_offset);
+        let time =
+            timeline::Viewport::with_snap(timeline, self.offset, self.zoom, width, self.snap);
+        ui.spacing_mut().item_spacing.y = 0.0;
+        let shown = draw::ruler(ui, &time, width, playhead, timeline);
+        if let (Some(_), Some(take)) = (self.take_lane, self.takes.get(&active.id()).copied()) {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                ui.add_space(theme::ROLL_KEYBED);
+                draw::comp_strip(ui, &time, width, &active.take_active_ranges(take));
+            });
+        }
+        let active_context = LaneContext {
             time: &time,
             timeline,
             clip: active,
             width,
             playhead,
             enabled,
+            colour: colour_of(active_track),
         };
+        let functions_top = ui.cursor().top();
         if self.functions {
             action = self
                 .midi_functions(ui, &active_context, view)
                 .or(action.take());
         }
-        let height = height
-            .min(ui.available_height())
-            .max(ui.spacing().interact_size.y);
-        let pitch_height = if clips.len() > 1 {
-            theme::ROLL_MULTI_LANE_HEIGHT
-        } else {
-            theme::ROLL_LANE_HEIGHT
-        };
-        let names = lane_names(&view.project.tracks, timeline, &clips);
-        egui::ScrollArea::vertical()
-            .id_salt("piano-roll-lanes")
-            .max_height(height)
-            .auto_shrink([false, true])
-            .show(ui, |ui| {
-                for (index, &(_track, clip)) in clips.iter().enumerate() {
-                    ui.push_id(("piano-roll-lane", index), |ui| {
-                        let name = names[index].as_str();
-                        ui.horizontal_wrapped(|ui| {
-                            let focused = self.active == Some(clip.id());
-                            if draw::summary(ui, name, focused, clip.cycle().is_some()) {
-                                self.activate(clip.id());
-                            }
-                            if self.active == Some(clip.id()) {
-                                let pitch = self
-                                    .pitch
-                                    .entry(clip.id())
-                                    .or_insert_with(|| initial_pitch(clip, self.rows));
-                                draw::number(ui, "Lowest pitch", pitch, 0..=128 - self.rows);
-                                draw::number(ui, "Rows", &mut self.rows, 8..=24);
-                            }
-                        });
-                        let lane = LaneContext {
-                            clip,
-                            ..active_context
-                        };
-                        action = self
-                            .notes(ui, &lane, view, pitch_height, name)
-                            .or(action.take());
-                    });
+        let functions_height = ui.cursor().top() - functions_top;
+        let others = clips
+            .iter()
+            .filter(|(_, clip)| clip.id() != active.id())
+            .map(|&(track, clip)| (clip, colour_of(track)))
+            .collect::<Vec<_>>();
+        let (pitch_action, grid) = ui
+            .horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                let result = self.pitch_editor(ui, &active_context, view, grid_height, &others);
+                let moved = ui
+                    .allocate_ui(egui::vec2(bar, grid_height), |ui| {
+                        scroll_zoom_bars::vertical(
+                            ui,
+                            "Piano roll pitch",
+                            scroll_zoom_bars::Axis {
+                                offset: self.v_scroll,
+                                visible: grid_height,
+                                total: content,
+                            },
+                            true,
+                        )
+                    })
+                    .inner;
+                if let Some(offset) = moved.offset {
+                    self.v_scroll = offset;
                 }
-                if let Some((_, clip)) = clips
-                    .iter()
-                    .find(|(_, clip)| Some(clip.id()) == self.active)
-                {
-                    active_context.clip = clip;
+                match moved.zoom {
+                    Some(scroll_zoom_bars::Zoom::In) => self.zoom_rows(1, grid_height / 2.0),
+                    Some(scroll_zoom_bars::Zoom::Out) => self.zoom_rows(-1, grid_height / 2.0),
+                    None => {}
                 }
-                let lane = &active_context;
-                action = self.values(ui, lane, None, view).or(action.take());
-                for (channel, cc) in self.cc_lanes.clone() {
-                    ui.push_id((channel, cc), |ui| {
-                        let name = format!("{} · Ch {channel}", draw::cc_name(cc));
-                        ui.horizontal_wrapped(|ui| {
-                            let mut collapsed = self.collapsed.contains(&(channel, cc));
-                            draw::toggle(ui, &name, &mut collapsed);
-                            if collapsed {
-                                self.collapsed.insert((channel, cc));
-                            } else {
-                                self.collapsed.remove(&(channel, cc));
-                            }
-                            if draw::button(ui, "Remove Lane", true) {
-                                self.cc_lanes.remove(&(channel, cc));
-                                self.collapsed.remove(&(channel, cc));
-                            }
-                        });
-                        if !self.collapsed.contains(&(channel, cc)) {
-                            action = self
-                                .values(ui, lane, Some((channel, cc)), view)
-                                .or(action.take());
-                        }
-                    });
-                }
+                result
+            })
+            .inner;
+        action = pitch_action.or(action.take());
+        let lanes_top = ui.cursor().top();
+        let lane = &active_context;
+        action = self.values(ui, lane, None, view).or(action.take());
+        for (channel, cc) in self.cc_lanes.clone() {
+            ui.push_id((channel, cc), |ui| {
+                let name = format!("{} · Ch {channel}", draw::cc_name(cc));
                 ui.horizontal_wrapped(|ui| {
-                    draw::cc_picker(ui, &mut self.selected_cc);
-                    draw::number(ui, "Channel", &mut self.channel, 1..=16);
-                    if draw::button(ui, "Add Lane", true) {
-                        self.cc_lanes.insert((self.channel, self.selected_cc));
+                    let mut collapsed = self.collapsed.contains(&(channel, cc));
+                    draw::toggle(ui, &name, &mut collapsed);
+                    if collapsed {
+                        self.collapsed.insert((channel, cc));
+                    } else {
+                        self.collapsed.remove(&(channel, cc));
+                    }
+                    if draw::button(ui, "Remove Lane", true) {
+                        self.cc_lanes.remove(&(channel, cc));
+                        self.collapsed.remove(&(channel, cc));
                     }
                 });
+                if !self.collapsed.contains(&(channel, cc)) {
+                    action = self
+                        .values(ui, lane, Some((channel, cc)), view)
+                        .or(action.take());
+                }
             });
+        }
+        let lanes_bottom = ui.cursor().top();
+        ui.horizontal_wrapped(|ui| {
+            draw::cc_picker(ui, &mut self.selected_cc);
+            draw::number(ui, "Channel", &mut self.channel, 1..=16);
+            if draw::button(ui, "Add Lane", true) {
+                self.cc_lanes.insert((self.channel, self.selected_cc));
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            ui.add_space(theme::ROLL_KEYBED);
+            transport::navigation(
+                ui,
+                "Piano roll time",
+                &mut self.offset,
+                &mut self.zoom,
+                max_offset,
+                width,
+                width,
+            );
+        });
+        let measured = ui.cursor().top() - lanes_top - bar;
+        if (measured - self.lanes_height).abs() > 0.5
+            || (functions_height - self.functions_height).abs() > 0.5
+        {
+            self.lanes_height = measured;
+            self.functions_height = functions_height;
+            // The grid height changes with the measurement: centre again on the next frame.
+            self.center = self.center.or(centred);
+            ui.ctx().request_repaint();
+        }
+        // The one playhead: from the ruler through the grid and the controller lanes.
+        time.playhead(
+            ui,
+            Rect::from_x_y_ranges(grid.x_range(), column_top..=lanes_bottom),
+            shown,
+        );
+        let saved = clef_model::project::PianoRollView {
+            zoom_milli: (self.zoom * 1_000.0).round() as u32,
+            row_height: self.row.round() as u8,
+        };
+        if action.is_none()
+            && saved != view.project.piano_roll_view
+            && saved.validate().is_ok()
+            && !ui.input(|input| input.pointer.any_down())
+        {
+            action = Some(Action::PianoRollView(saved));
+        }
         action
+    }
+
+    /// Steps the pitch-row height ×1.25 per step, keeping the row under `anchor` in place.
+    fn zoom_rows(&mut self, steps: i32, anchor: f32) {
+        if steps == 0 {
+            return;
+        }
+        let old = self.row;
+        self.row = (old * 1.25_f32.powi(steps))
+            .round()
+            .clamp(f32::from(*ROW_HEIGHT.start()), f32::from(*ROW_HEIGHT.end()));
+        self.v_scroll = (self.v_scroll + anchor) * self.row / old - anchor;
+    }
+
+    /// Allocates the keybed and the one grid, paints every selected clip (the active one in
+    /// front) and edits the active clip. Returns the action and the grid rectangle.
+    fn pitch_editor(
+        &mut self,
+        ui: &mut Ui,
+        lane: &LaneContext<'_>,
+        view: &Snapshot,
+        height: f32,
+        others: &[(&Clip, egui::Color32)],
+    ) -> (Option<Action>, Rect) {
+        let (grid, keyboard, pointer) = draw::pitch_area(
+            ui,
+            lane.time,
+            [lane.width, height],
+            [self.row, self.v_scroll],
+            lane.enabled,
+        );
+        grid.paint_grid(ui);
+        let window = [
+            lane.time.tick_at(0.0),
+            lane.time.tick_at(lane.width).saturating_add(1),
+        ];
+        let mut inactive = Vec::new();
+        for &(clip, colour) in others {
+            for event in self.clip_events(clip, window) {
+                let Message::Note { key, .. } = event.source.message else {
+                    continue;
+                };
+                let area = grid.note(event.tick, event.end, key);
+                if area.intersects(grid.grid) {
+                    draw::paint_note(
+                        ui,
+                        grid.grid,
+                        area,
+                        draw::NoteStyle {
+                            colour: colour.gamma_multiply(0.45),
+                            selected: false,
+                            active: event.active,
+                            primary: false,
+                            preview: false,
+                        },
+                    );
+                    inactive.push((clip.id(), area));
+                }
+            }
+        }
+        // A click on another clip's note makes that clip the edit target.
+        if lane.enabled
+            && pointer.clicked()
+            && let Some(pos) = pointer.interact_pointer_pos()
+            && let Some(&(clip, _)) = inactive.iter().rev().find(|(_, area)| area.contains(pos))
+        {
+            let on_active = self.clip_events(lane.clip, window).iter().any(|event| {
+                matches!(event.source.message, Message::Note { key, .. }
+                    if grid.note(event.tick, event.end, key).contains(pos))
+            });
+            if !on_active {
+                self.activate(clip);
+                self.focus_lane = true;
+                return (None, grid.grid);
+            }
+        }
+        let action = self.notes(ui, lane, view, &grid, keyboard, pointer);
+        (action, grid.grid)
     }
 
     fn hit_selection(&mut self, clip: ClipId, event: Option<EventId>, additive: bool) {
@@ -483,29 +777,12 @@ impl PianoRoll {
         ui: &mut Ui,
         lane: &LaneContext<'_>,
         view: &Snapshot,
-        height: f32,
-        name: &str,
+        grid: &draw::PitchGrid<'_>,
+        keyboard: egui::Response,
+        pointer: egui::Response,
     ) -> Option<Action> {
         let clip = lane.clip;
         let id = clip.id();
-        let mut lowest = self
-            .pitch
-            .get(&id)
-            .copied()
-            .unwrap_or_else(|| initial_pitch(clip, self.rows))
-            .min(128 - self.rows);
-        let (grid, keyboard, pointer) = draw::pitch_lane(
-            ui,
-            draw::Lane {
-                time: lane.time,
-                width: lane.width,
-                height,
-                lowest,
-                rows: self.rows,
-                enabled: lane.enabled,
-                name,
-            },
-        );
         if self.focus_lane && self.active == Some(id) {
             pointer.request_focus();
             self.focus_lane = false;
@@ -513,19 +790,7 @@ impl PianoRoll {
         if (pointer.has_focus() || keyboard.has_focus()) && self.active != Some(id) {
             self.activate(id);
         }
-        let scroll = ui.input(|input| {
-            if input.modifiers.shift && pointer.hovered() {
-                input.smooth_scroll_delta.x + input.smooth_scroll_delta.y
-            } else {
-                0.0
-            }
-        });
-        if scroll != 0.0 {
-            lowest = (i16::from(lowest) + scroll.signum() as i16)
-                .clamp(0, i16::from(128 - self.rows)) as u8;
-        }
-        self.pitch.insert(id, lowest);
-        grid.paint(ui, [clip.start, clip.end], lane.playhead);
+        grid.paint_bounds(ui, [clip.start, clip.end]);
         let window = [
             lane.time.tick_at(0.0),
             lane.time.tick_at(lane.width).saturating_add(1),
@@ -550,10 +815,13 @@ impl PianoRoll {
                 ui,
                 grid.grid,
                 area,
-                selected,
-                event.active,
-                selected && primary == Some(event.id),
-                false,
+                draw::NoteStyle {
+                    colour: lane.colour,
+                    selected,
+                    active: event.active,
+                    primary: selected && primary == Some(event.id),
+                    preview: false,
+                },
             );
             if let Some(focus) = draw::note_focus(
                 ui,
@@ -573,48 +841,54 @@ impl PianoRoll {
                 _ => None,
             })
             .unwrap_or(self.channel - 1);
-        let mut action = if lane.enabled && keyboard.clicked() {
+        let mut action = None;
+        if lane.enabled
+            && keyboard.clicked()
+            && let Some(pos) = keyboard.interact_pointer_pos()
+        {
             keyboard.request_focus();
-            keyboard.interact_pointer_pos().map(|pos| Action::Audition {
+            let key = grid.keybed_key(pos);
+            self.key_cursor.insert(id, key);
+            action = Some(Action::Audition {
                 clip: id,
                 channel: clip_channel,
-                key: grid.key(pos.y),
+                key,
                 velocity: 96,
-            })
-        } else {
-            None
-        };
+            });
+        }
+        let mut cursor = None;
         if keyboard.has_focus() {
+            let visible = grid.visible();
             if self
                 .key_cursor
                 .get(&id)
-                .is_none_or(|key| *key < lowest || *key >= lowest.saturating_add(self.rows))
+                .is_none_or(|key| !visible.contains(key))
             {
-                self.key_cursor.insert(id, lowest + self.rows / 2);
+                self.key_cursor.insert(id, grid.key(grid.grid.center().y));
             }
-            let mut cursor = self.key_cursor.get(&id).copied().unwrap_or(lowest);
-            if ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::ArrowUp)) {
-                cursor = (cursor + 1).min(127);
+            let mut key = self.key_cursor.get(&id).copied().unwrap_or(60);
+            self.had_focus = true;
+            if self.fired(ui, Command::RollUp) {
+                key = (key + 1).min(127);
             }
-            if ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::ArrowDown)) {
-                cursor = cursor.saturating_sub(1);
+            if self.fired(ui, Command::RollDown) {
+                key = key.saturating_sub(1);
             }
-            self.key_cursor.insert(id, cursor);
-            draw::paint_key_cursor(ui, grid.keys, lowest, self.rows, cursor);
+            self.key_cursor.insert(id, key);
+            cursor = Some(key);
             if lane.enabled
-                && ui.input_mut(|input| {
-                    input.consume_key(Modifiers::NONE, Key::Enter)
-                        || input.consume_key(Modifiers::NONE, Key::Space)
-                })
+                && (self.fired(ui, Command::RollEnter)
+                    || ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Space)))
             {
                 action = Some(Action::Audition {
                     clip: id,
                     channel: clip_channel,
-                    key: cursor,
+                    key,
                     velocity: 96,
                 });
             }
         }
+        grid.paint_keybed(ui, cursor);
         if !lane.enabled {
             self.gesture = None;
             return action;
@@ -624,7 +898,8 @@ impl PianoRoll {
                 self.hit_selection(id, Some(event.id), false);
                 self.focus = Some(focus);
             }
-            if ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Enter))
+            self.had_focus = true;
+            if self.fired(ui, Command::RollEnter)
                 && let Message::Note {
                     channel,
                     key,
@@ -764,8 +1039,8 @@ impl PianoRoll {
                     let changes = self.transform(clip, |event| {
                         note_shift(event.source, clip.roll_source_bounds(), delta, pitch, mode)
                     });
-                    draw::paint_marker(ui, grid.grid, lane.time, target_tick, colors::ACCENT);
-                    self.preview_notes(ui, &grid, &notes, &changes, clip.end);
+                    draw::paint_marker(ui, grid.grid, lane.time, target_tick, theme::ACCENT);
+                    self.preview_notes(ui, grid, &notes, &changes, clip.end);
                     if pointer.drag_stopped() {
                         self.gesture = None;
                         return self.edit(
@@ -786,7 +1061,7 @@ impl PianoRoll {
         if let Some((target, changes)) = &self.pending
             && *target == id
         {
-            self.preview_notes(ui, &grid, &notes, changes, lane.clip.end);
+            self.preview_notes(ui, grid, &notes, changes, lane.clip.end);
         }
         if pointer.has_focus() {
             return self.shortcuts(ui, lane, view, false, None).or(action);
@@ -814,10 +1089,13 @@ impl PianoRoll {
                         ui,
                         grid.grid,
                         grid.note(tick, end, key),
-                        true,
-                        true,
-                        false,
-                        true,
+                        draw::NoteStyle {
+                            colour: theme::ACCENT,
+                            selected: true,
+                            active: true,
+                            primary: false,
+                            preview: true,
+                        },
                     );
                 }
             }
@@ -859,11 +1137,7 @@ impl PianoRoll {
         lane: &LaneContext<'_>,
         events: &[RollEvent],
     ) -> Option<(u64, u8)> {
-        let requested = ui.input_mut(|input| {
-            input.consume_key(Modifiers::NONE, Key::Enter)
-                || input.consume_key(Modifiers::NONE, Key::Insert)
-        });
-        if !requested {
+        if !self.fired(ui, Command::RollEnter) {
             return None;
         }
         let tick = lane
@@ -904,7 +1178,7 @@ impl PianoRoll {
         is_value: bool,
         controller: Option<(u8, u8)>,
     ) -> Option<Action> {
-        let consume = |modifiers, key| ui.input_mut(|input| input.consume_key(modifiers, key));
+        self.had_focus = true;
         let clip = lane.clip;
         let on_lane = |event: &RollEvent| {
             if let Some((channel, cc)) = controller {
@@ -917,7 +1191,7 @@ impl PianoRoll {
                 matches!(event.source.message, Message::Note { .. })
             }
         };
-        if consume(Modifiers::COMMAND, Key::A) {
+        if self.fired(ui, Command::RollSelectAll) {
             self.selected = self
                 .clip_events(clip, [clip.start, clip.end])
                 .into_iter()
@@ -925,7 +1199,7 @@ impl PianoRoll {
                 .map(|event| event.id)
                 .collect();
         }
-        if consume(Modifiers::NONE, Key::Backspace) || consume(Modifiers::NONE, Key::Delete) {
+        if self.fired(ui, Command::RollDelete) {
             let changes = self
                 .picked(clip)
                 .into_iter()
@@ -934,7 +1208,11 @@ impl PianoRoll {
                 .collect();
             return self.edit(view, lane, "Delete MIDI Events", changes);
         }
-        if consume(Modifiers::COMMAND, Key::C) || take_clipboard(ui, false) {
+        // ⌘C and ⌘V arrive as Copy and Paste events while they keep their default keys.
+        let default = |command: Command| self.keys.shortcut(command) == command.spec().default;
+        if self.fired(ui, Command::RollCopy)
+            || default(Command::RollCopy) && take_clipboard(ui, false)
+        {
             self.clipboard = self
                 .picked(clip)
                 .into_iter()
@@ -942,8 +1220,9 @@ impl PianoRoll {
                 .map(|event| event.source)
                 .collect();
         }
-        let paste = consume(Modifiers::COMMAND, Key::V) || take_clipboard(ui, true);
-        if paste || consume(Modifiers::COMMAND, Key::D) {
+        let paste = self.fired(ui, Command::RollPaste)
+            || default(Command::RollPaste) && take_clipboard(ui, true);
+        if paste || self.fired(ui, Command::RollDuplicate) {
             let events = if paste {
                 self.clipboard.clone()
             } else {
@@ -989,10 +1268,8 @@ impl PianoRoll {
                 changes,
             );
         }
-        if !is_value
-            && (consume(Modifiers::NONE, Key::Insert) || consume(Modifiers::NONE, Key::Enter))
-        {
-            let pitch = self.pitch.get(&clip.id()).copied().unwrap_or(54) + self.rows / 2;
+        if !is_value && self.fired(ui, Command::RollEnter) {
+            let pitch = self.key_cursor.get(&clip.id()).copied().unwrap_or(60);
             let snap = if ui.input(|input| input.modifiers.alt) {
                 Snap::Off
             } else {
@@ -1006,15 +1283,15 @@ impl PianoRoll {
                 snap,
             );
         }
-        for (key, direction) in [
-            (Key::ArrowLeft, -1),
-            (Key::ArrowRight, 1),
-            (Key::ArrowDown, -1),
-            (Key::ArrowUp, 1),
+        for (step, resize, direction) in [
+            (Command::RollEarlier, Some(Command::RollShorten), -1),
+            (Command::RollLater, Some(Command::RollLengthen), 1),
+            (Command::RollDown, None, -1),
+            (Command::RollUp, None, 1),
         ] {
-            let horizontal = matches!(key, Key::ArrowLeft | Key::ArrowRight);
-            let resize = !is_value && horizontal && consume(Modifiers::SHIFT, key);
-            if !resize && !consume(Modifiers::NONE, key) {
+            let horizontal = resize.is_some();
+            let resize = !is_value && resize.is_some_and(|command| self.fired(ui, command));
+            if !resize && !self.fired(ui, step) {
                 continue;
             }
             let snap = if ui.input(|input| input.modifiers.alt) {
@@ -1166,8 +1443,15 @@ impl PianoRoll {
         let cc = controller.map(|(_, cc)| cc);
         let continuous = cc.is_some_and(continuous_cc);
         if !lane.enabled {
-            draw::paint_values(ui, rect, lane.time, &events, &self.selected, cc, lane.clip);
-            lane.time.paint_playhead(ui, rect, lane.playhead);
+            draw::paint_values(
+                ui,
+                rect,
+                lane.time,
+                &events,
+                &self.selected,
+                cc,
+                (lane.clip, lane.colour),
+            );
             return None;
         }
         let mut value_action = None;
@@ -1309,7 +1593,15 @@ impl PianoRoll {
             }
         }
         if preview.is_empty() {
-            draw::paint_values(ui, rect, lane.time, &events, &self.selected, cc, lane.clip);
+            draw::paint_values(
+                ui,
+                rect,
+                lane.time,
+                &events,
+                &self.selected,
+                cc,
+                (lane.clip, lane.colour),
+            );
         } else {
             let mut updated = events.clone();
             for change in preview {
@@ -1323,9 +1615,16 @@ impl PianoRoll {
                 }
             }
             updated.sort_by_key(|event| (event.tick, event.source.order));
-            draw::paint_values(ui, rect, lane.time, &updated, &self.selected, cc, lane.clip);
+            draw::paint_values(
+                ui,
+                rect,
+                lane.time,
+                &updated,
+                &self.selected,
+                cc,
+                (lane.clip, lane.colour),
+            );
         }
-        lane.time.paint_playhead(ui, rect, lane.playhead);
         let focused_point = draw::point_focus(
             ui,
             draw::ValueFocus {
@@ -1557,17 +1856,6 @@ fn jitter(state: &mut u64, amount: i64) -> i64 {
     (*state % (amount as u64 * 2 + 1)) as i64 - amount
 }
 
-fn initial_pitch(clip: &Clip, rows: u8) -> u8 {
-    let first = clip
-        .active_events()
-        .find_map(|event| match event.message {
-            Message::Note { key, .. } if event.tick < clip.end => Some(key),
-            _ => None,
-        })
-        .unwrap_or(60);
-    first.saturating_sub(rows / 3).min(128 - rows)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1602,8 +1890,10 @@ mod tests {
         let clip_id = clip.id();
         let mut roll = PianoRoll::default();
         roll.open(clip_id, clip);
-        roll.pitch.insert(clip_id, 48);
+        roll.row = 9.0;
+        roll.v_scroll = 576.0;
         let context = egui::Context::default();
+        crate::theme::install_fonts(&context);
         let timeline = &view.project.timeline;
         let time = timeline::Viewport::with_snap(timeline, 0, 96.0, 480.0, Snap::Sixteenth);
         let lane = LaneContext {
@@ -1613,6 +1903,7 @@ mod tests {
             width: 480.0,
             playhead: 160,
             enabled: true,
+            colour: theme::PEACOCK,
         };
         let mut point = Pos2::ZERO;
         let mut run = |roll: &mut PianoRoll, events, modifiers| {
@@ -1626,10 +1917,12 @@ mod tests {
                 |ui| {
                     let origin = ui.next_widget_position();
                     point = egui::pos2(
-                        origin.x + theme::ROLL_KEYBED + ui.spacing().item_spacing.x + time.x(240),
+                        origin.x + theme::ROLL_KEYBED + time.x(240),
                         origin.y + theme::ROLL_LANE_HEIGHT * (1.0 - 12.5 / 16.0),
                     );
-                    action = roll.notes(ui, &lane, &view, theme::ROLL_LANE_HEIGHT, "Strings · 1.1");
+                    action = roll
+                        .pitch_editor(ui, &lane, &view, theme::ROLL_LANE_HEIGHT, &[])
+                        .0;
                 },
             );
             (action, point)
@@ -1740,8 +2033,10 @@ mod tests {
         let clip_id = clip.id();
         let mut roll = PianoRoll::default();
         roll.open(clip_id, clip);
-        roll.pitch.insert(clip_id, 48);
+        roll.row = 9.0;
+        roll.v_scroll = 576.0;
         let context = egui::Context::default();
+        crate::theme::install_fonts(&context);
         let timeline = &view.project.timeline;
         let time = timeline::Viewport::with_snap(timeline, 0, 96.0, 480.0, Snap::Sixteenth);
         let lane = LaneContext {
@@ -1751,6 +2046,7 @@ mod tests {
             width: 480.0,
             playhead: 160,
             enabled: true,
+            colour: theme::PEACOCK,
         };
         let run = |roll: &mut PianoRoll, events, modifiers| {
             let mut action = None;
@@ -1763,16 +2059,15 @@ mod tests {
                 },
                 |ui| {
                     origin = ui.next_widget_position();
-                    action = roll.notes(ui, &lane, &view, theme::ROLL_LANE_HEIGHT, "Strings · 1.1");
+                    action = roll
+                        .pitch_editor(ui, &lane, &view, theme::ROLL_LANE_HEIGHT, &[])
+                        .0;
                 },
             );
             (action, origin)
         };
         let (_, origin) = run(&mut roll, Vec::new(), Modifiers::NONE);
-        let keys = egui::pos2(
-            origin.x + theme::ROLL_KEYBED * 0.5,
-            origin.y + theme::ROLL_LANE_HEIGHT * 0.5,
-        );
+        let keys = egui::pos2(origin.x + theme::ROLL_KEYBED * 0.5, origin.y + 9.0 * 7.5);
         run(
             &mut roll,
             vec![InputEvent::PointerMoved(keys)],
@@ -1846,6 +2141,7 @@ mod tests {
             width: 480.0,
             playhead: 240,
             enabled: true,
+            colour: theme::PEACOCK,
         };
         let events = clip
             .roll_events([clip.start, clip.end])
@@ -1854,6 +2150,7 @@ mod tests {
             .collect::<Vec<_>>();
         let roll = PianoRoll::default();
         let context = egui::Context::default();
+        crate::theme::install_fonts(&context);
         let mut inserted = None;
         let _ = context.run_ui(
             RawInput {
@@ -1881,6 +2178,7 @@ mod tests {
     fn co_located_lanes_get_distinct_names_and_labels() {
         let mut view = Snapshot::default();
         view.project.tracks.push(Track {
+            colour: None,
             id: 1,
             name: "Strings".into(),
             plugin: None,
@@ -1896,6 +2194,7 @@ mod tests {
             state: Default::default(),
         });
         view.project.tracks.push(Track {
+            colour: None,
             id: 2,
             name: "Piano".into(),
             plugin: None,
@@ -2040,6 +2339,7 @@ mod tests {
         let mut view = Snapshot::default();
         view.project.tracks = vec![
             clef_model::project::Track {
+                colour: None,
                 id: 1,
                 name: "One".into(),
                 plugin: None,
@@ -2055,6 +2355,7 @@ mod tests {
                 state: Default::default(),
             },
             clef_model::project::Track {
+                colour: None,
                 id: 2,
                 name: "Two".into(),
                 plugin: None,
@@ -2098,6 +2399,7 @@ mod tests {
         let mut roll = PianoRoll::default();
         roll.open(b, view.project.midi.find_clip(b).unwrap().1);
         let context = egui::Context::default();
+        crate::theme::install_fonts(&context);
         let mut open = true;
         let mut show = |roll: &mut PianoRoll, selected: &BTreeSet<ClipId>| {
             let _ = context.run_ui(
@@ -2170,6 +2472,7 @@ mod tests {
         let mut roll = PianoRoll::default();
         roll.open(clip_id, clip);
         let context = egui::Context::default();
+        crate::theme::install_fonts(&context);
         let timeline = &view.project.timeline;
         let time = timeline::Viewport::with_snap(timeline, 0, 96.0, 480.0, Snap::Sixteenth);
         let lane = LaneContext {
@@ -2179,6 +2482,7 @@ mod tests {
             width: 480.0,
             playhead: 0,
             enabled: true,
+            colour: theme::PEACOCK,
         };
         let run = |roll: &mut PianoRoll, events| {
             let mut action = None;

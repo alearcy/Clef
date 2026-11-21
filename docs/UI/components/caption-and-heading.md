@@ -3,16 +3,18 @@ name: Caption and heading
 kind: component
 reference: composer::style::paintSectionHeading, composer::style::font
 status: mixed
-impl: planned
+impl: gallery
 reference-source: [Source/ChannelStrip.cpp (pushHeading, caption), Source/RackEditor.cpp, Source/SettingsPanel.h]
 tokens: [text, secondary]
 used-in: [channel-strip, fx-rack, settings, side-drawers, startup]
-snapshot: snapshots/channel-strip.png
+snapshot: snapshots/egui/t18-caption-1024.png
+api: ui::primitives::text::{heading, section, body, caption, unavailable, danger}
+evidence: [t18-caption]
 ---
 
-> **Legacy reference (C++).** The symbols and code here describe the original Composer
-> implementation; they are not in this repository and are not an API. Clef builds this in
-> Rust + egui. See [README](../README.md) and the [UI contract](../contract.md).
+> **Migrated to Rust/egui (T18, 2026-11-21).** The Clef section at the end of this file is the
+> implementation contract. Earlier sections keep the legacy design intent; their C++ symbols are
+> not in this repository.
 
 # Caption and heading
 
@@ -36,3 +38,20 @@ Captions, readouts and names are `juce::Label`s with a zero border (`setBorderSi
 styles. The local font family loads macOS SF Pro. Captions use `secondary` and wrap within the
 available width. See [recent project details](../snapshots/egui/t07-startup-recent-1024.png)
 and [recovery with fallback](../snapshots/egui/t07-recovery-fallback-760.png).
+
+## Clef Rust/egui — T18
+
+**API** — one function per role, each a non-selectable `egui::Label` in SF Pro:
+
+| Function | Style | Colour |
+| --- | --- | --- |
+| `heading` | `HEADING` 16, bold | `TEXT` |
+| `section` | `SMALL` 11, uppercase | `SECONDARY` |
+| `body` | `BODY` 13 | `TEXT` |
+| `caption` | `SMALL` 11 | `SECONDARY` |
+| `unavailable` | `SMALL` 11 | `DISABLED` |
+| `danger` | `BODY` 13 | `DANGER` |
+
+`theme::install_fonts` also maps egui's `Heading`, `Body`, `Button` and `Small` text styles to these
+sizes, so a plain `ui.label` renders as `body`. `primitives::project::{heading, body, caption}`
+delegate here.

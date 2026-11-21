@@ -4,11 +4,16 @@ kind: component
 reference: composer::style::ToolButton
 status: shared
 impl: gallery
-api: ui::primitives::transport::tool_button
+api: ui::primitives::tool_button::tool_button
 tokens: [text, secondary, accent, danger, disabled, CAP_LIGHT, LOOP_ACTIVE]
 used-in: [tool-row, transport-bar, window]
-snapshot: snapshots/egui/t34-looping-1024.png
+snapshot: snapshots/egui/t18-tool-button-1024.png
+evidence: [t18-tool-button, t34 gallery, primitives::transport::tests]
 ---
+
+> **Migrated to Rust/egui (T18, 2026-11-21).** The Clef section at the end of this file is the
+> implementation contract. Earlier sections keep the legacy design intent; their C++ symbols are
+> not in this repository.
 
 # Tool button
 
@@ -61,3 +66,13 @@ if self.transport_tool(ui, Command::ToggleLoop, Glyph::Loop, timeline.looping) {
 The [T34 gallery](../../specs/T34-transport-glyphs.md) renders the real controls. Frame tests
 cover the pressed and released Record glyph, and workspace tests check disabled behaviour,
 keyboard actions, and layout at both widths.
+
+## Clef Rust/egui — T18
+
+T18 moved the primitive from `primitives::transport` to `primitives::tool_button` (re-exported from
+`transport` for existing callers). The keyboard focus circle now also follows the shared
+keyboard-navigation flag (`paint::keyboard`). See the
+[gallery](../snapshots/egui/t18-tool-button-1024.png) for rest, lit and disabled glyphs.
+
+T40 adds the `FitWidth` and `FitHeight` glyphs (two bounds with arrows between them) used by the
+arrangement and piano-roll fit buttons.

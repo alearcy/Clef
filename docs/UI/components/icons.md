@@ -3,15 +3,17 @@ name: Icons
 kind: component
 reference: composer::style::Icon, drawIcon, toolCursor, toolCursorImage, stretchCursor, stretchCursorImage
 status: shared
-impl: planned
+impl: gallery
 tokens: [text, accent, secondary, disabled]
 used-in: [tool-row, transport-bar, track-header, mixer, fx-rack, side-drawers, scroll-zoom-bars]
-snapshot: snapshots/kit-gallery.png
+snapshot: snapshots/egui/t18-icons-1024.png
+api: ui::primitives::icons::Icon
+evidence: [t18-icons]
 ---
 
-> **Legacy reference (C++).** The symbols and code here describe the original Composer
-> implementation; they are not in this repository and are not an API. Clef builds this in
-> Rust + egui. See [README](../README.md) and the [UI contract](../contract.md).
+> **Migrated to Rust/egui (T18 Phase 3, 2026-11-21).** The Clef section at the end of this file is
+> the implementation contract. Earlier sections keep the legacy design intent; their C++ symbols are
+> not in this repository.
 
 # Icons
 
@@ -59,3 +61,24 @@ the platform's resize cursors, 24 points drawn at 2× (`stretchCursorImage`, 48 
   and `TrackStateButton` still do; UI10.3 moves them into the set).
 - Don't use emoji or text characters as glyphs, except the documented ▾ ▸ ✕ ~ ◆ marks in chips and
   menus.
+
+## Clef Rust/egui — T18 Phase 3
+
+**API**
+
+```rust
+pub enum Icon { Start, Play, Stop, Record, Loop, Metronome, FitWidth, FitHeight, Search, Close, Check, Triplet, Dotted }
+impl Icon { pub const ALL: [Icon; 13]; pub fn paint(self, painter: &egui::Painter, center: egui::Pos2, size: f32, color: egui::Color32); }
+```
+
+The one vector glyph set (formerly `tool_button::Glyph`). Strokes use `TOOL_STROKE`; the host gives
+the colour from the lamp rules in foundations. Drawn by the [tool button](tool-button.md), the
+[glyph toggle](glyph-toggle.md), the [search field](search-field.md) and the [checkbox](checkbox.md).
+Glyphs carry no accessible node of their own: the control that draws one names itself.
+
+**States:** `text`, `secondary`, `accent`, `disabled` (the gallery shows every glyph in each).
+**Not yet drawn:** the legacy set's select, draw, erase, folder, chevrons, plus, settings, punch,
+marker and the rest are added when a Clef surface needs them.
+
+**Evidence:** gallery `snapshots/egui/t18-icons-{1024,760}.png` and `t18-icons-1024@2x.png`
+(Retina); accessible names checked by `gallery::tests::every_gallery_control_has_an_accessible_name`.

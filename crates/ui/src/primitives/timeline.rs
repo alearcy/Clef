@@ -1,11 +1,11 @@
-use crate::{colors, theme};
+use crate::theme;
 use clef_model::{
     midi::{Clip, ClipId, Snap},
     timeline::{MAX_TICK, QUARTER, Timeline},
 };
 use clef_session::{NoteMark, NotePreview};
 use eframe::egui::{
-    self, Align2, FontId, Id, Key, Modifiers, Pos2, Rect, Response, Sense, Stroke, Ui,
+    self, Align2, Color32, FontId, Id, Key, Modifiers, Pos2, Rect, Response, Sense, Stroke, Ui,
 };
 use std::collections::BTreeSet;
 
@@ -108,6 +108,21 @@ impl Viewport {
             .clamp(0.0, MAX_TICK as f64) as u64
     }
 
+    /// The first visible tick after zooming to `zoom` points per quarter with the tick under
+    /// `anchor` (points from the lane's left edge) kept in place.
+    pub fn offset_for_zoom(&self, zoom: f32, anchor: f32) -> u64 {
+        let anchored = self.offset as f64 + f64::from(anchor) / self.pixels_per_tick;
+        let next = f64::from(anchor) * QUARTER as f64 / f64::from(zoom);
+        (anchored - next).round().clamp(0.0, MAX_TICK as f64) as u64
+    }
+
+    /// The first visible tick after scrolling the view by `dx` points (positive moves later).
+    pub fn offset_scrolled(&self, dx: f32) -> u64 {
+        (self.offset as f64 + f64::from(dx) / self.pixels_per_tick)
+            .round()
+            .clamp(0.0, MAX_TICK as f64) as u64
+    }
+
     pub fn ruler(
         &self,
         ui: &mut Ui,
@@ -115,13 +130,13 @@ impl Viewport {
         tick: u64,
         timeline: &Timeline,
         enabled: bool,
-    ) -> Option<u64> {
+    ) -> (Option<u64>, u64) {
         let (rect, response) = allocate(ui, width, RULER_HEIGHT, enabled);
         response.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, "Timeline ruler")
         });
         let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 0.0, colors::FIELD);
+        painter.rect_filled(rect, 0.0, theme::FIELD);
         for line in &self.lines {
             let x = rect.left() + line.x;
             let y = if line.bar.is_some() {
@@ -129,18 +144,14 @@ impl Viewport {
             } else {
                 rect.bottom() - 5.0
             };
-            painter.vline(
-                x,
-                y..=rect.bottom(),
-                Stroke::new(1.0_f32, colors::SECONDARY),
-            );
+            painter.vline(x, y..=rect.bottom(), Stroke::new(1.0_f32, theme::SECONDARY));
             if let Some(bar) = line.bar.filter(|_| line.label) {
                 painter.text(
                     Pos2::new(x + 3.0, rect.top() + 2.0),
                     Align2::LEFT_TOP,
                     bar,
                     FontId::proportional(11.0),
-                    colors::TEXT,
+                    theme::TEXT,
                 );
             }
         }
@@ -148,15 +159,16 @@ impl Viewport {
         let preview = pointer
             .filter(|_| response.dragged())
             .map(|pos| self.tick_at(pos.x - rect.left()));
-        self.paint_playhead(ui, rect, preview.unwrap_or(tick));
+        let shown = preview.unwrap_or(tick);
         paint_focus(ui, &response);
         if enabled && (response.clicked() || response.drag_stopped()) {
-            return pointer
+            let locate = pointer
                 .map(|pos| self.tick_at(pos.x - rect.left()))
                 .or(Some(tick));
+            return (locate, shown);
         }
         if enabled && response.has_focus() {
-            return ui.input_mut(|input| {
+            let locate = ui.input_mut(|input| {
                 if input.consume_key(Modifiers::NONE, Key::ArrowLeft) {
                     let previous = tick.saturating_sub(1);
                     let (start, tempo) = timeline.section_at(previous);
@@ -171,8 +183,9 @@ impl Viewport {
                     None
                 }
             });
+            return (locate, shown);
         }
-        None
+        (None, shown)
     }
 
     pub fn loop_band(
@@ -238,11 +251,11 @@ impl Viewport {
             Pos2::new(rect.left() + self.x(display[1]), rect.bottom()),
         );
         let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 0.0, colors::CANVAS);
+        painter.rect_filled(rect, 0.0, theme::CANVAS);
         let (fill, grips) = if timeline.looping {
             (theme::LOOP_ACTIVE, theme::LOOP_ACTIVE)
         } else {
-            (colors::ACCENT.gamma_multiply(0.25), colors::ACCENT)
+            (theme::ACCENT.gamma_multiply(0.25), theme::ACCENT)
         };
         if area.intersects(rect) {
             painter.rect_filled(area.intersect(rect), 0.0, fill);
@@ -259,13 +272,8 @@ impl Viewport {
         completed
     }
 
-    pub fn lane(&self, ui: &Ui, rect: Rect, tick: u64) {
-        self.lane_grid(ui, rect);
-        self.paint_playhead(ui, rect, tick);
-    }
-
     pub fn lane_grid(&self, ui: &Ui, rect: Rect) {
-        ui.painter_at(rect).rect_filled(rect, 0.0, colors::CANVAS);
+        ui.painter_at(rect).rect_filled(rect, 0.0, theme::CANVAS);
         self.grid_lines(ui, rect);
     }
 
@@ -277,7 +285,7 @@ impl Viewport {
                 rect.y_range(),
                 Stroke::new(
                     1.0_f32,
-                    colors::SECONDARY.gamma_multiply(if line.bar.is_some() { 0.25 } else { 0.12 }),
+                    theme::SECONDARY.gamma_multiply(if line.bar.is_some() { 0.25 } else { 0.12 }),
                 ),
             );
         }
@@ -326,7 +334,7 @@ impl Viewport {
         ui: &Ui,
         lane: Rect,
         timeline: &Timeline,
-        track: &str,
+        (track, colour): (&str, Color32),
         clips: &[Clip],
         selection: (&BTreeSet<ClipId>, bool),
     ) -> Option<(Id, ClipId)> {
@@ -347,7 +355,8 @@ impl Viewport {
                 continue;
             }
             let painter = ui.painter_at(area);
-            painter.rect_filled(area, 3.0, colors::PEACOCK);
+            painter.rect_filled(area, 3.0, colour);
+            let label = theme::foreground_on(colour);
             let marks = || {
                 clip.active_events()
                     .filter(|event| event.tick < clip.end)
@@ -359,14 +368,7 @@ impl Viewport {
                     })
             };
             let pitch = pitch_range(marks());
-            self.notes(
-                &painter,
-                [lane, area],
-                marks(),
-                pitch,
-                colors::TEXT,
-                clip.end,
-            );
+            self.notes(&painter, [lane, area], marks(), pitch, label, clip.end);
             if let (Some(period), Some(end)) = (clip.cycle(), clip.repeat_end()) {
                 let minimum_step = (8.0 / (period as f64 * self.pixels_per_tick))
                     .ceil()
@@ -379,12 +381,13 @@ impl Viewport {
                     painter.vline(
                         x,
                         area.y_range(),
-                        Stroke::new(1.0_f32, colors::TEXT.gamma_multiply(0.5)),
+                        Stroke::new(1.0_f32, label.gamma_multiply(0.5)),
                     );
                 }
             }
             let takes = clip.takes.len();
-            if area.width() >= 32.0 {
+            // The title needs a line of its own above the note marks.
+            if area.width() >= 32.0 && area.height() >= 32.0 {
                 let font = FontId::proportional(11.0);
                 let title = if takes == 1 {
                     "MIDI".into()
@@ -392,12 +395,12 @@ impl Viewport {
                     format!("MIDI · {takes} takes")
                 };
                 let width = area.width() - 12.0;
-                let mut text = painter.layout_no_wrap(title, font.clone(), colors::TEXT);
+                let mut text = painter.layout_no_wrap(title, font.clone(), label);
                 if text.size().x > width && takes > 1 {
-                    text = painter.layout_no_wrap("MIDI".into(), font, colors::TEXT);
+                    text = painter.layout_no_wrap("MIDI".into(), font, label);
                 }
                 if text.size().x <= width {
-                    painter.galley(area.left_top() + egui::vec2(6.0, 5.0), text, colors::TEXT);
+                    painter.galley(area.left_top() + egui::vec2(6.0, 5.0), text, label);
                 }
             }
             let pos = |tick| {
@@ -420,7 +423,7 @@ impl Viewport {
                 painter.rect_stroke(
                     area,
                     3.0,
-                    Stroke::new(1.0_f32, colors::TEXT),
+                    Stroke::new(1.0_f32, theme::TEXT),
                     egui::StrokeKind::Inside,
                 );
                 if selection.1 {
@@ -432,7 +435,7 @@ impl Viewport {
                 painter.rect_stroke(
                     area,
                     3.0,
-                    Stroke::new(1.0_f32, colors::ACCENT),
+                    Stroke::new(1.0_f32, theme::ACCENT),
                     egui::StrokeKind::Inside,
                 );
             }
@@ -476,9 +479,9 @@ impl Viewport {
         let painter = ui.painter_at(area);
         for (repeat, y) in [(true, area.top() + 5.0), (false, area.bottom() - 5.0)] {
             let fill = if hover == Some(repeat) {
-                colors::ACCENT
+                theme::ACCENT
             } else {
-                colors::TEXT
+                theme::TEXT
             };
             painter.rect_filled(
                 Rect::from_center_size(Pos2::new(right - 3.0, y), egui::vec2(4.0, 5.0)),
@@ -492,36 +495,39 @@ impl Viewport {
         &self,
         ui: &Ui,
         [lane, visible]: [Rect; 2],
-        range: [u64; 2],
-        tick: u64,
-        snap: bool,
-        label: &str,
+        colour: Color32,
+        EditPreview {
+            range,
+            tick,
+            snap,
+            label,
+        }: EditPreview<'_>,
     ) {
         let area = self.clip_rect(lane, range);
         if !area.is_positive() {
             return;
         }
         let painter = ui.painter_at(visible);
-        painter.rect_filled(area, 3.0, colors::PEACOCK.gamma_multiply(0.65));
+        painter.rect_filled(area, 3.0, colour.gamma_multiply(0.65));
         painter.rect_stroke(
             area,
             3.0,
-            Stroke::new(1.0_f32, colors::ACCENT),
+            Stroke::new(1.0_f32, theme::ACCENT),
             egui::StrokeKind::Inside,
         );
         if snap {
             let x = lane.left() + self.x(tick);
-            painter.vline(x, lane.y_range(), Stroke::new(1.0_f32, colors::ACCENT));
+            painter.vline(x, lane.y_range(), Stroke::new(1.0_f32, theme::ACCENT));
         }
         let font = FontId::proportional(11.0);
-        let text = painter.layout_no_wrap(label.to_owned(), font, colors::TEXT);
+        let text = painter.layout_no_wrap(label.to_owned(), font, theme::TEXT);
         let size = text.size() + egui::vec2(12.0, 4.0);
         if size.x <= visible.width() && size.y <= visible.height() {
             let x =
                 (lane.left() + self.x(tick) + 4.0).clamp(visible.left(), visible.right() - size.x);
             let bubble = Rect::from_min_size(Pos2::new(x, visible.top() + 2.0), size);
-            painter.rect_filled(bubble, 2.0, colors::PANEL);
-            painter.galley(bubble.min + egui::vec2(6.0, 2.0), text, colors::TEXT);
+            painter.rect_filled(bubble, 2.0, theme::PANEL);
+            painter.galley(bubble.min + egui::vec2(6.0, 2.0), text, theme::TEXT);
         }
     }
 
@@ -532,6 +538,7 @@ impl Viewport {
         range: [u64; 2],
         loop_range: [u64; 2],
         notes: Option<&NotePreview>,
+        colour: Color32,
     ) {
         if !ui.is_rect_visible(lane) {
             return;
@@ -546,23 +553,23 @@ impl Viewport {
         if let Some(notes) = notes.filter(|notes| !notes.previous.is_empty()) {
             let background = self.clip_rect(lane, loop_range);
             if background.is_positive() {
-                painter.rect_filled(background, 3.0, colors::PEACOCK.gamma_multiply(0.5));
+                painter.rect_filled(background, 3.0, colour.gamma_multiply(0.5));
                 self.notes(
                     &painter,
                     [lane, background],
                     notes.previous.iter().copied(),
                     pitch,
-                    colors::SECONDARY,
+                    theme::SECONDARY,
                     loop_range[1],
                 );
             }
         }
         if area.is_positive() {
-            painter.rect_filled(area, 3.0, colors::DANGER.gamma_multiply(0.23));
+            painter.rect_filled(area, 3.0, theme::DANGER.gamma_multiply(0.23));
             painter.rect_stroke(
                 area,
                 3.0,
-                Stroke::new(1.0_f32, colors::DANGER),
+                Stroke::new(1.0_f32, theme::DANGER),
                 egui::StrokeKind::Inside,
             );
             if let Some(notes) = notes {
@@ -571,44 +578,58 @@ impl Viewport {
                     [lane, area],
                     notes.current.iter().copied(),
                     pitch,
-                    colors::DANGER,
+                    theme::DANGER,
                     range[1],
                 );
             }
         }
     }
 
-    pub fn paint_playhead(&self, ui: &Ui, rect: Rect, tick: u64) {
-        let x = rect.left() + self.x(tick);
-        if (rect.left()..rect.right()).contains(&x) {
-            ui.painter_at(rect)
-                .vline(x, rect.y_range(), Stroke::new(1.0_f32, colors::ACCENT));
+    /// The surface's one playhead: a single line down `column`, from the top of the ruler to the
+    /// bottom of the last visible lane, painted after every lane.
+    pub fn playhead(&self, ui: &Ui, column: Rect, tick: u64) {
+        let x = column.left() + self.x(tick);
+        if (column.left()..column.right()).contains(&x) {
+            ui.painter_at(column).vline(
+                x,
+                column.y_range(),
+                Stroke::new(theme::roll::PLAYHEAD_WIDTH, theme::ACCENT),
+            );
         }
     }
 }
 
+/// A clip edit drawn before the session commits it.
+pub struct EditPreview<'a> {
+    pub range: [u64; 2],
+    pub tick: u64,
+    /// Draw the snapped edge line.
+    pub snap: bool,
+    pub label: &'a str,
+}
+
 pub fn marquee(ui: &Ui, bounds: Rect, selection: Rect) {
-    let painter = ui.painter_at(bounds);
-    painter.rect_filled(selection, 0.0, colors::ACCENT.gamma_multiply(0.12));
-    painter.rect_stroke(
-        selection,
-        0.0,
-        Stroke::new(1.0_f32, colors::ACCENT),
-        egui::StrokeKind::Inside,
-    );
+    super::range_overlay::range_overlay(&ui.painter_at(bounds), selection, None);
 }
 
 pub fn snap_control(ui: &mut Ui, value: &mut Snap) {
-    let label = ui.label("Snap");
-    egui::ComboBox::from_id_salt("arrangement-snap")
-        .selected_text(value.label())
-        .show_ui(ui, |ui| {
-            for snap in Snap::ALL {
-                ui.selectable_value(value, snap, snap.label());
-            }
-        })
-        .response
-        .labelled_by(label.id);
+    let current = *value;
+    let (_, snap) = super::menu_button::menu_button(
+        ui,
+        "arrangement-snap",
+        "Snap",
+        Some("Snap"),
+        current.label(),
+        true,
+        |ui| {
+            Snap::ALL
+                .into_iter()
+                .find(|&snap| super::menu_button::choice(ui, snap.label(), snap == current))
+        },
+    );
+    if let Some(Some(snap)) = snap {
+        *value = snap;
+    }
 }
 
 pub fn clip_menu(
@@ -618,21 +639,21 @@ pub fn clip_menu(
     open: bool,
 ) -> Option<usize> {
     let mut command = None;
-    let mut popup = egui::Popup::context_menu(response);
+    let mut popup = super::menu::context(response);
     if let Some(anchor) = anchor {
         popup = popup.anchor(egui::PopupAnchor::Position(anchor));
     }
     if open {
         popup = popup.open_memory(Some(egui::SetOpenCommand::Bool(true)));
     }
-    popup.show(|ui| {
+    super::menu::show(popup, |ui| {
         for (index, (label, shortcut, enabled)) in rows.into_iter().enumerate() {
-            if ui
-                .add_enabled(enabled, egui::Button::new(label).shortcut_text(shortcut))
-                .clicked()
+            if super::menu::Item::new(label)
+                .shortcut(&shortcut)
+                .enabled(enabled)
+                .show(ui)
             {
                 command = Some(index);
-                ui.close();
             }
         }
     });
@@ -664,7 +685,7 @@ pub(super) fn paint_focus(ui: &Ui, response: &Response) {
         ui.painter_at(response.rect).rect_stroke(
             response.rect,
             0.0,
-            Stroke::new(1.0_f32, colors::ACCENT),
+            Stroke::new(1.0_f32, theme::ACCENT),
             egui::StrokeKind::Inside,
         );
     }
@@ -714,6 +735,18 @@ impl LoopGesture {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn zoom_keeps_the_anchored_tick_and_scroll_moves_by_points() {
+        let timeline = Timeline::default();
+        let viewport = Viewport::new(&timeline, 960, 48.0, 600.0);
+        let anchored = viewport.tick_at(200.0);
+        let offset = viewport.offset_for_zoom(96.0, 200.0);
+        let zoomed = Viewport::new(&timeline, offset, 96.0, 600.0);
+        assert!(zoomed.tick_at(200.0).abs_diff(anchored) <= 1);
+        assert_eq!(viewport.offset_scrolled(48.0), 960 + QUARTER);
+        assert_eq!(viewport.offset_scrolled(-10_000.0), 0);
+    }
+
     use super::*;
     use egui::{Event, PointerButton, RawInput, Shape};
 
@@ -736,7 +769,7 @@ mod tests {
         let lane = Rect::from_min_size(Pos2::new(100.0, 100.0), egui::vec2(400.0, 44.0));
         let render = |end| {
             ctx.run_ui(egui::RawInput::default(), |ui| {
-                viewport.recording(ui, lane, [0, end], [0, 960], Some(&preview));
+                viewport.recording(ui, lane, [0, end], [0, 960], Some(&preview), theme::PEACOCK);
             })
             .shapes
             .into_iter()
@@ -751,8 +784,8 @@ mod tests {
         let [previous, held]: [_; 2] = render(360).try_into().unwrap();
         let [same_previous, extended]: [_; 2] = render(720).try_into().unwrap();
         assert_eq!(previous, same_previous);
-        assert_eq!(previous.1, colors::SECONDARY);
-        assert_eq!(held.1, colors::DANGER);
+        assert_eq!(previous.1, theme::SECONDARY);
+        assert_eq!(held.1, theme::DANGER);
         assert_eq!(held.0[0].y, previous.0[0].y);
         assert_eq!(held.0[0], extended.0[0]);
         assert_eq!(held.0[0].x, 124.0);
@@ -795,7 +828,7 @@ mod tests {
                 ui,
                 lane,
                 &timeline,
-                "Piano",
+                ("Piano", theme::PEACOCK),
                 arrangement.clips(1),
                 (&BTreeSet::new(), true),
             );
@@ -805,7 +838,7 @@ mod tests {
             .into_iter()
             .filter_map(|shape| match shape.shape {
                 egui::Shape::LineSegment { points, stroke }
-                    if stroke.width == NOTE_STROKE && stroke.color == colors::TEXT =>
+                    if stroke.width == NOTE_STROKE && stroke.color == theme::TEXT =>
                 {
                     Some([points[0].x, points[1].x])
                 }
@@ -842,7 +875,7 @@ mod tests {
             let color = if timeline.looping {
                 theme::LOOP_ACTIVE
             } else {
-                colors::ACCENT
+                theme::ACCENT
             };
             let fill = if timeline.looping {
                 color

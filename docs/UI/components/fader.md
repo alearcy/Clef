@@ -3,19 +3,23 @@ name: Fader
 kind: component
 reference: composer::style::LookAndFeel::drawLinearSlider
 status: shared
-impl: app
+impl: gallery
 tokens: [cap, capLight, capDark, field, controlEdge]
 used-in: [channel-strip, mixer, fx-rack, arrangement]
-snapshot: snapshots/slider-travel.png
+snapshot: snapshots/egui/t18-fader-1024.png
+api: ui::primitives::mixer::Slider (Control::Fader), ui::primitives::fader
+evidence: [t18-fader]
 ---
 
-> **Legacy reference (C++).** The symbols and code here describe the original Composer
-> implementation; they are not in this repository and are not an API. Clef builds this in
-> Rust + egui. See [README](../README.md) and the [UI contract](../contract.md).
+> **Migrated to Rust/egui (T18 Phase 3, 2026-11-21).** The Clef section at the end of this file is
+> the implementation contract. Earlier sections keep the legacy design intent; their C++ symbols are
+> not in this repository.
 
 # Fader
 
 ## Clef T11
+
+*Superseded where it differs by the T18 Phase 3 section at the end of this file (the gesture: double-click now types the value; Option-click resets).*
 
 The provisional egui mixer fader uses a 38 × 210-point stage and a 22 × 40-point cap. Its travel
 uses the same dB mapping as the meter. The bottom stop is silent and the top is +6 dB. Drag and
@@ -59,3 +63,29 @@ value with its unit as plain `text` to the right (46 wide). A double-click on th
 double-click on the travel returns to the default, ⇧-drag moves it finely (relative, slow), the wheel
 steps (composer, 2026-11-13). It is the one control for every numeric parameter in a drawer, call-out, dialog or settings row (global rule, composer 2026-11-13): never a typed field, never − + steppers; a long range (times, ratios) uses a logarithmic travel. Disabled: `divider` fill and a flat `disabled` cap. Used in the MIDI
 functions drawer. Snapshot: `snapshots/midi-functions-sections.png`.
+
+## Clef Rust/egui — T18 Phase 3
+
+**API**
+
+```rust
+Slider { control: Control::Fader, value, drag_start, name, master, compact: false }.show(ui) -> Option<Adjustment>
+```
+
+Travel, cap and dB scale are painted by `primitives::fader` (`paint_fader`, the shared `SCALE` and
+`fraction` that the [level meter](level-meter.md) uses). The gesture is shared with the
+[knobs](knob.md) in `mixer::Slider` and aligned with the [value slider](value-slider.md) (T18 Phase 3):
+
+- drag moves the cap; **Shift** drags a quarter as far, and pressing or releasing Shift mid-drag
+  re-bases the origin so the value never jumps; the release commits one undo step;
+- **double-click opens an inline value field** under the control ("−6.0 dB"; "-inf", a missing unit and
+  a plain minus are accepted): Return commits, Escape or a click elsewhere cancels;
+- ↑/→ and ↓/← step 0.5 dB with focus, **Shift** steps 3 dB;
+- **Option-click resets** to 0 dB. Double-click no longer resets.
+
+Accessible: slider role named "<channel> Fader" with the dB value; tooltip "<name>: <value>".
+
+**States:** default, low, high, disabled.
+
+**Evidence:** gallery `snapshots/egui/t18-fader-{1024,760}.png` and `t18-fader-1024@2x.png`
+(Retina); accessible names checked by `gallery::tests::every_gallery_control_has_an_accessible_name`.

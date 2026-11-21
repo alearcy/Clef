@@ -728,6 +728,7 @@ mod tests {
 
         let mut project = Project::default();
         project.tracks.push(Track {
+            colour: None,
             id: 1,
             name: "Piano".into(),
             plugin: None,

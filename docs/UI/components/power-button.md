@@ -3,19 +3,23 @@ name: Power button
 kind: component
 reference: composer::style::PowerButton, composer::style::StepButton
 status: shared
-impl: app
+impl: gallery
 tokens: [accent, secondary, disabled]
 used-in: [channel-strip, mixer, fx-rack, side-drawers, plugin-window]
-snapshot: snapshots/shared-controls.png
+snapshot: snapshots/egui/t18-power-button-1024.png
+api: ui::primitives::power_button::power_button
+evidence: [t18-power-button]
 ---
 
-> **Legacy reference (C++).** The symbols and code here describe the original Composer
-> implementation; they are not in this repository and are not an API. Clef builds this in
-> Rust + egui. See [README](../README.md) and the [UI contract](../contract.md).
+> **Migrated to Rust/egui (T18 Phase 3, 2026-11-21).** The Clef section at the end of this file is
+> the implementation contract. Earlier sections keep the legacy design intent; their C++ symbols are
+> not in this repository.
 
 # Power button
 
 ## Clef T12
+
+*Superseded where it differs by the T18 Phase 3 section at the end of this file.*
 
 The provisional T12 insert power button is drawn in
 `clef_ui::primitives::inserts::power_button` as a vector glyph: a broken ring with a
@@ -59,3 +63,22 @@ power.setToggleState(!bypassed, juce::dontSendNotification);
 // A painted row (Monitor FX) uses the glyph alone:
 composer::style::PowerButton::paintGlyph(g, area, on, available, over);
 ```
+
+## Clef Rust/egui — T18 Phase 3
+
+**API**
+
+```rust
+pub fn power_button(ui: &mut egui::Ui, width: f32, height: f32, label: &str, lit: bool, ready: bool) -> bool;
+```
+
+The power glyph (an open arc and a stem, 1.4-point stroke): `accent` while the processor runs,
+`secondary` when bypassed, `CAP_LIGHT` on hover, `disabled` when not ready; keyboard focus an `accent`
+ring. Space and Return toggle it with focus. Accessible: a button named by `label` ("Strings, Bypass
+insert Tape EQ") with the on state. Used by [slot buttons](slot-button.md) and compact send rows
+(`inserts::bypass` re-exports it).
+
+**States:** on, bypassed, not ready.
+
+**Evidence:** gallery `snapshots/egui/t18-power-button-{1024,760}.png` and `t18-power-button-1024@2x.png`
+(Retina); accessible names checked by `gallery::tests::every_gallery_control_has_an_accessible_name`.

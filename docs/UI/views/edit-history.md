@@ -9,22 +9,22 @@ snapshot: snapshots/egui/t08-history-ready-1024.png
 
 # Edit History
 
-The project command row places **Edit** after **Save As**. The menu projects
-**Undo**, **Redo**, and **Edit History…** from Clef's command registry. Undo
+The menu bar's **Edit** menu (T18 Phase 2) projects **Undo**, **Redo**, and
+**Edit History…** from Clef's command registry, followed by the clip commands. Undo
 and Redo add the available edit name and display the live shortcut.
 
 ## Layout and interaction
 
 ```text
-project command row wrap
-  Edit → Undo, Redo, Edit History…
+menu bar
+  Edit → Undo, Redo, Edit History… | Select All Clips, Duplicate, Split at Playhead, Delete
 non-modal Edit History window
-  revision slider + Revision label
+  revision slider (value slider, track form, named Revision)
   status or replay error, when present
   scroll column: oldest retained state through newest edit
 ```
 
-The window initially opens below the right side of the project commands and
+The window initially opens below the right side of the menu bar and
 can be moved. The 264-point slider leaves room to distinguish individual
 revisions in a full 100-entry history. The list scrolls as its height grows.
 The current revision is marked with **Current**. Dragging previews the target

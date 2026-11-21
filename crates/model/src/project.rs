@@ -49,8 +49,45 @@ pub struct AudioSettings {
     pub buffer: u32,
 }
 /// The current project format. Version 5 (T39) stores audio settings only as an explicit
-/// project override.
-pub const PROJECT_VERSION: u32 = 5;
+/// project override; version 6 (T40) adds track colours, the arrangement track height and the
+/// piano-roll view.
+pub const PROJECT_VERSION: u32 = 6;
+
+/// The nine track hues of the foundations, assigned to new tracks in turn (T40). T18 moved five
+/// of them in CIELAB lightness so their label reaches 4.5:1.
+pub const TRACK_COLOURS: [[u8; 3]; 9] = [
+    [0x21, 0x72, 0x64],
+    [0xAE, 0x76, 0x3F],
+    [0x44, 0x66, 0xA3],
+    [0x93, 0x77, 0xB0],
+    [0x5E, 0x8F, 0x62],
+    [0xA8, 0x3C, 0x2C],
+    [0x6E, 0x9A, 0xB8],
+    [0x8F, 0x8A, 0x34],
+    [0xB4, 0x6E, 0x80],
+];
+
+/// The T40 default hues that T18 replaced, with their replacement. Loading maps a track that
+/// still carries one of them exactly; any other colour is the user's and is kept.
+const RETIRED_TRACK_COLOURS: [([u8; 3], [u8; 3]); 5] = [
+    ([0x2E, 0x7D, 0x6E], TRACK_COLOURS[0]),
+    ([0xA8, 0x70, 0x3A], TRACK_COLOURS[1]),
+    ([0x4A, 0x6B, 0xA8], TRACK_COLOURS[2]),
+    ([0x8B, 0x6F, 0xA8], TRACK_COLOURS[3]),
+    ([0xB0, 0x6A, 0x7C], TRACK_COLOURS[8]),
+];
+
+fn current_track_colour(colour: [u8; 3]) -> [u8; 3] {
+    RETIRED_TRACK_COLOURS
+        .iter()
+        .find_map(|(old, new)| (*old == colour).then_some(*new))
+        .unwrap_or(colour)
+}
+
+/// The colour a new track receives when `existing` tracks already exist.
+pub fn next_track_colour(existing: usize) -> [u8; 3] {
+    TRACK_COLOURS[existing % TRACK_COLOURS.len()]
+}
 
 impl AudioSettings {
     pub fn validate(&self) -> Result<()> {
@@ -293,12 +330,20 @@ pub struct Track {
     pub mix: crate::mixer::Channel,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inserts: Vec<Insert>,
+    /// Track colour (T40). Assigned at creation and when loading a project that predates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub colour: Option<[u8; 3]>,
     /// Opaque instrument state, shared between the session, history and autosave snapshots.
     #[serde(skip)]
     pub state: Arc<[u8]>,
 }
 
 impl Track {
+    /// The track colour; a track that has none yet shows the first hue.
+    pub fn colour(&self) -> [u8; 3] {
+        self.colour.unwrap_or(TRACK_COLOURS[0])
+    }
+
     pub fn is_bus(&self) -> bool {
         self.kind.is_bus()
     }
@@ -330,6 +375,8 @@ pub struct Project {
     #[serde(default)]
     pub arrangement_view: ArrangementView,
     #[serde(default)]
+    pub piano_roll_view: PianoRollView,
+    #[serde(default)]
     pub master: crate::mixer::Level,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub master_inserts: Vec<Insert>,
@@ -341,6 +388,22 @@ pub struct ArrangementView {
     pub snap: Snap,
     pub offset: u64,
     pub zoom_milli: u32,
+    /// Uniform track-row height in points (T40).
+    #[serde(default = "default_track_height")]
+    pub track_height: u16,
+}
+
+/// Time zoom range shared by the editing surfaces, in thousandths of a point per quarter.
+pub const ZOOM_MILLI: std::ops::RangeInclusive<u32> = 8_000..=240_000;
+/// Arrangement track height range and default, in points (T40, the D18 Micro…Jumbo range).
+pub const TRACK_HEIGHT: std::ops::RangeInclusive<u16> = 24..=320;
+pub const DEFAULT_TRACK_HEIGHT: u16 = 44;
+/// Piano-roll pitch row height range and default, in points.
+pub const ROW_HEIGHT: std::ops::RangeInclusive<u8> = 6..=24;
+pub const DEFAULT_ROW_HEIGHT: u8 = 12;
+
+fn default_track_height() -> u16 {
+    DEFAULT_TRACK_HEIGHT
 }
 
 impl Default for ArrangementView {
@@ -349,14 +412,44 @@ impl Default for ArrangementView {
             snap: Snap::Beat,
             offset: 0,
             zoom_milli: 48_000,
+            track_height: DEFAULT_TRACK_HEIGHT,
         }
     }
 }
 
 impl ArrangementView {
     pub fn validate(self) -> Result<()> {
-        if self.offset > MAX_TICK || !(8_000..=240_000).contains(&self.zoom_milli) {
+        if self.offset > MAX_TICK
+            || !ZOOM_MILLI.contains(&self.zoom_milli)
+            || !TRACK_HEIGHT.contains(&self.track_height)
+        {
             return Err("Arrangement viewport is outside its supported range.".into());
+        }
+        Ok(())
+    }
+}
+
+/// The piano roll's saved zoom (T40). Scroll follows the opened clip and is not stored.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PianoRollView {
+    pub zoom_milli: u32,
+    pub row_height: u8,
+}
+
+impl Default for PianoRollView {
+    fn default() -> Self {
+        Self {
+            zoom_milli: 96_000,
+            row_height: DEFAULT_ROW_HEIGHT,
+        }
+    }
+}
+
+impl PianoRollView {
+    pub fn validate(self) -> Result<()> {
+        if !ZOOM_MILLI.contains(&self.zoom_milli) || !ROW_HEIGHT.contains(&self.row_height) {
+            return Err("Piano-roll view is outside its supported range.".into());
         }
         Ok(())
     }
@@ -381,6 +474,8 @@ struct Metadata {
     midi: Arc<Arrangement>,
     #[serde(default, skip_serializing_if = "default_arrangement_view")]
     arrangement_view: ArrangementView,
+    #[serde(default, skip_serializing_if = "default_piano_roll_view")]
+    piano_roll_view: PianoRollView,
     #[serde(default, skip_serializing_if = "crate::mixer::Level::is_default")]
     master: crate::mixer::Level,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -390,6 +485,10 @@ struct Metadata {
 
 fn default_arrangement_view(view: &ArrangementView) -> bool {
     *view == ArrangementView::default()
+}
+
+fn default_piano_roll_view(view: &PianoRollView) -> bool {
+    *view == PianoRollView::default()
 }
 
 fn is_merge(mode: &Mode) -> bool {
@@ -421,6 +520,7 @@ impl Default for Project {
             record_mode: Mode::Merge,
             midi: Arc::default(),
             arrangement_view: ArrangementView::default(),
+            piano_roll_view: PianoRollView::default(),
             master: Default::default(),
             master_inserts: Vec::new(),
         }
@@ -527,6 +627,7 @@ impl Project {
             return Err("Invalid master mixer settings.".into());
         }
         self.arrangement_view.validate()?;
+        self.piano_roll_view.validate()?;
         let valid_text = |text: &str| text.len() <= 4096 && !text.contains('\0');
         if self.version != PROJECT_VERSION {
             return Err("unsupported Clef project version".into());
@@ -666,6 +767,7 @@ impl Project {
                     output: t.output,
                     sends: t.sends.clone(),
                     inserts: t.inserts.clone(),
+                    colour: t.colour,
                     state: Arc::default(),
                 })
                 .collect(),
@@ -676,6 +778,7 @@ impl Project {
             record_mode: self.record_mode,
             midi: self.midi.clone(),
             arrangement_view: self.arrangement_view,
+            piano_roll_view: self.piano_roll_view,
             master: self.master,
             master_inserts: self.master_inserts.clone(),
             state_lengths,
@@ -750,6 +853,7 @@ impl Project {
                     output: None,
                     sends: Vec::new(),
                     inserts: Vec::new(),
+                    colour: None,
                     state: Arc::default(),
                 })
                 .collect();
@@ -771,6 +875,7 @@ impl Project {
                     record_mode: Mode::Merge,
                     midi: Arc::default(),
                     arrangement_view: ArrangementView::default(),
+                    piano_roll_view: PianoRollView::default(),
                     master: Default::default(),
                     master_inserts: Vec::new(),
                 },
@@ -796,7 +901,7 @@ impl Project {
                     next_id: metadata.next_id,
                     // Audio blocks from versions 2–4 are ignored (T39); only an explicit
                     // version 5 override is kept.
-                    audio: if metadata.version == PROJECT_VERSION {
+                    audio: if metadata.version >= 5 {
                         metadata.audio_override
                     } else {
                         None
@@ -805,12 +910,19 @@ impl Project {
                     record_mode,
                     midi,
                     arrangement_view: metadata.arrangement_view,
+                    piano_roll_view: metadata.piano_roll_view,
                     master: metadata.master,
                     master_inserts: metadata.master_inserts,
                 },
                 metadata.state_lengths,
             )
         };
+        // Projects that predate track colours (T40) get the hues in track order; retired default
+        // hues (T18) become their replacement.
+        for (index, track) in project.tracks.iter_mut().enumerate() {
+            let colour = track.colour.get_or_insert(next_track_colour(index));
+            *colour = current_track_colour(*colour);
+        }
         project.validate()?;
         if lengths.len() != project.tracks.len() + project.all_inserts().count()
             || lengths.iter().any(|n| *n > MAX_STATE)
@@ -946,6 +1058,7 @@ mod tests {
     fn sample() -> Project {
         Project {
             tracks: vec![Track {
+                colour: Some(TRACK_COLOURS[0]),
                 id: 1,
                 name: "Piano".into(),
                 plugin: Some(Plugin {
@@ -1013,6 +1126,87 @@ mod tests {
         assert_eq!(Project::decode(&mut bytes.as_slice()).unwrap(), project);
         bytes.push(1);
         assert!(Project::decode(&mut bytes.as_slice()).is_err());
+    }
+    #[test]
+    fn retired_default_hues_load_as_their_replacement_and_custom_colours_stay() {
+        let mut project = sample();
+        project.tracks[0].colour = Some([0x2E, 0x7D, 0x6E]);
+        project.tracks.push(Track {
+            id: 2,
+            colour: Some([0x12, 0x34, 0x56]),
+            ..project.tracks[0].clone()
+        });
+        project.next_id = 3;
+        let mut bytes = Vec::new();
+        project.write(&mut bytes).unwrap();
+        let loaded = Project::decode(&mut bytes.as_slice()).unwrap();
+        assert_eq!(
+            loaded.tracks.iter().map(|t| t.colour).collect::<Vec<_>>(),
+            vec![Some(TRACK_COLOURS[0]), Some([0x12, 0x34, 0x56])]
+        );
+    }
+
+    #[test]
+    fn version_5_projects_get_colours_in_order_and_default_views() {
+        let mut project = sample();
+        project.tracks.push(Track {
+            id: 2,
+            name: "Bass".into(),
+            plugin: None,
+            state: Arc::default(),
+            colour: Some(TRACK_COLOURS[4]),
+            ..project.tracks[0].clone()
+        });
+        project.next_id = 3;
+        project.arrangement_view.track_height = 96;
+        project.piano_roll_view = PianoRollView {
+            zoom_milli: 120_000,
+            row_height: 18,
+        };
+        let mut bytes = Vec::new();
+        project.write(&mut bytes).unwrap();
+        assert_eq!(Project::decode(&mut bytes.as_slice()).unwrap(), project);
+        let length = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+        let mut metadata: serde_json::Value =
+            serde_json::from_slice(&bytes[16..16 + length]).unwrap();
+        let object = metadata.as_object_mut().unwrap();
+        object.insert("version".into(), 5.into());
+        object.remove("piano_roll_view");
+        object["arrangement_view"]
+            .as_object_mut()
+            .unwrap()
+            .remove("track_height");
+        for track in object["tracks"].as_array_mut().unwrap() {
+            track.as_object_mut().unwrap().remove("colour");
+        }
+        let original = container(
+            MAGIC,
+            &serde_json::to_vec(&metadata).unwrap(),
+            &bytes[16 + length..],
+        );
+        let legacy = Project::decode(&mut original.as_slice()).unwrap();
+        assert_eq!(legacy.version, PROJECT_VERSION);
+        assert_eq!(
+            legacy.tracks.iter().map(|t| t.colour).collect::<Vec<_>>(),
+            vec![Some(TRACK_COLOURS[0]), Some(TRACK_COLOURS[1])]
+        );
+        assert_eq!(legacy.arrangement_view.track_height, DEFAULT_TRACK_HEIGHT);
+        assert_eq!(legacy.piano_roll_view, PianoRollView::default());
+        project.arrangement_view.track_height = 400;
+        assert!(project.validate().is_err());
+        project.arrangement_view.track_height = 24;
+        project.piano_roll_view.row_height = 5;
+        assert!(project.validate().is_err());
+    }
+    #[test]
+    fn new_tracks_cycle_the_nine_hues() {
+        assert_eq!(next_track_colour(0), TRACK_COLOURS[0]);
+        assert_eq!(current_track_colour([0x2E, 0x7D, 0x6E]), TRACK_COLOURS[0]);
+        assert_eq!(current_track_colour([0xB0, 0x6A, 0x7C]), TRACK_COLOURS[8]);
+        assert_eq!(current_track_colour([0x5E, 0x8F, 0x62]), [0x5E, 0x8F, 0x62]);
+        assert_eq!(current_track_colour([1, 2, 3]), [1, 2, 3]);
+        assert_eq!(next_track_colour(8), TRACK_COLOURS[8]);
+        assert_eq!(next_track_colour(9), TRACK_COLOURS[0]);
     }
     #[test]
     fn timeline_options_round_trip_and_older_v2_projects_get_defaults() {
@@ -1237,6 +1431,7 @@ mod tests {
             let project = Project {
                 tracks: (1..=count as u64)
                     .map(|id| Track {
+                        colour: Some(TRACK_COLOURS[0]),
                         id,
                         name: format!("Track {id}"),
                         plugin: None,
@@ -1336,6 +1531,7 @@ mod tests {
     fn bus_output_and_sends_round_trip_and_reject_invalid_routing() {
         let mut project = sample();
         project.tracks.push(Track {
+            colour: Some(TRACK_COLOURS[0]),
             id: 2,
             name: "Reverb".into(),
             plugin: None,

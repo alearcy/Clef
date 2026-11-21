@@ -204,6 +204,17 @@ Evidence at [1024](../snapshots/egui/t15-buses-1024.png) and
 them at both review widths. The T15 proposal is
 [T15-routing.html](../proposals/T15-routing.html); this is provisional until T18.
 
+## Clef T18 Phase 3
+
+The strip controls are primitives: [fader](../components/fader.md), [knob](../components/knob.md)
+and [width knob](../components/width-knob.md) share one gesture aligned with the value slider (Shift
+drag is fine; double-click types the value, Return commits and Escape cancels; arrows step and
+Shift-arrows take the large step; Option-click resets), and [level meter](../components/level-meter.md),
+[mute and solo](../components/mute-solo.md), [power button](../components/power-button.md) and
+[slot button](../components/slot-button.md) moved out of the mixer module with their look unchanged.
+A double-click no longer resets a control. Evidence: `t18-{fader,knob,level-meter,mute-solo,power-button,slot-button}`
+and the regenerated T11, T12 and T15 snapshots.
+
 ## Legacy reference
 
 ## Search row

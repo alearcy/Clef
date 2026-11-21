@@ -1,21 +1,6 @@
-use crate::colors;
+use crate::theme;
 use clef_session::HistoryView;
 use eframe::egui;
-
-pub(crate) fn edit_menu(ui: &mut egui::Ui, rows: [(&str, &str, bool); 3]) -> Option<usize> {
-    ui.menu_button("Edit", |ui| {
-        for (index, (label, shortcut, enabled)) in rows.into_iter().enumerate() {
-            let button = egui::Button::new(label).shortcut_text(shortcut);
-            if ui.add_enabled(enabled, button).clicked() {
-                ui.close();
-                return Some(index);
-            }
-        }
-        None
-    })
-    .inner
-    .flatten()
-}
 
 #[derive(Default)]
 pub(crate) struct HistoryWindow {
@@ -42,14 +27,12 @@ impl HistoryWindow {
         let mut target = None;
         let mut open = self.open;
         let content = ctx.content_rect();
-        egui::Window::new("Edit History")
-            .open(&mut open)
-            .collapsible(false)
-            .default_pos(egui::pos2(content.right() - 364.0, content.top() + 76.0))
-            .default_width(340.0)
-            .show(ctx, |ui| {
+        super::window_frame::ToolWindow::new("Edit History")
+            .position(egui::pos2(content.right() - 364.0, content.top() + 76.0))
+            .width(340.0)
+            .show(ctx, &mut open, |ui| {
                 if let Some(error) = &self.error {
-                    ui.colored_label(colors::DANGER, error);
+                    super::text::danger(ui, error);
                 }
                 if history.labels.is_empty() {
                     ui.label("No edits in this session.");
@@ -57,14 +40,15 @@ impl HistoryWindow {
                 }
                 let mut revision = self.preview.map_or(history.cursor, |(_, index)| index);
                 // Leave enough travel to distinguish the retained steps in a full journal.
-                ui.spacing_mut().slider_width = 264.0;
-                let slider = ui.add_enabled(
-                    enabled,
-                    egui::Slider::new(&mut revision, 0..=history.labels.len())
-                        .text("Revision")
-                        .integer()
-                        .show_value(false),
-                );
+                let slider = super::value_slider::ValueSlider::new(
+                    "Revision",
+                    &mut revision,
+                    0..=history.labels.len(),
+                )
+                .track()
+                .width(264.0)
+                .enabled(enabled)
+                .show(ui);
                 if slider.drag_started() {
                     slider.request_focus();
                 }
@@ -89,14 +73,14 @@ impl HistoryWindow {
                 }
                 if let Some((_, index)) = self.preview {
                     ui.colored_label(
-                        colors::SECONDARY,
+                        theme::SECONDARY,
                         format!("Preview: {}", revision_label(history, index)),
                     );
                 } else if self.pending {
                     ui.label("Applying history…");
                 } else if !enabled {
                     ui.colored_label(
-                        colors::SECONDARY,
+                        theme::SECONDARY,
                         "History navigation is unavailable while Clef is busy.",
                     );
                 }
@@ -108,7 +92,7 @@ impl HistoryWindow {
                             if index == history.cursor {
                                 ui.label(format!("Current: {name}"));
                             } else {
-                                ui.colored_label(colors::SECONDARY, name);
+                                ui.colored_label(theme::SECONDARY, name);
                             }
                         }
                     });
@@ -137,6 +121,7 @@ mod tests {
     #[test]
     fn history_slider_previews_then_commits_on_release_and_supports_cancel() {
         let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx);
         ctx.enable_accesskit();
         let mut window = HistoryWindow {
             open: true,

@@ -17,12 +17,11 @@ no CSS, no HTML implementation, no web fonts.
 
 All sizes are egui points: logical pixels at `pixels_per_point = 1.0`, scaled by the window. The
 values below are the design source of truth for Clef. `crates/ui/src/theme.rs` carries the same names and
-values, and a test fails when they drift (`tests/ui_tokens.rs`, T18). The legacy C++ kit is not in
+values, and a test fails when they drift (`theme::tests`, T18). The legacy C++ kit is not in
 this repository and does not override this file.
 
-Module paths written as `theme::...` name the planned T18 modules. Until they exist, the values here
-are still authoritative and `crates/ui/src/lib.rs` approximates them; a path being documented is not a promise
-that the function is callable today.
+`theme::{metric, roll, text, track}`, `theme::foreground_on` and `theme::install_fonts` exist since
+T18 Phase 1 (2026-11-21); `theme::routing_accent` and `theme::cursor` are still planned.
 
 ## Colour roles
 
@@ -68,10 +67,18 @@ used as a wash.
 
 ### Track colours
 
-Nine muted hues (`theme::track::COLOURS`), minimum pairwise CIELAB distance 19.4, each with at least
-a 4.9:1 label: Peacock #2E7D6E, Ochre #A8703A, Slate blue #4A6BA8, Lavender #8B6FA8, Sage #5E8F62,
-Oxblood #A83C2C, Steel blue #6E9AB8, Brass #8F8A34, Dusty rose #B06A7C. Users may also choose any
+Nine muted hues (`theme::track::COLOURS`), minimum pairwise CIELAB distance 21.7 (test floor 19).
+Every hue labels at 4.5:1 or more with `foreground_on` (see [Contrast](#contrast)): Peacock
+#217264, Ochre #AE763F, Slate blue #4466A3, Lavender #9377B0, Sage #5E8F62, Oxblood #A83C2C,
+Steel blue #6E9AB8, Brass #8F8A34, Dusty rose #B46E80. T18 moved Peacock and Slate blue darker
+(light label) and Ochre, Lavender and Dusty rose lighter (dark label), in CIELAB lightness only;
+the T40 values were #2E7D6E, #A8703A, #4A6BA8, #8B6FA8 and #B06A7C. Users may also choose any
 colour through the [colour picker](components/colour-picker.md) — never a fixed swatch list.
+
+Since T40 the colour is stored with each track (`Track::colour`), assigned at creation by cycling
+the nine hues (`clef_model::project::TRACK_COLOURS`; `theme::track::COLOURS` is built from it).
+Loading a project maps a track that still carries one of the five T40 values exactly to its
+replacement; any other stored colour is kept.
 
 A track colour appears on: the 4-pixel stripe at the left of its arrangement header, its parts,
 unselected notes, velocity bars, controller curves, folder previews, the mixer name box tint. It
@@ -90,8 +97,40 @@ shows its nearest coloured folder's.
   (decision, 2026-11-13); the arrangement's inline notes are filled white when selected; points and
   segments take the oxblood selection fill; arrangement parts keep their colour and add an
   outline/handles. The interface accent never follows the selected track's hue.
-- Label colour on any fill comes from `theme::foreground_on(fill)` (planned helper): relative
-  luminance picks dark or light. Never hard-code white on a track colour.
+- Label colour on any fill comes from `theme::foreground_on(fill)`: the WCAG contrast picks
+  `TEXT` or `BACKGROUND`. Never hard-code white on a track colour.
+
+### Contrast
+
+WCAG 2 AA (T18 Phase 3): 4.5:1 for text, 3:1 for focus edges, glyphs and other non-text cues that
+identify a control. `theme::CONTRAST` lists the pairs the surfaces draw; a test fails any pair
+below its requirement and any drift between this table and the code. The ratio column is the
+weakest measured pair (for track hues, the weakest hue). `foreground_on` rows name the fill.
+
+| Foreground | Background | Requirement | Ratio |
+| --- | --- | --- | --- |
+| `TEXT` | `BACKGROUND` | text 4.5 | 14.28 |
+| `TEXT` | `PANEL` | text 4.5 | 12.98 |
+| `TEXT` | `CANVAS` | text 4.5 | 14.00 |
+| `TEXT` | `FIELD` | text 4.5 | 11.21 |
+| `SECONDARY` | `BACKGROUND` | text 4.5 | 8.26 |
+| `SECONDARY` | `PANEL` | text 4.5 | 7.51 |
+| `SECONDARY` | `CANVAS` | text 4.5 | 8.10 |
+| `SECONDARY` | `FIELD` | text 4.5 | 6.49 |
+| `ACCENT` | `BACKGROUND` | text 4.5 | 7.58 |
+| `ACCENT` | `PANEL` | text 4.5 | 6.89 |
+| `ACCENT` | `FIELD` | text 4.5 | 5.95 |
+| `DANGER` | `PANEL` | text 4.5 | 5.38 |
+| `DANGER` | `FIELD` | text 4.5 | 4.65 |
+| `foreground_on` | `PEACOCK` | text 4.5 | 5.00 |
+| `foreground_on` | `OXBLOOD` | text 4.5 | 7.14 |
+| `foreground_on` | `SOLO` | text 4.5 | 8.73 |
+| `foreground_on` | `ACCENT` | text 4.5 | 7.58 |
+| `foreground_on` | track hues | text 4.5 | 4.60 |
+| `ACCENT` | FIELD (focus edge) | non-text 3 | 5.95 |
+| `DISABLED` | `PANEL` | exempt: inactive control | 4.09 |
+| `DISABLED` | `FIELD` | exempt: inactive control | 3.53 |
+| `CONTROL_EDGE` | `FIELD` | exempt: decorative; controls are identified by label or glyph | 1.56 |
 
 ## Typography
 
@@ -143,6 +182,16 @@ example `controlHeight` → `CONTROL_HEIGHT`):
 | minimumWindowWidth | 1024 |
 | minimumWindowHeight | 640 |
 | railWidth | 2 |
+| controlBodyInset | 2 |
+| controlPadding | 8 |
+| chipHeight | 20 |
+| selectionEdge | 1.5 |
+| scrollBar | 12 |
+| menuRow | 26 |
+| menuSeparator | 9 |
+| menuCaption | 22 |
+| menuTick | 16 |
+| menuPadding | 4 |
 
 Piano roll (`theme::roll`):
 
@@ -183,7 +232,9 @@ carries a control's shape; soft depth does, painted by the primitive helper
 - **Raised** — every field control you press or type into: text and slot buttons, mute/solo at
   rest, combo boxes, menu buttons, mode chips, text fields, value boxes and editable values (the
   user moved fields from recessed to raised, variant B, on 2026-11-11). A 1-pixel top light (white
-  9 %, 1.54:1 on panel) and a 2-pixel soft shadow under the body (black 55 % fading out).
+  5 %) and a tight blurred drop shadow (black 35 %, 1 px down, 3 px blur) that falls mostly in the
+  strip under the body. T18 Phase 3 (2026-11-21, user choice "C" of a shadow study) replaced the
+  earlier hard two-line shadow (black 55 % then 24 %) and the 9 % top light as dated.
 - **Recessed** — only travels and tracks other controls sit in: fader grooves and segment tracks.
   An inner top shadow (black 50 % over 3 px) and a 1-pixel bottom light (white 7 %).
 - **One body height.** Raised and recessed controls share `controlBody`, 2 px shorter than the
@@ -196,9 +247,9 @@ carries a control's shape; soft depth does, painted by the primitive helper
 - Checkboxes keep their `controlEdge` box; knobs keep their cap shadow with a `divider` rim.
   Glyph-only buttons (tools, power, arm, monitor, tap) stay bare glyphs.
 
-Trade-off, accepted by the user: at rest the cues reach 1.54:1 (top light) and 1.38:1 (shadow
-against the body), below the always-on edge's 1.81:1; the label, the depth and the hover fill carry
-the target. Depth is a control's own, never a region rule or a card.
+Trade-off, accepted by the user: at rest the top light and the shadow are faint cues, below the
+always-on edge's 1.81:1 (fainter still since T18 Phase 3); the label, the depth and the hover fill
+carry the target. Depth is a control's own, never a region rule or a card.
 
 ## Separation
 

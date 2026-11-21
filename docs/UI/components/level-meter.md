@@ -3,19 +3,23 @@ name: Level meter
 kind: component
 reference: composer::style::paintLevelMeter, LevelMeterState
 status: shared
-impl: app
+impl: gallery
 tokens: [field, divider, accent, danger, secondary]
 used-in: [track-header, channel-strip, mixer]
-snapshot: snapshots/kit-gallery.png
+snapshot: snapshots/egui/t18-level-meter-1024.png
+api: ui::primitives::level_meter
+evidence: [t18-level-meter]
 ---
 
-> **Legacy reference (C++).** The symbols and code here describe the original Composer
-> implementation; they are not in this repository and are not an API. Clef builds this in
-> Rust + egui. See [README](../README.md) and the [UI contract](../contract.md).
+> **Migrated to Rust/egui (T18 Phase 3, 2026-11-21).** The Clef section at the end of this file is
+> the implementation contract. Earlier sections keep the legacy design intent; their C++ symbols are
+> not in this repository.
 
 # Level meter
 
 ## Clef T11
+
+*Superseded where it differs by the T18 Phase 3 section at the end of this file.*
 
 `strip_meter` and `header_meter` in `crates/ui/src/primitives/mixer.rs` paint the same stereo
 reading from the session. The mixer scale and fader share one mapping and draw ticks at +6, 0, −6,
@@ -45,3 +49,23 @@ L / R under it; in the mixer between the fader and the 14-pixel meter.
 ## Behaviour
 Smoothing, hold timing and dB conversion stay with the host on the message thread. A clip latches
 until clicked.
+
+## Clef Rust/egui — T18 Phase 3
+
+**API**
+
+```rust
+pub(crate) fn strip_meter(ui: &mut egui::Ui, name: &str, reading: Meter, shortcut: &str) -> bool;
+pub(crate) fn header_meter(ui: &mut egui::Ui, height: f32, name: &str, reading: Meter);
+pub(crate) fn master_header(ui: &mut egui::Ui, width: f32, reading: Meter);
+pub(crate) fn scale(ui: &mut egui::Ui);
+```
+
+Stereo bars on the fader's dB scale (`fader::fraction`, so meter and fader ticks line up), hold
+ticks, and a `danger` clip strip. A clipped strip meter is a button named "Reset clip, <channel>"
+that clears it; header meters are read-only. Moved out of `mixer.rs` unchanged in look.
+
+**States:** silent, mid level with holds, clipped.
+
+**Evidence:** gallery `snapshots/egui/t18-level-meter-{1024,760}.png` and `t18-level-meter-1024@2x.png`
+(Retina); accessible names checked by `gallery::tests::every_gallery_control_has_an_accessible_name`.

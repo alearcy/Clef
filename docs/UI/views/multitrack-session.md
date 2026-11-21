@@ -24,7 +24,8 @@ The current Clef workspace extends T03 to ordered instrument tracks. The
 
 ## Anatomy and Metrics
 
-Keep T03's 1024 × 640 initial content area, 760 × 480 minimum, project command row,
+Keep T03's 1024 × 640 initial content area, 760 × 480 minimum, the menu bar (T18 Phase 2,
+replacing the project command row; see [window](window.md)),
 project identity, unsaved indicator and explicit Enable/Disable Audio control.
 The workspace uses two top-aligned vertical regions: a 320-point preferred track
 list (240 at narrow widths) and selected-track details filling the remainder.
@@ -147,13 +148,37 @@ or an active drag.
 
 See [T09](../../specs/T09-arrangement-editing.md) for scope and verification.
 
+## T40 adjacent tracks, scrolling and zoom
+
+- Track rows touch: no spacing and no divider. Each header starts with a 4-point stripe in the
+  track colour; the selected header keeps the [selection edge](../components/selection-edge.md).
+  In each header, the name, take chip, arm button and meter sit in visual and focus order, with
+  the meter on the right edge.
+- One uniform track height for every track, 24–320 points (default 44), saved with the project.
+  Below 44 the caption line hides; clip titles hide below 32 so the note marks stay readable.
+  Take lanes keep their own heights.
+- The rows scroll inside the surface (no egui scroll area): wheel and trackpad scroll tracks and
+  time, ⌘-wheel or pinch zooms time at the pointer, ⌘⇧-wheel steps the track height (×1.25) at
+  the pointer row. A [vertical bar](../components/scroll-zoom-bars.md) beside the rows scrolls
+  tracks and steps their height; the horizontal bar under the Master lane scrolls and zooms
+  time. Fit width and Fit height glyphs follow Snap; their commands are Fit Arrangement to
+  Width and Fit Arrangement to Height in Commands.
+- One playhead: a single line from the top of the ruler through every visible track and take
+  lane to the bottom of the Master lane.
+- Clips use their track colour with labels from `foreground_on`. New tracks take the next of
+  the nine track hues; projects that predate colours receive them in track order.
+- Evidence: `snapshots/egui/t40-arrangement-five-*.png`, `t40-arrangement-height-24-*.png`,
+  `t40-arrangement-height-160-*.png`; frame test
+  `arrangement_and_roll_each_paint_one_continuous_playhead`.
+
 ## Commands and Accessibility
 
-The project command row exposes Undo, Redo and the revision slider through the
-[Edit History](edit-history.md) menu and window.
+The menu bar's Edit menu exposes Undo, Redo and the revision slider through the
+[Edit History](edit-history.md) window.
 
-Project/track/recovery controls use the shared command definitions, enablement,
-dispatch, command search and session shortcut reassignment. Parameterized track
+Project/track/recovery controls use the shared command registry (`crates/ui/src/commands.rs`):
+names, enablement, dispatch, the [command palette](command-palette.md) and shortcut remapping
+saved in the global preferences (T18 Phase 2). Parameterized track
 selection/name actions use stable IDs. Up/Down in a focused row navigates tracks;
 text fields retain their own editing/navigation. Names, lifecycle states, selected
 state and recovery actions are exposed through AccessKit. Keyboard and pointer
@@ -174,7 +199,7 @@ checks, native measurements and outstanding listening/physical-MIDI evidence.
 ```text
 surface multitrack-session (1024 x 640, min 760 x 480)
   column gap=workspacePadding pad=workspacePadding
-    row wrap hug: project commands
+    row fixed(menuBarHeight): menu bar (File … Window | Commands…, Settings)
     row hug: project identity + unsaved status
     row wrap hug: audio command + audio state
     row fill top-aligned
@@ -194,21 +219,26 @@ this document does not claim that they already exist as Rust theme tokens.
 
 | Primitive | Role | Commands/state | Current evidence |
 | --- | --- | --- | --- |
-| text-button | Project, track, audio and recovery actions | Shared registry; enabled/disabled | Provisional app widgets |
-| text-field | Rename and project path | Enter/escape/staged text | Provisional app widgets |
-| list-row | Track identity/plugin/status | Stable-ID selection; long/missing/quarantined | App::track_row; observed AX/screen |
-| selection-edge | Selection distinct from focus | Selected and keyboard-focused | Inline app painter |
-| notice-box | Once-on-open quarantine information | Continue / Show Quarantined Plugins | Observed app modal |
-| window-frame | Clef settings/pickers/recovery dialogs | Close, keyboard and modal focus | Provisional egui containers |
-| caption | Identity, status and diagnostics | Heading/body/secondary/unavailable | Provisional styles |
-| menu-button | Inherited Audio/MIDI setting selectors | Device/rate/buffer selection | Existing T03 raw controls |
+| text-button | Project, track, audio and recovery actions | Shared registry; enabled/disabled | `TextButton` (T18 gallery) |
+| text-field | Rename and project path | Enter/escape/staged text | `TextField` (T18 gallery); inline take-lane rename still provisional |
+| list-row | Track identity/plugin/status | Stable-ID selection; long/missing/quarantined | `ListRow::header` via `App::track_row` |
+| selection-edge | Selection distinct from focus | Selected and keyboard-focused | `paint::selection_edge` |
+| notice-box | Once-on-open quarantine information | Continue / Show Quarantined Plugins | `NoticeBox` with plugin/track/reason rows |
+| window-frame | Clef settings/pickers/recovery dialogs | Close, keyboard and modal focus | `ToolWindow` / `frame()` |
+| caption | Identity, status and diagnostics | Heading/body/secondary/unavailable | `primitives::text` |
+| menu-button | Audio/MIDI selectors, record mode, snap | Device/rate/buffer/mode selection | `menu_button` |
+| scroll-zoom-bars | Arrangement and roll time navigation | Offset and ×1.25 zoom steps | `transport::navigation` over the horizontal bar |
 
 - [x] Functional layout/commands and AccessKit names observed.
 - [x] Long-name truncation and actual minimum-width resizing exercised.
-- [ ] Theme/font/token implementation matches the contract.
-- [ ] Required primitives have exact Rust contracts, gallery states and goldens.
-- [ ] Surface is recomposed without raw egui controls or inline painting.
-- [ ] 1024/760 state snapshots are committed and reviewed as visual acceptance.
+- [x] Theme/font/token implementation matches the contract (T18 Phase 1, token parity tests).
+- [x] Required primitives have exact Rust contracts, gallery states and goldens (T18 Phase 1).
+- [ ] Surface is recomposed without raw egui controls or inline painting. T18 Phase 1 replaced
+  the controls the eleven primitives cover; menus, segmented controls, value sliders, slot and tap
+  buttons, the "Edit" menu and the editing surfaces remain (T18 Phase 2 and
+  [T40](../../specs/T40-editing-surfaces-cleanup.md)).
+- [x] 1024/760 state snapshots regenerated on 2026-11-21 after adoption; awaiting the user's
+  visual acceptance.
 
 The unchecked items are the explicit [UI contract](../contract.md) / T18 dependency,
 not a green check inferred from `cargo test` or an observed functional screenshot.

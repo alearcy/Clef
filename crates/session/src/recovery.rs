@@ -457,6 +457,7 @@ mod tests {
     fn recorded_project() -> Project {
         let mut project = Project {
             tracks: vec![Track {
+                colour: Some(clef_model::project::TRACK_COLOURS[0]),
                 id: 1,
                 name: "Lead".into(),
                 plugin: None,
