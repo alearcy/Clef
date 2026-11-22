@@ -1,7 +1,7 @@
 # T43 — Instruments with Several Audio Buses
 
-- **Status** — Todo — 2026-11-22: specification approved by the user; implementation follows
-  T41.
+- **Status** — Done — 2026-11-22: implemented, verified automatically and confirmed by the user
+  in the app; closed.
 - **Priority** — P1, right after T41 (user decision).
 - **Task** — [T43](../../TASKS.md)
 - **Dependencies** — Follows [T41](T41-session-window-layout.md) round 4, where the cause was
@@ -72,3 +72,56 @@ None at drafting time.
 
 - 2026-11-22 — Cause found during T41 round 4. Interview with the user. Specification drafted
   and approved.
+- 2026-11-22 — Implemented after committing T41 round 4 (`0c46c5e`); automated verification
+  passed; awaiting the user's listening check.
+
+## Implementation notes
+
+- VST3 (`native/vst3_bridge.cpp`): `instrument_buses` picks the main output (first bus of type
+  main, else 0), asks stereo on it and keeps the other buses' own arrangements, then accepts the
+  layout the plug-in keeps (mono main is copied to both sides; more than two channels is refused
+  with the count). Up to 128 output and 32 input buses of at most 32 channels; Kontakt 7 declares
+  59 output buses. Inactive outputs point at one preallocated scratch block and every input
+  except an effect's main one at the silent block; `ProcessData` lists every bus. The effect
+  rules moved unchanged into `effect_buses`; the input role is the loaded role (`effect_role`).
+- CLAP (`crates/plugin-host/src/clap_host.rs`): `instrument_main_output` picks the port flagged
+  main (else 0) and checks mono or stereo and the channel limits; `ClapAudio` keeps a buffer per
+  channel of every port, gives instrument inputs constant silence and returns the main port
+  (mono duplicated).
+- Failures (`crates/session`): a failed load records `LoadFailure { sequence, track, instrument,
+  reason }` in the snapshot (latest 32) and the track's `TrackView::load_error`, cleared when
+  another load starts. The UI gathers new sequences into one `NoticeBox` and shows the error in
+  the inspector.
+- Fixtures: `clef-multi-bus-fixture` and `clef-mono-main-fixture` (VST3, patch
+  [0004](../../patches/vst3-host/0004-clef-multi-bus-fixture.patch)) and `multi-bus-fixture` and
+  `mono-main-fixture` (CLAP, `fixtures/clap-latency`): four outputs, auxiliary outputs written at
+  0.9, a sidechain that must arrive silent. Bundled by `scripts/t43_bundle_multi_bus_fixtures.py`.
+  The scanner is unchanged: the VST3 fixtures have no subcategories and a sidechain, so its
+  legacy heuristic does not list them, and the tests load them by path and class ID.
+
+## Verification
+
+Automated (2026-11-22): `cargo fmt --all --check` and `cargo clippy --all-targets --locked --
+-D warnings` are clean. `cargo test --locked` reports 291 passed and 30 ignored. New tests:
+- `t43_instruments_play_their_main_output_in_mono_or_stereo_only` (CLAP layout: main selection,
+  surround and oversized ports refused);
+- `t43_load_failures_share_one_notice` (one notice for three failures, OK dismisses, inspector
+  line).
+
+Native, ignored by default, all passed:
+- `native_t43_multi_bus_fixtures_play_their_main_output` (VST3 and CLAP, multi-bus and mono main:
+  the note is heard on the main output only, at 0.25 on both sides; the sidechain arrives
+  silent);
+- `native_t43_installed_multi_bus_instruments_load` (Kontakt 7, Opus, SINE Player and Falcon load
+  through New Tracks with audio running);
+- `native_t43_failed_loads_are_reported_per_track`.
+
+The existing TestSynth, T08, T10, T12 and insert native regressions passed. One exception:
+`clef-engine` `a_restart_request_is_served_off_the_processing_thread` fails the same way on the
+committed baseline without these changes (three runs out of three). It is not caused by T43.
+
+Not covered: the VST3 surround refusal has no fixture (the CLAP rule is unit-tested; the VST3
+branch was reviewed in code), and nothing yet checks by ear that the commercial instruments play.
+
+Listening: the user loaded the previously refused instruments through New Tracks in the running
+app and confirmed they work (2026-11-22).

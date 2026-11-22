@@ -88,3 +88,16 @@ The new CLAP fixture is Clef-owned Rust using the host's existing pinned Clack
 revision; it implements real latency/restart notifications and the same impulse
 behavior. Run `scripts/t02_latency_probe.py` once per bundled format after building
 Clef. Reports and limits are linked from the [T02 verification](../../docs/specs/T02-engine-validation.md#completion--2026-11-17).
+
+## Clef Multi-Bus Fixture Variants — 2026-11-22
+
+[Patch0004](0004-clef-multi-bus-fixture.patch) changes only the upstream test-plugin crate,
+on top of Patch0003. SHA256: `fdff9a7de1ca53af0105691cee247d3edb0a461e0851b5c769b485e226452a69`.
+For [T43](../../docs/specs/T43-multi-bus-instruments.md), the opt-in
+`clef-multi-bus-fixture` feature turns the Clef latency fixture into an instrument with four
+stereo output buses (bus 0 main, the others auxiliary and written at 0.9) and one stereo
+auxiliary sidechain input that must arrive silent; `clef-mono-main-fixture` adds a mono main
+output that refuses stereo. Default TestSynth classes and the existing fixture variants are
+unchanged. Build and bundle them with the commands in `scripts/t43_bundle_multi_bus_fixtures.py`;
+the script writes ignored bundles under `validation-output/fixtures/` and installs nothing.
+Reverse patch applicability against the vendored source was checked.

@@ -124,8 +124,16 @@ Snapshots: `snapshots/egui/t41-{session,editor,mixer,search,fit}-{1024,760}.png`
   destination's (its bus, else Master). The inspector shows the track name, the instrument
   (Choose Instrument, Restart, Reactivate, Show Quarantined Plugins) and the record mode; rename,
   move and remove live on the header and in the Track menu, plugin editors open from their slot.
+  After a failed load the inspector shows "Could not load <instrument>: <reason>" in `danger`
+  under the state until another load starts (T43).
 - **New Tracks…** (tool-row "+", Track menu): number of tracks, Instrument or Bus, a name
-  (numbered when more than one), and for instruments an optional plugin loaded on each.
+  (numbered when more than one), and for instruments an optional plugin loaded on each. While
+  the plugin scan it starts is running, the Instrument menu reads "Scanning…", disabled, with a
+  spinner. The menu is a [search list](../components/search-list.md) (T41 round 6), as are the
+  insert effect picker and Choose Instrument.
+- **Load failure notice** (T43): a [notice box](../components/notice-box.md) "An instrument could
+  not load" (or "Some instruments…") with Instrument, Track and Reason rows and OK. Failures that
+  arrive while it is open, such as the other tracks of one New Tracks request, join it.
 - **Project Format…** (transport readout, Transport menu): sample rate (the project's audio
   override; audio restarts; a refused rate changes nothing) and recording bit depth (16, 24 or
   32-bit float, saved with the project for audio recording).

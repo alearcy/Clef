@@ -52,7 +52,7 @@ the band's "+" is a flat `plus` glyph in `create` orange, in the global lanes' "
 **API**
 
 ```rust
-SearchField::new(&mut text, "Find track").hint(..).shortcut("⌘F").width(240.0).id(id).show(ui) -> egui::Response
+SearchField::new(&mut text, "Find track").shortcut("⌘F").width(240.0).id(id).show(ui) -> egui::Response
 ```
 
 The [text field](text-field.md) in its search form (`TextField::search`): the 12-point `search`

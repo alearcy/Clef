@@ -61,6 +61,9 @@ pub fn choice(ui: &mut egui::Ui, label: &str, selected: bool) -> bool;
 
 Raised body like the text button; while its menu is open the body stays pressed. The menu anchors
 under the button and is a [menu](menus.md) (`menu::under`, T18 Phase 2); it closes on a click.
+`search_menu_button(ui, id, name, value, enabled, menu)` (T41 round 6) hosts a
+[search list](search-list.md): clicks inside keep the menu open, and it closes when `menu`
+returns `Some` (a pick or a cancel) or on a click outside.
 `choice` is a `menu::Item` ticked when it is the current value. Never truncates: width hugs caption
 and value.
 

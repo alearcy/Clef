@@ -1,0 +1,233 @@
+
+--- a/test-plugin/Cargo.toml
++++ b/test-plugin/Cargo.toml
+@@ -16,3 +16,7 @@ vst3 = { workspace = true }
+ [features]
+ clef-latency-fixture = []
+ clef-insert-fixture = ["clef-latency-fixture"]
++# Clef T43: an instrument with four stereo outputs (bus 0 main) and a stereo sidechain input.
++clef-multi-bus-fixture = ["clef-latency-fixture"]
++# Clef T43: the multi-bus instrument with a mono main output that refuses stereo.
++clef-mono-main-fixture = ["clef-multi-bus-fixture"]
+
+--- a/test-plugin/src/clef_latency.rs
++++ b/test-plugin/src/clef_latency.rs
+@@ -4,6 +4,59 @@ use std::thread::{self, ThreadId};
+ 
+ const PARAM: u32 = 9000;
+ pub(super) const EFFECT: bool = cfg!(feature = "clef-insert-fixture");
++/// T43: four output buses (0 is main) and one auxiliary sidechain input.
++pub(super) const MULTI: bool = cfg!(feature = "clef-multi-bus-fixture");
++/// T43: the multi-bus variant's main output is mono and refuses stereo.
++pub(super) const MONO: bool = cfg!(feature = "clef-mono-main-fixture");
++pub(super) const OUTPUTS: i32 = if MULTI { 4 } else { 1 };
++/// What the auxiliary outputs carry: a host that plays them is heard at this level.
++const AUX_LEVEL: f32 = 0.9;
++
++/// Channels of output bus `index`.
++pub(super) fn output_channels(index: i32) -> i32 {
++    if MONO && index == 0 {
++        1
++    } else {
++        2
++    }
++}
++
++/// Describes the multi-bus variant's audio buses.
++///
++/// # Safety
++/// `bus` must point to a writable `BusInfo`.
++pub(super) unsafe fn multi_bus_info(dir: BusDirection, index: i32, bus: *mut BusInfo) -> tresult {
++    let output = dir as BusDirections == BusDirections_::kOutput;
++    if index < 0 || index >= if output { OUTPUTS } else { 1 } {
++        return kInvalidArgument;
++    }
++    let bus = &mut *bus;
++    bus.mediaType = MediaTypes_::kAudio as MediaType;
++    bus.direction = dir;
++    bus.channelCount = if output { output_channels(index) } else { 2 };
++    let main = output && index == 0;
++    copy_wstring(
++        if main {
++            "Main"
++        } else if output {
++            "Aux"
++        } else {
++            "Sidechain"
++        },
++        &mut bus.name,
++    );
++    bus.busType = if main {
++        BusTypes_::kMain
++    } else {
++        BusTypes_::kAux
++    } as BusType;
++    bus.flags = if main {
++        BusInfo_::BusFlags_::kDefaultActive as u32
++    } else {
++        0
++    };
++    kResultOk
++}
+ struct Delay {
+     samples: [[f32; 2]; 257],
+     cursor: usize,
+@@ -139,18 +192,59 @@ impl Fixture {
+             return kInvalidArgument;
+         }
+         let data = &*data;
+-        if !(0..=128).contains(&data.numSamples) || data.numOutputs != 1 || data.outputs.is_null() {
++        if !(0..=128).contains(&data.numSamples)
++            || data.numOutputs != OUTPUTS
++            || data.outputs.is_null()
++        {
+             return kInvalidArgument;
+         }
+         let output = &*data.outputs;
+-        if output.numChannels != 2 || output.__field0.channelBuffers32.is_null() {
++        let main_channels = output_channels(0);
++        if output.numChannels != main_channels || output.__field0.channelBuffers32.is_null() {
+             return kInvalidArgument;
+         }
+         let left = *output.__field0.channelBuffers32;
+-        let right = *output.__field0.channelBuffers32.add(1);
++        let right = *output
++            .__field0
++            .channelBuffers32
++            .add(main_channels as usize - 1);
+         if left.is_null() || right.is_null() {
+             return kInvalidArgument;
+         }
++        if MULTI {
++            // The sidechain must arrive silent, and every auxiliary output is written so a host
++            // that mixes them in is caught.
++            if data.numInputs != 1 || data.inputs.is_null() || (*data.inputs).numChannels != 2 {
++                return kInvalidArgument;
++            }
++            let sidechain = (*data.inputs).__field0.channelBuffers32;
++            for channel in 0..2 {
++                let samples = if sidechain.is_null() {
++                    ptr::null_mut()
++                } else {
++                    *sidechain.add(channel)
++                };
++                if !samples.is_null()
++                    && (0..data.numSamples as usize).any(|i| *samples.add(i) != 0.0)
++                {
++                    return kInvalidArgument;
++                }
++            }
++            for bus in 1..OUTPUTS as usize {
++                let aux = &*data.outputs.add(bus);
++                if aux.numChannels != 2 || aux.__field0.channelBuffers32.is_null() {
++                    return kInvalidArgument;
++                }
++                for channel in 0..2 {
++                    let samples = *aux.__field0.channelBuffers32.add(channel);
++                    if !samples.is_null() {
++                        for i in 0..data.numSamples as usize {
++                            *samples.add(i) = AUX_LEVEL;
++                        }
++                    }
++                }
++            }
++        }
+         let mut input = [[0.0_f32; 2]; 128];
+         if EFFECT {
+             if data.numInputs != 1 || data.inputs.is_null() {
+
+--- a/test-plugin/src/lib.rs
++++ b/test-plugin/src/lib.rs
+@@ -2288,7 +2288,11 @@ impl Class for TestSynthSingle {
+ }
+ 
+ impl TestSynthSingle {
+-    const CID: TUID = if clef_latency::EFFECT {
++    const CID: TUID = if clef_latency::MONO {
++        uid(0x434C4546, 0x4D554C54, 0x49425553, 0x00000002)
++    } else if clef_latency::MULTI {
++        uid(0x434C4546, 0x4D554C54, 0x49425553, 0x00000001)
++    } else if clef_latency::EFFECT {
+         uid(0x434C4546, 0x494E5345, 0x52544658, 0x00000001)
+     } else {
+         uid(0x54455354, 0x53594E54, 0x53494E47, 0x00000001)
+@@ -2354,6 +2358,13 @@ impl IComponentTrait for TestSynthSingle {
+         if clef_latency::EFFECT {
+             return i32::from(media_type as MediaTypes == MediaTypes_::kAudio);
+         }
++        if clef_latency::MULTI && media_type as MediaTypes == MediaTypes_::kAudio {
++            return if dir as BusDirections == BusDirections_::kOutput {
++                clef_latency::OUTPUTS
++            } else {
++                1
++            };
++        }
+         synth_bus_count(media_type, dir)
+     }
+     unsafe fn getBusInfo(
+@@ -2363,6 +2374,9 @@ impl IComponentTrait for TestSynthSingle {
+         index: i32,
+         bus: *mut BusInfo,
+     ) -> tresult {
++        if clef_latency::MULTI && media_type as MediaTypes == MediaTypes_::kAudio {
++            return clef_latency::multi_bus_info(dir, index, bus);
++        }
+         if clef_latency::EFFECT && dir as BusDirections == BusDirections_::kInput {
+             if media_type as MediaTypes != MediaTypes_::kAudio {
+                 return kInvalidArgument;
+@@ -2419,6 +2433,23 @@ impl IAudioProcessorTrait for TestSynthSingle {
+         outputs: *mut SpeakerArrangement,
+         num_outs: i32,
+     ) -> tresult {
++        if clef_latency::MULTI {
++            // Stereo everywhere, except that the mono variant keeps its mono main output.
++            let ok = num_ins == 1
++                && num_outs == clef_latency::OUTPUTS
++                && !inputs.is_null()
++                && !outputs.is_null()
++                && *inputs == SpeakerArr::kStereo
++                && (0..num_outs as usize).all(|i| {
++                    *outputs.add(i)
++                        == if clef_latency::output_channels(i as i32) == 1 {
++                            SpeakerArr::kMono
++                        } else {
++                            SpeakerArr::kStereo
++                        }
++                });
++            return if ok { kResultTrue } else { kResultFalse };
++        }
+         let input_ok = if clef_latency::EFFECT {
+             num_ins == 1 && !inputs.is_null() && *inputs == SpeakerArr::kStereo
+         } else {
+@@ -2435,6 +2466,18 @@ impl IAudioProcessorTrait for TestSynthSingle {
+         index: i32,
+         arr: *mut SpeakerArrangement,
+     ) -> tresult {
++        if clef_latency::MULTI {
++            let output = dir as BusDirections == BusDirections_::kOutput;
++            if index < 0 || index >= if output { clef_latency::OUTPUTS } else { 1 } {
++                return kInvalidArgument;
++            }
++            *arr = if output && clef_latency::output_channels(index) == 1 {
++                SpeakerArr::kMono
++            } else {
++                SpeakerArr::kStereo
++            };
++            return kResultOk;
++        }
+         if (dir as BusDirections == BusDirections_::kOutput || clef_latency::EFFECT) && index == 0 {
+             *arr = SpeakerArr::kStereo;
+             kResultOk
+@@ -2635,7 +2678,11 @@ impl IPluginFactoryTrait for Factory {
+             info.cid = TestSynthSingle::CID;
+             info.cardinality = PClassInfo_::ClassCardinality_::kManyInstances as i32;
+             copy_cstring("Audio Module Class", &mut info.category);
+-            let name = if clef_latency::EFFECT {
++            let name = if clef_latency::MONO {
++                "Clef VST3 Mono Main Fixture"
++            } else if clef_latency::MULTI {
++                "Clef VST3 Multi-Bus Fixture"
++            } else if clef_latency::EFFECT {
+                 "Clef VST3 Insert Fixture"
+             } else {
+                 "Clef Latency Fixture"

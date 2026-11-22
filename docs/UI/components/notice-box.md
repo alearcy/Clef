@@ -62,5 +62,6 @@ An `egui::Modal` with a `PANEL` frame, 1-point `DIVIDER` edge, 4-point corners, 
 560 wide. Warning glyph 16 in `DANGER`, `heading` text, body in `SECONDARY`, `section` column
 captions, up to twelve rows (`DANGER` / `TEXT` / `SECONDARY`) then "… and N more", buttons right
 aligned with the primary [text button](text-button.md) last. Return chooses the primary button;
-Escape or a click outside returns `Dismissed`. Used by the quarantine notice; the
+Escape or a click outside returns `Dismissed`. Used by the quarantine notice and the T43
+instrument load failure notice (Instrument, Track, Reason; OK); the
 [question form](../snapshots/egui/t18-notice-question-1024.png) is ready for the ARA render question.

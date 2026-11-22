@@ -9,6 +9,10 @@ crate-type = ["cdylib"]
 
 [features]
 effect-fixture = []
+# T43: an instrument with four stereo outputs (port 0 main) and a stereo sidechain input.
+multi-bus-fixture = []
+# T43: the multi-bus instrument with a mono main output.
+mono-main-fixture = ["multi-bus-fixture"]
 
 [dependencies]
 clack-plugin = { git = "https://github.com/prokopyl/clack", rev = "27ca28391b57a61bad4bb5099288a7bf9247350d" }

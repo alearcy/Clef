@@ -4,6 +4,59 @@ use std::thread::{self, ThreadId};
 
 const PARAM: u32 = 9000;
 pub(super) const EFFECT: bool = cfg!(feature = "clef-insert-fixture");
+/// T43: four output buses (0 is main) and one auxiliary sidechain input.
+pub(super) const MULTI: bool = cfg!(feature = "clef-multi-bus-fixture");
+/// T43: the multi-bus variant's main output is mono and refuses stereo.
+pub(super) const MONO: bool = cfg!(feature = "clef-mono-main-fixture");
+pub(super) const OUTPUTS: i32 = if MULTI { 4 } else { 1 };
+/// What the auxiliary outputs carry: a host that plays them is heard at this level.
+const AUX_LEVEL: f32 = 0.9;
+
+/// Channels of output bus `index`.
+pub(super) fn output_channels(index: i32) -> i32 {
+    if MONO && index == 0 {
+        1
+    } else {
+        2
+    }
+}
+
+/// Describes the multi-bus variant's audio buses.
+///
+/// # Safety
+/// `bus` must point to a writable `BusInfo`.
+pub(super) unsafe fn multi_bus_info(dir: BusDirection, index: i32, bus: *mut BusInfo) -> tresult {
+    let output = dir as BusDirections == BusDirections_::kOutput;
+    if index < 0 || index >= if output { OUTPUTS } else { 1 } {
+        return kInvalidArgument;
+    }
+    let bus = &mut *bus;
+    bus.mediaType = MediaTypes_::kAudio as MediaType;
+    bus.direction = dir;
+    bus.channelCount = if output { output_channels(index) } else { 2 };
+    let main = output && index == 0;
+    copy_wstring(
+        if main {
+            "Main"
+        } else if output {
+            "Aux"
+        } else {
+            "Sidechain"
+        },
+        &mut bus.name,
+    );
+    bus.busType = if main {
+        BusTypes_::kMain
+    } else {
+        BusTypes_::kAux
+    } as BusType;
+    bus.flags = if main {
+        BusInfo_::BusFlags_::kDefaultActive as u32
+    } else {
+        0
+    };
+    kResultOk
+}
 struct Delay {
     samples: [[f32; 2]; 257],
     cursor: usize,
@@ -139,17 +192,58 @@ impl Fixture {
             return kInvalidArgument;
         }
         let data = &*data;
-        if !(0..=128).contains(&data.numSamples) || data.numOutputs != 1 || data.outputs.is_null() {
+        if !(0..=128).contains(&data.numSamples)
+            || data.numOutputs != OUTPUTS
+            || data.outputs.is_null()
+        {
             return kInvalidArgument;
         }
         let output = &*data.outputs;
-        if output.numChannels != 2 || output.__field0.channelBuffers32.is_null() {
+        let main_channels = output_channels(0);
+        if output.numChannels != main_channels || output.__field0.channelBuffers32.is_null() {
             return kInvalidArgument;
         }
         let left = *output.__field0.channelBuffers32;
-        let right = *output.__field0.channelBuffers32.add(1);
+        let right = *output
+            .__field0
+            .channelBuffers32
+            .add(main_channels as usize - 1);
         if left.is_null() || right.is_null() {
             return kInvalidArgument;
+        }
+        if MULTI {
+            // The sidechain must arrive silent, and every auxiliary output is written so a host
+            // that mixes them in is caught.
+            if data.numInputs != 1 || data.inputs.is_null() || (*data.inputs).numChannels != 2 {
+                return kInvalidArgument;
+            }
+            let sidechain = (*data.inputs).__field0.channelBuffers32;
+            for channel in 0..2 {
+                let samples = if sidechain.is_null() {
+                    ptr::null_mut()
+                } else {
+                    *sidechain.add(channel)
+                };
+                if !samples.is_null()
+                    && (0..data.numSamples as usize).any(|i| *samples.add(i) != 0.0)
+                {
+                    return kInvalidArgument;
+                }
+            }
+            for bus in 1..OUTPUTS as usize {
+                let aux = &*data.outputs.add(bus);
+                if aux.numChannels != 2 || aux.__field0.channelBuffers32.is_null() {
+                    return kInvalidArgument;
+                }
+                for channel in 0..2 {
+                    let samples = *aux.__field0.channelBuffers32.add(channel);
+                    if !samples.is_null() {
+                        for i in 0..data.numSamples as usize {
+                            *samples.add(i) = AUX_LEVEL;
+                        }
+                    }
+                }
+            }
         }
         let mut input = [[0.0_f32; 2]; 128];
         if EFFECT {

@@ -37,11 +37,11 @@ thread_local char error_text[1024] = {};
 void require(bool ok, const char* message) { if (!ok) throw std::runtime_error(message); }
 bool success(tresult result) { return result == kResultOk || result == kResultTrue; }
 
-constexpr int32 max_audio_inputs = 32;
-bool stereo_buses(IComponent& component, IAudioProcessor& processor, bool effect) {
+constexpr int32 max_audio_inputs = 32, max_audio_outputs = 128, max_bus_channels = 32;
+// Effects: one stereo output, a stereo main input and auxiliary inputs.
+bool effect_buses(IComponent& component, IAudioProcessor& processor) {
     const auto count = component.getBusCount(kAudio, kInput);
-    if (component.getBusCount(kAudio, kOutput) != 1 ||
-        (effect ? (count < 1 || count > max_audio_inputs) : count != 0)) return false;
+    if (component.getBusCount(kAudio, kOutput) != 1 || count < 1 || count > max_audio_inputs) return false;
     std::array<SpeakerArrangement, max_audio_inputs> inputs {};
     inputs[0] = SpeakerArr::kStereo;
     for (int32 i = 1; i < count; ++i) {
@@ -51,7 +51,7 @@ bool stereo_buses(IComponent& component, IAudioProcessor& processor, bool effect
     }
     SpeakerArrangement output = SpeakerArr::kStereo;
     if (!success(processor.canProcessSampleSize(kSample32)) ||
-        !success(processor.setBusArrangements(effect ? inputs.data() : nullptr, count, &output, 1))) return false;
+        !success(processor.setBusArrangements(inputs.data(), count, &output, 1))) return false;
     BusInfo info {};
     if (!success(component.getBusInfo(kAudio, kOutput, 0, info)) || info.channelCount != 2) return false;
     for (int32 i = 0; i < count; ++i) {
@@ -59,6 +59,48 @@ bool stereo_buses(IComponent& component, IAudioProcessor& processor, bool effect
             (i == 0 ? info.channelCount != 2 : info.channelCount < 1 || info.channelCount > 32)) return false;
     }
     return true;
+}
+// Instruments (T43): any number of output buses, of which Clef plays the main one (the first of
+// type main, else bus 0) in stereo or mono, and any number of input buses, which stay inactive
+// and receive silence. Returns the main output bus; throws the reason a layout cannot be hosted.
+int32 instrument_buses(IComponent& component, IAudioProcessor& processor) {
+    const auto outputs = component.getBusCount(kAudio, kOutput);
+    const auto inputs = component.getBusCount(kAudio, kInput);
+    require(outputs >= 1, "VST3 instrument has no audio output");
+    if (outputs > max_audio_outputs || inputs > max_audio_inputs)
+        throw std::runtime_error("VST3 instrument declares " + std::to_string(outputs) + " output and " +
+            std::to_string(inputs) + " input buses; Clef hosts at most " + std::to_string(max_audio_outputs) +
+            " outputs and " + std::to_string(max_audio_inputs) + " inputs");
+    int32 main = -1;
+    for (int32 i = 0; i < outputs && main < 0; ++i) {
+        BusInfo info {};
+        if (success(component.getBusInfo(kAudio, kOutput, i, info)) && info.busType == kMain) main = i;
+    }
+    if (main < 0) main = 0;
+    std::array<SpeakerArrangement, max_audio_inputs> in {};
+    std::array<SpeakerArrangement, max_audio_outputs> out {};
+    for (int32 i = 0; i < inputs; ++i)
+        if (!success(processor.getBusArrangement(kInput, i, in[i]))) in[i] = SpeakerArr::kStereo;
+    for (int32 i = 0; i < outputs; ++i)
+        if (i == main || !success(processor.getBusArrangement(kOutput, i, out[i]))) out[i] = SpeakerArr::kStereo;
+    require(success(processor.canProcessSampleSize(kSample32)), "VST3 does not support float32 processing");
+    // A plug-in may refuse stereo and keep its own layout: the bus info read below is the
+    // layout it processes.
+    processor.setBusArrangements(in.data(), inputs, out.data(), outputs);
+    for (int32 i = 0; i < outputs; ++i) {
+        BusInfo info {};
+        require(success(component.getBusInfo(kAudio, kOutput, i, info)), "VST3 output unavailable");
+        if (i == main && info.channelCount != 1 && info.channelCount != 2)
+            throw std::runtime_error("VST3 main output has " + std::to_string(info.channelCount) +
+                " channels; Clef plays mono or stereo instruments only");
+        require(info.channelCount >= 0 && info.channelCount <= max_bus_channels, "VST3 output bus has too many channels");
+    }
+    for (int32 i = 0; i < inputs; ++i) {
+        BusInfo info {};
+        require(success(component.getBusInfo(kAudio, kInput, i, info)) &&
+            info.channelCount >= 0 && info.channelCount <= max_bus_channels, "VST3 input bus unavailable");
+    }
+    return main;
 }
 template<class F> int guarded(F&& f) noexcept {
     try { f(); return 1; }
@@ -334,8 +376,13 @@ struct Bridge {
     std::array<float*, 2> input_pointers {input_channels[0].data(), input_channels[1].data()};
     std::array<AudioBusBuffers, max_audio_inputs> inputs {};
     std::array<float, block> silent_input {};
-    std::array<float*, 32> silent_pointers {};
-    AudioBusBuffers output {};
+    std::array<float*, max_bus_channels> silent_pointers {};
+    // Every output bus; the main one writes `channels`, the others a shared scratch block.
+    std::array<AudioBusBuffers, max_audio_outputs> outputs {};
+    std::array<float, block> scratch {};
+    std::array<float*, max_bus_channels> scratch_pointers {};
+    int32 main_output = 0;
+    bool effect_role = false, mono_main = false;
     std::vector<uint8_t> snapshot;
 
     void main_thread() const { require(std::this_thread::get_id() == signals.main, "VST3 main-thread operation on wrong thread"); }
@@ -410,22 +457,28 @@ struct Bridge {
                     "VST3 component/controller connection failed");
             }
         }
-        require(stereo_buses(*component, *processor, effect), "unsupported VST3 stereo audio bus layout");
-        require(success(component->activateBus(kAudio, kOutput, 0, true)), "VST3 output activation failed");
+        effect_role = effect;
         if (effect) {
-            data.numInputs = component->getBusCount(kAudio, kInput);
-            silent_pointers.fill(silent_input.data());
-            for (int32 i = 0; i < data.numInputs; ++i) {
-                BusInfo info {};
-                require(success(component->getBusInfo(kAudio, kInput, i, info)), "VST3 input unavailable");
-                require(success(component->activateBus(kAudio, kInput, i, i == 0)), "VST3 input activation failed");
-                auto& input = inputs[i];
-                input.numChannels = info.channelCount;
-                input.channelBuffers32 = i == 0 ? input_pointers.data() : silent_pointers.data();
-                input.silenceFlags = (uint64_t{1} << info.channelCount) - 1;
-            }
-            data.inputs = inputs.data();
+            require(effect_buses(*component, *processor), "unsupported VST3 stereo audio bus layout");
+            main_output = 0;
+        } else main_output = instrument_buses(*component, *processor);
+        require(success(component->activateBus(kAudio, kOutput, main_output, true)), "VST3 output activation failed");
+        silent_pointers.fill(silent_input.data());
+        scratch_pointers.fill(scratch.data());
+        // An effect's main input carries the track; every other input (an effect's auxiliary
+        // inputs, an instrument's sidechain) stays inactive and receives silence.
+        data.numInputs = component->getBusCount(kAudio, kInput);
+        for (int32 i = 0; i < data.numInputs; ++i) {
+            BusInfo info {};
+            require(success(component->getBusInfo(kAudio, kInput, i, info)), "VST3 input unavailable");
+            const bool live = effect && i == 0;
+            require(success(component->activateBus(kAudio, kInput, i, live)), "VST3 input activation failed");
+            auto& input = inputs[i];
+            input.numChannels = info.channelCount;
+            input.channelBuffers32 = live ? input_pointers.data() : silent_pointers.data();
+            input.silenceFlags = (uint64_t{1} << info.channelCount) - 1;
         }
+        data.inputs = data.numInputs > 0 ? inputs.data() : nullptr;
         int32 note_buses = component->getBusCount(kEvent, kInput);
         require(note_buses >= (effect ? 0 : 1) && note_buses <= 32, "VST3 has no usable event input");
         for (int32 i = 0; i < note_buses; ++i)
@@ -440,8 +493,17 @@ struct Bridge {
                 if (success(midi->getMidiControllerAssignment(0, channel, int16(cc), id))) mapping[channel][cc] = id;
             }
         }
-        output.numChannels = 2; output.channelBuffers32 = pointers.data();
-        data.symbolicSampleSize = kSample32; data.numOutputs = 1; data.outputs = &output;
+        data.numOutputs = component->getBusCount(kAudio, kOutput);
+        for (int32 i = 0; i < data.numOutputs; ++i) {
+            BusInfo info {};
+            require(success(component->getBusInfo(kAudio, kOutput, i, info)), "VST3 output unavailable");
+            if (i != main_output)
+                require(success(component->activateBus(kAudio, kOutput, i, false)), "VST3 output deactivation failed");
+            outputs[i].numChannels = info.channelCount;
+            outputs[i].channelBuffers32 = i == main_output ? pointers.data() : scratch_pointers.data();
+        }
+        mono_main = outputs[main_output].numChannels == 1;
+        data.symbolicSampleSize = kSample32; data.outputs = outputs.data();
         data.inputEvents = &events; data.inputParameterChanges = &input_params;
         data.outputParameterChanges = &output_params; data.processContext = &context;
     }
@@ -537,7 +599,7 @@ struct Bridge {
         for (auto& channel : channels) channel.fill(0);
         for (auto& channel : input_channels) channel.fill(0);
         silent_input.fill(0);
-        inputs[0].silenceFlags = 3;
+        if (effect_role) inputs[0].silenceFlags = 3;
         require(success(processor->process(data)), "VST3 note cleanup process failed");
         auto result = processor->setProcessing(false);
         require(success(result) || result == kNotImplemented, "VST3 stopProcessing failed");
@@ -552,10 +614,10 @@ struct Bridge {
     void process(uint64_t position, const Midi* midi, size_t count, size_t frames,
                  const float* source, float* interleaved) {
         require(active && frames > 0 && frames <= block && count <= max_events, "invalid VST3 process block");
-        require((source != nullptr) == (data.numInputs > 0), "wrong VST3 input role");
+        require((source != nullptr) == effect_role, "wrong VST3 input role");
+        silent_input.fill(0);
         if (source) {
             inputs[0].silenceFlags = 0;
-            silent_input.fill(0);
             for (size_t i = 0; i < frames; ++i) {
                 input_channels[0][i] = source[i * 2];
                 input_channels[1][i] = source[i * 2 + 1];
@@ -607,9 +669,12 @@ struct Bridge {
         context.barPositionMusic = std::floor(context.projectTimeMusic / 4) * 4;
         context.state = ProcessContext::kPlaying | ProcessContext::kProjectTimeMusicValid
             | ProcessContext::kTempoValid | ProcessContext::kTimeSigValid | ProcessContext::kBarPositionValid | ProcessContext::kContTimeValid;
-        data.processMode = mode; data.numSamples = int32(frames); output.silenceFlags = 0;
+        data.processMode = mode; data.numSamples = int32(frames);
+        for (int32 i = 0; i < data.numOutputs; ++i) outputs[i].silenceFlags = 0;
         for (auto& channel : channels) channel.fill(0);
         require(success(processor->process(data)), "VST3 process failed");
+        // A mono main output plays on both sides.
+        if (mono_main) std::copy_n(channels[0].data(), frames, channels[1].data());
         for (int32 i = 0; i < output_params.getParameterCount(); ++i) {
             auto* queue = output_params.getParameterData(i); int32 offset; double value;
             auto n = queue->getPointCount();
@@ -724,7 +789,7 @@ int clef_vst_scan(const char* path, int include_effects, void (*entry)(const cha
                 auto inputs = component->getBusCount(kAudio, kInput);
                 instrument = categories.empty() && inputs == 0 && component->getBusCount(kEvent, kInput) > 0;
                 FUnknownPtr<IAudioProcessor> processor(component);
-                effect = include_effects && !instrument && processor && stereo_buses(*component, *processor, true);
+                effect = include_effects && !instrument && processor && effect_buses(*component, *processor);
                 component->terminate();
             }
         }

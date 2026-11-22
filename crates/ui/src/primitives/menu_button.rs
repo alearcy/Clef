@@ -19,6 +19,57 @@ pub fn menu_button<R>(
     enabled: bool,
     menu: impl FnOnce(&mut Ui) -> R,
 ) -> (Response, Option<R>) {
+    button(
+        ui,
+        id,
+        name,
+        caption,
+        value,
+        enabled,
+        PopupCloseBehavior::CloseOnClick,
+        menu,
+    )
+}
+
+/// T41 round 6: a menu button whose menu is a [search list](super::search_list): clicks
+/// inside the menu (its search field) keep it open; the menu closes on a click outside or when
+/// `menu` returns `Some` (a pick or a cancel).
+pub fn search_menu_button<R>(
+    ui: &mut Ui,
+    id: impl std::hash::Hash,
+    name: &str,
+    value: &str,
+    enabled: bool,
+    menu: impl FnOnce(&mut Ui) -> Option<R>,
+) -> (Response, Option<R>) {
+    let (response, inner) = button(
+        ui,
+        id,
+        name,
+        None,
+        value,
+        enabled,
+        PopupCloseBehavior::CloseOnClickOutside,
+        menu,
+    );
+    let inner = inner.flatten();
+    if inner.is_some() {
+        Popup::close_id(ui.ctx(), Popup::default_response_id(&response));
+    }
+    (response, inner)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn button<R>(
+    ui: &mut Ui,
+    id: impl std::hash::Hash,
+    name: &str,
+    caption: Option<&str>,
+    value: &str,
+    enabled: bool,
+    close: PopupCloseBehavior,
+    menu: impl FnOnce(&mut Ui) -> R,
+) -> (Response, Option<R>) {
     let font = text::font(text::BODY);
     let shown = format!("{value} ▾");
     let caption_width = caption.map_or(0.0, |caption| {
@@ -74,13 +125,10 @@ pub fn menu_button<R>(
             },
         );
     }
-    let inner = super::menu::show(
-        super::menu::under(&response).close_behavior(PopupCloseBehavior::CloseOnClick),
-        |ui| {
-            ui.set_min_width(width);
-            menu(ui)
-        },
-    );
+    let inner = super::menu::show(super::menu::under(&response).close_behavior(close), |ui| {
+        ui.set_min_width(width);
+        menu(ui)
+    });
     (response.on_hover_text(label), inner)
 }
 

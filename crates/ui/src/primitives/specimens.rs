@@ -59,6 +59,7 @@ pub const CASES: &[&str] = &[
     "glyph-toggle",
     "track-state",
     "search-field",
+    "search-list",
     "segment-display",
     "range-overlay",
     "fader",
@@ -86,6 +87,7 @@ pub struct Specimens {
     overlays: Vec<&'static str>,
     fields: [String; 3],
     searches: [String; 2],
+    lists: [String; 3],
     checks: [bool; 3],
     tab: usize,
     segments: [u8; 3],
@@ -211,6 +213,7 @@ impl Specimens {
             "glyph-toggle" => glyph_toggles(ui),
             "track-state" => track_states(ui),
             "search-field" => self.search_fields(ui),
+            "search-list" => self.search_lists(ui),
             "segment-display" => segment_displays(ui),
             "range-overlay" => range_overlays(ui),
             "fader" => mixer_controls(ui, &[Control::Fader]),
@@ -267,6 +270,44 @@ impl Specimens {
                 &["Editor", "Mixer", "FX Racks"],
                 &mut shown,
             );
+        });
+    }
+
+    /// T41 round 6: the highlight on the current choice, a filtered list, and no match.
+    fn search_lists(&mut self, ui: &mut Ui) {
+        use super::search_list::{Entry, show};
+        let entries = [
+            Entry::new("Kontakt 7 · VST3"),
+            Entry::new("Opus · VST3").current(true),
+            Entry::new("Falcon · VST3 · Quarantined").enabled(false),
+            Entry::new("SINE Player · VST3"),
+        ];
+        let [all, filtered, none] = &mut self.lists;
+        if filtered.is_empty() {
+            filtered.push_str("o");
+            none.push_str("zebra");
+        }
+        ui.horizontal_top(|ui| {
+            for (index, (label, search)) in
+                [("current", all), ("filtered", filtered), ("no match", none)]
+                    .into_iter()
+                    .enumerate()
+            {
+                ui.vertical(|ui| {
+                    ui.set_width(300.0);
+                    super::text::caption(ui, label);
+                    show(
+                        ui,
+                        egui::Id::new(("search-list-specimen", index)),
+                        search,
+                        "Search instruments",
+                        &entries,
+                        200.0,
+                        "No matching instruments.",
+                    );
+                });
+                ui.add_space(16.0);
+            }
         });
     }
 

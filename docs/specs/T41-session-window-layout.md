@@ -1,6 +1,6 @@
 # T41 — Session Window Layout Cleanup
 
-- **Status** — In Progress — 2026-11-22: round 4 (GUI review, Q1–Q7) drafted from the user's
+- **Status** — Done — 2026-11-22: rounds 1–6 implemented and confirmed by the user in the app; closed. 2026-11-22: round 4 (GUI review, Q1–Q7) drafted from the user's
   answers and approved by the user. 2026-11-22: round 3 (GUI review) approved by the user with the
   proposed defaults and implemented; awaiting the user's GUI check. 2026-11-22: round 2 (GUI review) approved by the user with the proposed defaults. 2026-11-21: Specification and proposed answers to the open questions
   approved by the user on 2026-11-21.
@@ -259,6 +259,27 @@ Q6, Q7. **No red outlines.** Debug builds outlined widgets in red for one frame 
     use positional IDs, so the drawer swapping one track's strip for another moves no ID. A
     gallery test fails on any red outline across those transitions.
 
+## Round 5 — New Tracks while plugins scan (2026-11-22)
+
+P1. Opening New Tracks with an empty catalog starts the plugin scan (about 10 seconds for the
+    user's 156 bundles). Until it ended, the Instrument menu offered only "None" and the caption
+    said "No instruments scanned yet". Now the menu reads "Scanning…" and is disabled, with a
+    spinner and "Scanning plugins in isolated processes…", until the scan ends. After the scan
+    an empty catalog says "No instruments found. Install a VST3 or CLAP instrument, then Window ›
+    Rescan Plugins." Keeping the catalog between launches belongs to T16.
+
+## Round 6 — Search and keyboard in plugin pickers (2026-11-22)
+
+User request after round 5, behaviour approved in the interview **(user)**.
+
+K1. The New Tracks instrument menu, the insert effect picker and Choose Instrument share one
+    [search list](../UI/components/search-list.md). It opens with the search field focused.
+    Typing filters by name and format. ↑/↓ move the highlight, starting on the current choice,
+    else the first match, and skipping disabled entries. Return picks; Escape closes without a
+    change; the pointer works as before. The list scrolls to keep the highlight visible.
+K2. The New Tracks menu stays open while the field is clicked and closes on a pick, a cancel
+    or a click outside (`search_menu_button`).
+
 ## Scope
 
 In scope: the items above, their UI documentation updates (transport bar, tool row, track header,
@@ -447,3 +468,10 @@ Not covered by automated tests: centring on a real window (egui places it), the 
 starting by itself in the user's session, and red outlines in transitions the test does not drive.
 
 GUI: pending the user's check of round 4 in the running app.
+
+Rounds 5 and 6 (2026-11-22): `cargo fmt --all --check` and clippy are clean, and `cargo test --locked` reports
+292 passed and 30 ignored. New tests: `arrows_skip_disabled_matches_and_return_picks_the_highlight`
+(search list); `new_tracks_keeps_the_chosen_instrument` now also drives the menu from the
+keyboard. New golden `t18-search-list-{1024,760}.png`; t12, t15 and t18 goldens re-rendered.
+GUI: the user checked New Tracks while scanning and the search lists in the running app and
+confirmed they work (2026-11-22).

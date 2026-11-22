@@ -16,3 +16,7 @@ vst3 = { workspace = true }
 [features]
 clef-latency-fixture = []
 clef-insert-fixture = ["clef-latency-fixture"]
+# Clef T43: an instrument with four stereo outputs (bus 0 main) and a stereo sidechain input.
+clef-multi-bus-fixture = ["clef-latency-fixture"]
+# Clef T43: the multi-bus instrument with a mono main output that refuses stereo.
+clef-mono-main-fixture = ["clef-multi-bus-fixture"]

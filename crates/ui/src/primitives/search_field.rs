@@ -32,11 +32,6 @@ impl<'a> SearchField<'a> {
         }
     }
 
-    pub fn hint(mut self, hint: &'a str) -> Self {
-        self.hint = hint;
-        self
-    }
-
     /// The live binding that focuses the field, shown while it is empty.
     pub fn shortcut(mut self, shortcut: &'a str) -> Self {
         self.shortcut = shortcut;

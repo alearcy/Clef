@@ -12,6 +12,13 @@ use std::{
 };
 
 const EFFECT: bool = cfg!(feature = "effect-fixture");
+/// T43: four output ports (0 is main) and one sidechain input port.
+const MULTI: bool = cfg!(feature = "multi-bus-fixture");
+/// T43: the multi-bus variant's main output is mono.
+const MONO_MAIN: bool = cfg!(feature = "mono-main-fixture");
+const OUTPUTS: u32 = if MULTI { 4 } else { 1 };
+/// What the auxiliary outputs carry: a host that plays them is heard at this level.
+const AUX_LEVEL: f32 = 0.9;
 
 pub struct Fixture;
 pub struct Shared<'a> {
@@ -54,6 +61,20 @@ impl DefaultPluginFactory for Fixture {
         if EFFECT {
             return PluginDescriptor::new("dev.clef.insert-fixture", "Clef CLAP Insert Fixture")
                 .with_features([AUDIO_EFFECT, STEREO]);
+        }
+        if MONO_MAIN {
+            return PluginDescriptor::new(
+                "dev.clef.mono-main-fixture",
+                "Clef CLAP Mono Main Fixture",
+            )
+            .with_features([INSTRUMENT, MONO]);
+        }
+        if MULTI {
+            return PluginDescriptor::new(
+                "dev.clef.multi-bus-fixture",
+                "Clef CLAP Multi-Bus Fixture",
+            )
+            .with_features([INSTRUMENT, STEREO]);
         }
         PluginDescriptor::new("dev.clef.latency-fixture", "Clef CLAP Latency Fixture")
             .with_features([INSTRUMENT, STEREO])
@@ -131,6 +152,40 @@ impl<'a> PluginAudioProcessor<'a, Shared<'a>, Main<'a>> for Audio<'a> {
             return Err(PluginError::Message("process on main thread"));
         }
         let mut input = [[0.0; 2]; 128];
+        if MULTI {
+            // The sidechain must arrive silent; every auxiliary output is written so a host
+            // that mixes them in is caught.
+            let port = audio
+                .input_port(0)
+                .ok_or(PluginError::Message("missing sidechain"))?;
+            let channels = port
+                .channels()?
+                .into_f32()
+                .ok_or(PluginError::Message("expected f32"))?;
+            for channel in 0..2 {
+                let samples = channels
+                    .channel(channel)
+                    .ok_or(PluginError::Message("missing sidechain channel"))?;
+                if samples.iter().any(|&sample| sample != 0.0) {
+                    return Err(PluginError::Message("sidechain is not silent"));
+                }
+            }
+            for index in 1..OUTPUTS {
+                let mut port = audio
+                    .output_port(index as usize)
+                    .ok_or(PluginError::Message("missing auxiliary output"))?;
+                let mut channels = port
+                    .channels()?
+                    .into_f32()
+                    .ok_or(PluginError::Message("expected f32"))?;
+                for channel in 0..2 {
+                    channels
+                        .channel_mut(channel)
+                        .ok_or(PluginError::Message("missing auxiliary channel"))?
+                        .fill(AUX_LEVEL);
+                }
+            }
+        }
         if EFFECT {
             let port = audio
                 .input_port(0)
@@ -189,7 +244,7 @@ impl<'a> PluginAudioProcessor<'a, Shared<'a>, Main<'a>> for Audio<'a> {
                 old
             };
         }
-        for channel in 0..2 {
+        for channel in 0..if MONO_MAIN { 1 } else { 2 } {
             let destination = channels
                 .channel_mut(channel)
                 .ok_or(PluginError::Message("missing output channel"))?;
@@ -210,9 +265,41 @@ impl<'a> PluginAudioProcessor<'a, Shared<'a>, Main<'a>> for Audio<'a> {
 }
 impl PluginAudioPortsImpl for Main<'_> {
     fn count(&self, input: bool) -> u32 {
-        u32::from(!input || EFFECT)
+        if input {
+            u32::from(EFFECT || MULTI)
+        } else {
+            OUTPUTS
+        }
     }
     fn get(&self, index: u32, input: bool, writer: &mut AudioPortInfoWriter) {
+        if MULTI {
+            let main = !input && index == 0;
+            if index < if input { 1 } else { OUTPUTS } {
+                writer.set(&AudioPortInfo {
+                    id: ClapId::new(index + if input { 100 } else { 0 }),
+                    name: if main {
+                        b"Main"
+                    } else if input {
+                        b"Sidechain"
+                    } else {
+                        b"Aux"
+                    },
+                    channel_count: if main && MONO_MAIN { 1 } else { 2 },
+                    flags: if main {
+                        AudioPortFlags::IS_MAIN
+                    } else {
+                        AudioPortFlags::empty()
+                    },
+                    port_type: Some(if main && MONO_MAIN {
+                        AudioPortType::MONO
+                    } else {
+                        AudioPortType::STEREO
+                    }),
+                    in_place_pair: None,
+                });
+            }
+            return;
+        }
         if index == 0 && (!input || EFFECT) {
             writer.set(&AudioPortInfo {
                 id: ClapId::new(0),

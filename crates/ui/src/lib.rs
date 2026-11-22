@@ -40,6 +40,7 @@ mod primitives {
     pub mod range_overlay;
     pub mod scroll_zoom_bars;
     pub mod search_field;
+    pub mod search_list;
     pub mod segment_display;
     pub mod segmented;
     pub mod slot_button;
@@ -103,6 +104,8 @@ struct NewTracks {
     bus: bool,
     name: String,
     plugin: Option<Plugin>,
+    /// T41 round 6: the instrument menu's search text.
+    search: String,
 }
 
 impl Default for NewTracks {
@@ -112,6 +115,7 @@ impl Default for NewTracks {
             bus: false,
             name: String::new(),
             plugin: None,
+            search: String::new(),
         }
     }
 }
@@ -237,6 +241,10 @@ struct App {
     track_area_width: f32,
     /// T41: the open New Tracks dialog.
     new_tracks: Option<NewTracks>,
+    /// T43: instruments that could not load and are not acknowledged yet, as notice rows
+    /// (instrument, track, reason), and the last failure sequence taken from the session.
+    load_notice: Vec<[String; 3]>,
+    load_seen: u64,
     /// T41: the open Project Format dialog.
     project_format: Option<FormatDialog>,
     /// T41: the inspector's content height on the last frame; the left column sizes it.
@@ -335,6 +343,8 @@ impl App {
             panel: Default::default(),
             track_area_width: 1024.0,
             new_tracks: None,
+            load_notice: Vec::new(),
+            load_seen: 0,
             project_format: None,
             inspector_height: 0.0,
             mixer_ui: mixer::MixerUi::default(),
@@ -991,6 +1001,7 @@ impl App {
                 self.piano_roll_open = false;
             }
             self.view = view;
+            self.take_load_failures();
             self.startup.update(&self.view);
             if let Some(success) = completed {
                 self.actions_in_flight -= 1;
@@ -1239,6 +1250,52 @@ impl App {
         }
     }
 
+    /// T43: adds the session's new load failures to the pending notice; failures that arrive
+    /// while it is open (the other tracks of one New Tracks request) join it.
+    fn take_load_failures(&mut self) {
+        for failure in &self.view.load_failures {
+            if failure.sequence <= self.load_seen {
+                continue;
+            }
+            self.load_seen = failure.sequence;
+            let track = self
+                .view
+                .project
+                .tracks
+                .iter()
+                .find(|track| track.id == failure.track)
+                .map(|track| track.name.clone())
+                .unwrap_or_default();
+            self.load_notice
+                .push([failure.instrument.clone(), track, failure.reason.clone()]);
+        }
+    }
+
+    /// T43: the modal notice naming the instruments that could not load and why.
+    fn load_failure_notice(&mut self, ctx: &egui::Context) {
+        if self.load_notice.is_empty() {
+            return;
+        }
+        let heading = if self.load_notice.len() == 1 {
+            "An instrument could not load"
+        } else {
+            "Some instruments could not load"
+        };
+        if NoticeBox::new(
+            "load-failure-notice",
+            heading,
+            "The tracks keep no instrument. Choose another one, or the same one after fixing \
+             the cause.",
+            "OK ↩",
+        )
+        .rows(&["Instrument", "Track", "Reason"], &self.load_notice)
+        .show(ctx)
+        .is_some()
+        {
+            self.load_notice.clear();
+        }
+    }
+
     /// T41 round 2: opens the New Tracks dialog (R13).
     fn open_new_tracks(&mut self, ctx: &egui::Context) {
         self.new_tracks = Some(NewTracks::default());
@@ -1410,34 +1467,68 @@ impl App {
                 }
                 if !dialog.bus {
                     text::caption(ui, "Instrument");
-                    let current = dialog.plugin.as_ref().map_or_else(
-                        || "None".to_owned(),
-                        |p| format!("{} · {}", p.name, p.format),
-                    );
+                    // T41 round 5: the catalog fills when the scan this dialog started ends;
+                    // until then the menu waits and says so, instead of offering only None.
+                    let scanning = self.scan_job.is_some();
+                    let current = if scanning && dialog.plugin.is_none() {
+                        "Scanning…".to_owned()
+                    } else {
+                        dialog.plugin.as_ref().map_or_else(
+                            || "None".to_owned(),
+                            |p| format!("{} · {}", p.name, p.format),
+                        )
+                    };
                     let plugins = &self.catalog.plugins;
-                    let (_, chosen) = menu_button(
+                    // Entry 0 is None; entry n is plugin n - 1.
+                    let entries: Vec<_> = std::iter::once(
+                        primitives::search_list::Entry::new("None")
+                            .current(dialog.plugin.is_none()),
+                    )
+                    .chain(plugins.iter().map(|plugin| {
+                        primitives::search_list::Entry::new(format!(
+                            "{} · {}",
+                            plugin.name, plugin.format
+                        ))
+                        .current(dialog.plugin.as_ref() == Some(plugin))
+                    }))
+                    .collect();
+                    let search = &mut dialog.search;
+                    let (_, chosen) = primitives::menu_button::search_menu_button(
                         ui,
                         "new-tracks-instrument",
                         "Instrument",
-                        None,
                         &current,
-                        true,
+                        !scanning,
                         |ui| {
-                            if choice(ui, "None", dialog.plugin.is_none()) {
-                                return Some(None);
-                            }
-                            plugins.iter().find_map(|plugin| {
-                                let label = format!("{} · {}", plugin.name, plugin.format);
-                                choice(ui, &label, dialog.plugin.as_ref() == Some(plugin))
-                                    .then(|| Some(plugin.clone()))
-                            })
+                            ui.set_min_width(320.0);
+                            primitives::search_list::show(
+                                ui,
+                                ui.id().with("instrument-search"),
+                                search,
+                                "Search instruments",
+                                &entries,
+                                280.0,
+                                "No matching instruments.",
+                            )
                         },
                     );
-                    if let Some(Some(plugin)) = chosen {
-                        dialog.plugin = plugin;
+                    if let Some(primitives::search_list::Outcome::Picked(index)) = chosen {
+                        dialog.plugin = index.checked_sub(1).map(|index| plugins[index].clone());
                     }
-                    if plugins.is_empty() {
-                        text::caption(ui, "No instruments scanned yet: Window › Rescan Plugins.");
+                    if chosen.is_some() {
+                        dialog.search.clear();
+                    }
+                    if scanning {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            text::caption(ui, "Scanning plugins in isolated processes…");
+                        });
+                    } else if plugins.is_empty() {
+                        text::caption(
+                            ui,
+                            "No instruments found. Install a VST3 or CLAP instrument, then \
+                             Window › Rescan Plugins.",
+                        );
                     }
                 }
                 ui.add_space(4.0);
@@ -1747,6 +1838,15 @@ impl App {
             text::danger(ui, state);
         } else {
             text::caption(ui, state);
+        }
+        // T43: why the last chosen instrument did not load, until another load starts.
+        if let Some(error) = self
+            .view
+            .state(track.id)
+            .map(|s| s.load_error.as_str())
+            .filter(|error| !error.is_empty())
+        {
+            text::danger(ui, error);
         }
         ui.horizontal_wrapped(|ui| {
             // Plugin editors open from their slot in the channel strip.
@@ -2081,28 +2181,92 @@ impl App {
         let mut open = true;
         let mut picked = None;
         let mut rescan = false;
-        ToolWindow::new("Choose Instrument").width(560.0).show(ctx, &mut open, |ui| {
-            SearchField::new(&mut self.plugin_search, "Search instruments").hint("Search instruments by name or format").show(ui);
-            ui.horizontal(|ui| {
-                if self.button(ui,Command::Rescan) { rescan = true; }
-                if TextButton::new("Show Quarantined Plugins…").show(ui).clicked() { self.quarantine_open=true; }
-            });
-            if self.scan_job.is_some() { ui.horizontal(|ui| { ui.spinner(); ui.label("Scanning plugins in isolated processes…"); }); }
-            let search = self.plugin_search.to_lowercase();
-            egui::ScrollArea::vertical().max_height(320.0).show(ui,|ui| {
-                for plugin in &self.catalog.plugins {
-                    let quarantined = self.view.quarantine.iter().any(|e| crate::quarantine::same(&e.plugin,plugin));
-                    if !format!("{} {}",plugin.name,plugin.format).to_lowercase().contains(&search) { continue; }
-                    let label = format!("{} · {}{}", plugin.name, plugin.format, if quarantined {" · Quarantined"} else {""});
-                    let path = plugin.path.display().to_string();
-                    let full = format!("{label}, {path}");
-                    if ListRow::new(&label).accessible(&full).enabled(self.busy_since.is_none() && !quarantined).show(ui).clicked() { picked = Some(plugin.clone()); }
+        let mut cancelled = false;
+        ToolWindow::new("Choose Instrument")
+            .width(560.0)
+            .show(ctx, &mut open, |ui| {
+                ui.horizontal(|ui| {
+                    if self.button(ui, Command::Rescan) {
+                        rescan = true;
+                    }
+                    if TextButton::new("Show Quarantined Plugins…")
+                        .show(ui)
+                        .clicked()
+                    {
+                        self.quarantine_open = true;
+                    }
+                });
+                if self.scan_job.is_some() {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Scanning plugins in isolated processes…");
+                    });
                 }
-                if self.catalog.plugins.is_empty() && self.scan_job.is_none() { ui.label("No instruments found. Install a VST3 or CLAP instrument, then Rescan."); }
+                // T41 round 6: the shared search list; ↑/↓ and Return pick, Escape closes.
+                let current = self.view.track().and_then(|t| t.plugin.clone());
+                let busy = self.busy_since.is_some();
+                let entries: Vec<_> = self
+                    .catalog
+                    .plugins
+                    .iter()
+                    .map(|plugin| {
+                        let quarantined = self
+                            .view
+                            .quarantine
+                            .iter()
+                            .any(|e| crate::quarantine::same(&e.plugin, plugin));
+                        let label = format!(
+                            "{} · {}{}",
+                            plugin.name,
+                            plugin.format,
+                            if quarantined { " · Quarantined" } else { "" }
+                        );
+                        let full = format!("{label}, {}", plugin.path.display());
+                        primitives::search_list::Entry::new(label)
+                            .accessible(full)
+                            .enabled(!busy && !quarantined)
+                            .current(current.as_ref() == Some(plugin))
+                    })
+                    .collect();
+                let empty = if self.catalog.plugins.is_empty() && self.scan_job.is_none() {
+                    "No instruments found. Install a VST3 or CLAP instrument, then Rescan."
+                } else if self.catalog.plugins.is_empty() {
+                    ""
+                } else {
+                    "No matching instruments."
+                };
+                match primitives::search_list::show(
+                    ui,
+                    egui::Id::new("choose-instrument-list"),
+                    &mut self.plugin_search,
+                    "Search instruments by name or format",
+                    &entries,
+                    320.0,
+                    empty,
+                ) {
+                    Some(primitives::search_list::Outcome::Picked(index)) => {
+                        picked = Some(self.catalog.plugins[index].clone())
+                    }
+                    Some(primitives::search_list::Outcome::Cancelled) => cancelled = true,
+                    None => {}
+                }
+                if !self.catalog.failures.is_empty() {
+                    ui.collapsing(
+                        format!("{} scan failures", self.catalog.failures.len()),
+                        |ui| {
+                            egui::ScrollArea::vertical()
+                                .id_salt("scan-failures")
+                                .max_height(120.0)
+                                .show(ui, |ui| {
+                                    for failure in &self.catalog.failures {
+                                        text::danger(ui, failure);
+                                    }
+                                });
+                        },
+                    );
+                }
             });
-            if !self.catalog.failures.is_empty() { ui.collapsing(format!("{} scan failures",self.catalog.failures.len()),|ui| { egui::ScrollArea::vertical().id_salt("scan-failures").max_height(120.0).show(ui, |ui| { for failure in &self.catalog.failures { text::danger(ui, failure); } }); }); }
-        });
-        self.picker_open = open;
+        self.picker_open = open && !cancelled;
         if rescan {
             self.dispatch(Command::Rescan, ctx);
         }
@@ -2625,6 +2789,7 @@ impl eframe::App for App {
         }
         self.files(&ctx);
         self.quarantine_windows(&ctx);
+        self.load_failure_notice(&ctx);
         self.confirmation(&ctx);
         if let Some(started) = self.busy_since
             && !self.busy_visible

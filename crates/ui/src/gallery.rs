@@ -1429,7 +1429,10 @@ mod tests {
         ctx.enable_accesskit();
         let mut app = App::new(ctx.clone(), PathBuf::new());
         session_fixture(&mut app, "arrangement");
-        app.catalog.plugins = vec![gallery_plugin("Pad", "VST3")];
+        app.catalog.plugins = vec![
+            gallery_plugin("Pad", "VST3"),
+            gallery_plugin("Strings", "CLAP"),
+        ];
         app.new_tracks = Some(crate::NewTracks::default());
         let frame = |app: &mut App, events: Vec<egui::Event>| {
             let out = ctx.run_ui(
@@ -1493,6 +1496,40 @@ mod tests {
                 .map(|p| p.name.as_str()),
             Some("Pad")
         );
+        // T41 round 6: the menu opens with its search field focused; typing filters, the arrows
+        // move the highlight and Return picks and closes the menu.
+        let key = |key| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let labels = frame(&mut app, vec![]);
+        let menu = at(&labels, "Instrument: Pad");
+        frame(
+            &mut app,
+            vec![egui::Event::PointerMoved(menu), click(menu, true)],
+        );
+        frame(&mut app, vec![click(menu, false)]);
+        frame(&mut app, vec![]);
+        frame(&mut app, vec![egui::Event::Text("s".into())]);
+        frame(&mut app, vec![key(egui::Key::ArrowDown)]);
+        frame(&mut app, vec![key(egui::Key::Enter)]);
+        let labels = frame(&mut app, vec![]);
+        let dialog = app.new_tracks.as_ref().unwrap();
+        assert_eq!(
+            dialog.plugin.as_ref().map(|p| p.name.as_str()),
+            Some("Strings"),
+            "\"s\" matches Strings and the VST3/CLAP formats; ↓ moves past the first match"
+        );
+        assert!(dialog.search.is_empty());
+        assert!(
+            !labels
+                .iter()
+                .any(|(label, _)| label == "Search instruments"),
+            "the menu closed"
+        );
     }
 
     /// T41 round 4: a debug build outlines in red every widget whose ID changed at the same
@@ -1551,6 +1588,96 @@ mod tests {
             app.view.selected = Some(id);
             assert_eq!(flagged(&mut app), [], "track {id} selected");
         }
+    }
+
+    /// T43: failures from one request share one modal notice, which OK dismisses; the track's
+    /// inspector keeps the reason.
+    #[test]
+    fn t43_load_failures_share_one_notice() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut app = App::new(ctx.clone(), PathBuf::new());
+        session_fixture(&mut app, "");
+        let ids: Vec<u64> = app
+            .view
+            .project
+            .tracks
+            .iter()
+            .map(|t| t.id)
+            .take(3)
+            .collect();
+        app.view.load_failures = ids
+            .iter()
+            .enumerate()
+            .map(|(index, &track)| clef_session::LoadFailure {
+                sequence: index as u64 + 1,
+                track,
+                instrument: "Kontakt 7 · VST3".into(),
+                reason: "unsupported layout".into(),
+            })
+            .collect();
+        app.view.tracks.retain(|t| t.id != ids[0]);
+        app.view.tracks.push(clef_session::TrackView {
+            id: ids[0],
+            status: "Empty".into(),
+            load_error: "Could not load Kontakt 7 · VST3: unsupported layout".into(),
+            ..Default::default()
+        });
+        app.view.selected = Some(ids[0]);
+        app.take_load_failures();
+        app.take_load_failures();
+        assert_eq!(app.load_notice.len(), 3, "each failure is taken once");
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
+            let out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1280.0, 800.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    app.main_surface(ui, &ctx);
+                    app.load_failure_notice(&ctx);
+                },
+            );
+            out.platform_output
+                .accesskit_update
+                .map(|update| {
+                    update
+                        .nodes
+                        .iter()
+                        .filter_map(|(_, node)| {
+                            let text = node.label().or_else(|| node.value())?;
+                            Some((text.to_owned(), node.bounds()?))
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        };
+        frame(&mut app, vec![]);
+        let labels = frame(&mut app, vec![]);
+        let has = |text: &str| labels.iter().any(|(label, _)| label.contains(text));
+        assert!(has("Some instruments could not load"));
+        assert!(has("Could not load Kontakt 7 · VST3: unsupported layout"));
+        let (_, ok) = labels
+            .iter()
+            .find(|(label, _)| label.starts_with("OK"))
+            .expect("OK button");
+        let pos = egui::pos2(
+            ((ok.x0 + ok.x1) / 2.0) as f32,
+            ((ok.y0 + ok.y1) / 2.0) as f32,
+        );
+        let click = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(&mut app, vec![egui::Event::PointerMoved(pos), click(true)]);
+        frame(&mut app, vec![click(false)]);
+        assert!(app.load_notice.is_empty());
     }
 
     /// The centre of the lower panel's Close control.

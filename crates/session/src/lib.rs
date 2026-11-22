@@ -292,7 +292,21 @@ pub struct TrackView {
     pub loading: bool,
     pub lost: bool,
     pub loss_version: u64,
+    /// T43: "Could not load <instrument>: <reason>" after the last load failed, until another
+    /// load starts; empty otherwise.
+    pub load_error: String,
 }
+/// T43: one instrument that could not load, for the UI's notice.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoadFailure {
+    /// Increases with every failure, so the UI can tell new ones from those it has shown.
+    pub sequence: u64,
+    pub track: u64,
+    pub instrument: String,
+    pub reason: String,
+}
+/// Most recent load failures a snapshot carries.
+const LOAD_FAILURES: usize = 32;
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct Snapshot {
     pub project: Project,
@@ -340,6 +354,8 @@ pub struct Snapshot {
     pub project_epoch: u64,
     pub track_meters: std::collections::BTreeMap<u64, Meter>,
     pub master_meter: Meter,
+    /// T43: the latest instrument load failures, oldest first.
+    pub load_failures: Vec<LoadFailure>,
 }
 impl Snapshot {
     pub fn track(&self) -> Option<&Track> {
@@ -450,6 +466,7 @@ impl Snapshot {
             active: self.active,
             editor: self.editor,
             failed: self.failed,
+            load_failures: self.load_failures.clone(),
             message: self.message.clone(),
             actual: self.actual.clone(),
             rate: self.rate,
@@ -498,6 +515,8 @@ struct Runtime {
     loading: bool,
     request: u64,
     error: String,
+    /// T43: the instrument whose last load failed, as "<name> · <format>".
+    failed: String,
 }
 struct Loaded {
     instrument: Instrument,
@@ -564,6 +583,8 @@ pub struct Session {
     /// Start audio automatically when a project opens (the app; tests start it explicitly).
     auto_audio: bool,
     audio_pending: bool,
+    /// T43: the last `LoadFailure::sequence` handed out.
+    load_failure_sequence: u64,
     /// The sample rate loaded workers run at.
     worker_rate: u32,
 }
@@ -654,6 +675,7 @@ impl Session {
             preferences,
             shortcuts_path,
             auto_audio: false,
+            load_failure_sequence: 0,
             audio_pending: false,
             worker_rate: clef_plugin_host::protocol::RATE,
         }
@@ -1244,6 +1266,7 @@ impl Session {
         runtime.request += 1;
         let request = runtime.request;
         runtime.error.clear();
+        runtime.failed.clear();
         let (send, receive) = mpsc::channel();
         let identity = plugin.clone();
         let rate = self.worker_rate;
@@ -3205,7 +3228,18 @@ impl Session {
                         || error.contains("timed out")
                         || error.contains("invalid worker")
                         || error.contains("thread exited");
-                    self.runtimes.entry(job.id).or_default().error = error.clone();
+                    let runtime = self.runtimes.entry(job.id).or_default();
+                    runtime.error = error.clone();
+                    runtime.failed = format!("{} · {}", job.plugin.name, job.plugin.format);
+                    self.load_failure_sequence += 1;
+                    self.view.load_failures.push(LoadFailure {
+                        sequence: self.load_failure_sequence,
+                        track: job.id,
+                        instrument: runtime.failed.clone(),
+                        reason: error.clone(),
+                    });
+                    let excess = self.view.load_failures.len().saturating_sub(LOAD_FAILURES);
+                    self.view.load_failures.drain(..excess);
                     if fatal {
                         self.quarantine(job.plugin, error);
                     } else {
@@ -3268,7 +3302,11 @@ impl Session {
                     })
                 } else { r.error.clone() }
             }).unwrap_or_default();
-            TrackView { id: track.id, status: status.into(), missing, diagnostics, loading: runtime.is_some_and(|r| r.loading), lost: runtime.is_some_and(|r| r.lost), loss_version: runtime.map_or(0,|r|r.request) }
+            let load_error = runtime
+                .filter(|r| !r.failed.is_empty() && !r.loading)
+                .map(|r| format!("Could not load {}: {}", r.failed, r.error))
+                .unwrap_or_default();
+            TrackView { id: track.id, status: status.into(), missing, diagnostics, loading: runtime.is_some_and(|r| r.loading), lost: runtime.is_some_and(|r| r.lost), loss_version: runtime.map_or(0,|r|r.request), load_error }
         }).collect();
         let selected = self.view.selected.and_then(|id| self.runtimes.get(&id));
         self.view.loaded = selected.is_some_and(|r| r.instrument.is_some());
@@ -3947,6 +3985,145 @@ mod tests {
         assert_eq!(session.view.edit_history.cursor, 3);
         assert_eq!(session.view.project.tracks[0].name, "Piano");
         assert_eq!(session.view.project.tracks[0].state[..], [2]);
+    }
+
+    /// T43: a failed instrument load is reported once per track, names the instrument in the
+    /// track's view until another load starts, and leaves the track empty.
+    #[test]
+    #[ignore = "requires built Clef (the plugin worker)"]
+    fn native_t43_failed_loads_are_reported_per_track() {
+        let (directory, mut session) = isolated();
+        session.apply(Action::New).unwrap();
+        let broken = Plugin {
+            path: directory.0.join("Missing.vst3"),
+            id: "00000000000000000000000000000000".into(),
+            name: "Missing".into(),
+            format: "VST3".into(),
+        };
+        session
+            .apply(Action::AddTracks {
+                kind: TrackKind::Instrument,
+                count: 3,
+                name: String::new(),
+                plugin: Some(broken),
+            })
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !session.jobs.is_empty() && Instant::now() < deadline {
+            session.poll();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        session.poll();
+        assert_eq!(
+            session.view.load_failures.len(),
+            3,
+            "{}",
+            session.view.message
+        );
+        let sequences: Vec<_> = session
+            .view
+            .load_failures
+            .iter()
+            .map(|f| f.sequence)
+            .collect();
+        assert_eq!(sequences, [1, 2, 3]);
+        for track in &session.view.project.tracks {
+            assert!(track.plugin.is_none());
+            let state = session.view.state(track.id).unwrap();
+            assert!(
+                state
+                    .load_error
+                    .starts_with("Could not load Missing · VST3: "),
+                "{}",
+                state.load_error
+            );
+        }
+    }
+
+    /// T43: the multi-bus fixtures (four outputs, 0 main, plus a sidechain input) and their mono
+    /// main variants load as instruments in both formats; a note is heard on the main output
+    /// only (the auxiliary outputs carry 0.9), mono main plays on both sides, and the sidechain
+    /// arrives silent (the fixtures fail the block otherwise).
+    #[test]
+    #[ignore = "requires built Clef and the bundled T43 fixtures (scripts/t43_bundle_multi_bus_fixtures.py)"]
+    fn native_t43_multi_bus_fixtures_play_their_main_output() {
+        let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
+        for (bundle, id) in [
+            ("ClefMultiBusVST3.vst3", "434C45464D554C544942555300000001"),
+            ("ClefMonoMainVST3.vst3", "434C45464D554C544942555300000002"),
+            ("ClefMultiBusCLAP.clap", "dev.clef.multi-bus-fixture"),
+            ("ClefMonoMainCLAP.clap", "dev.clef.mono-main-fixture"),
+        ] {
+            let path = root.join("validation-output/fixtures").join(bundle);
+            let mut instrument =
+                Instrument::load_selected(&test_executable(), &path, id, 48_000, None)
+                    .unwrap_or_else(|error| panic!("{bundle}: {error}"));
+            instrument.start(false).unwrap();
+            let note = protocol::Midi {
+                offset: 3,
+                bytes: [0x90, 60, 100],
+            };
+            let frames = instrument
+                .process(0, &[note], 128)
+                .unwrap_or_else(|error| panic!("{bundle}: {error}"))
+                .0;
+            assert_eq!(frames.len(), 128, "{bundle}");
+            for (index, frame) in frames.iter().enumerate() {
+                let expected = if index == 3 { 0.25 } else { 0.0 };
+                assert_eq!(*frame, [expected; 2], "{bundle} frame {index}");
+            }
+        }
+    }
+
+    /// T43: multi-output and sidechain VST3 instruments from the user's installation load and
+    /// activate with audio running; bundles that are not installed are skipped.
+    #[test]
+    #[ignore = "requires built Clef, installed commercial VST3 instruments, an audio output and WindowServer"]
+    fn native_t43_installed_multi_bus_instruments_load() {
+        let (directory, mut session) = isolated();
+        session.apply(Action::New).unwrap();
+        session.start_audio().unwrap();
+        let mut tried = 0;
+        for bundle in ["Kontakt 7", "Opus", "SINE Player", "Falcon"] {
+            let path =
+                std::path::PathBuf::from(format!("/Library/Audio/Plug-Ins/VST3/{bundle}.vst3"));
+            if !path.exists() {
+                continue;
+            }
+            let catalog = directory.0.join(format!("{bundle}.json"));
+            let scan = std::process::Command::new(test_executable())
+                .arg("scan-bundle")
+                .arg(&path)
+                .arg(&catalog)
+                .status()
+                .unwrap();
+            assert!(scan.success(), "{bundle} scan");
+            let plugins: Vec<Plugin> =
+                serde_json::from_slice(&std::fs::read(&catalog).unwrap()).unwrap();
+            let plugin = plugins.into_iter().next().unwrap();
+            session
+                .apply(Action::AddTracks {
+                    kind: TrackKind::Instrument,
+                    count: 1,
+                    name: bundle.into(),
+                    plugin: Some(plugin.clone()),
+                })
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(120);
+            while !session.jobs.is_empty() && Instant::now() < deadline {
+                session.poll();
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            let track = session.view.project.tracks.last().unwrap();
+            assert_eq!(
+                track.plugin.as_ref(),
+                Some(&plugin),
+                "{bundle}: {}",
+                session.view.message
+            );
+            tried += 1;
+        }
+        assert!(tried > 0, "no listed instrument is installed");
     }
 
     #[test]

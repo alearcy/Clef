@@ -72,11 +72,31 @@ pub fn picker(
         .show(ctx, |ui| {
             ui.set_min_width(340.0);
             super::text::heading(ui, "Add Audio Effect");
-            let query = super::text_field::TextField::new(search, "Search effects")
-                .hint("Search effects")
-                .show(ui);
-            if ui.ctx().memory(|memory| memory.focused()).is_none() {
-                query.request_focus();
+            // T41 round 6: the shared search list; ↑/↓ and Return pick, Escape cancels.
+            let (indices, rows): (Vec<usize>, Vec<_>) = entries
+                .map(|(index, name, enabled)| {
+                    (
+                        index,
+                        super::search_list::Entry::new(name.as_ref()).enabled(enabled),
+                    )
+                })
+                .unzip();
+            match super::search_list::show(
+                ui,
+                egui::Id::new("effect-picker-list"),
+                search,
+                "Search effects",
+                &rows,
+                280.0,
+                if searching {
+                    ""
+                } else {
+                    "No matching audio effects."
+                },
+            ) {
+                Some(super::search_list::Outcome::Picked(row)) => selected = Some(indices[row]),
+                Some(super::search_list::Outcome::Cancelled) => cancel = true,
+                None => {}
             }
             if searching {
                 ui.horizontal(|ui| {
@@ -84,34 +104,12 @@ pub fn picker(
                     ui.label("Scanning plugins…");
                 });
             }
-            egui::ScrollArea::vertical()
-                .max_height(280.0)
-                .show(ui, |ui| {
-                    let search = search.to_lowercase();
-                    let mut found = false;
-                    for (index, name, enabled) in entries {
-                        let name = name.as_ref();
-                        if name.to_lowercase().contains(&search) {
-                            found = true;
-                            if super::list_row::ListRow::new(name)
-                                .enabled(enabled)
-                                .show(ui)
-                                .clicked()
-                            {
-                                selected = Some(index);
-                            }
-                        }
-                    }
-                    if !found && !searching {
-                        super::text::caption(ui, "No matching audio effects.");
-                    }
-                });
             ui.horizontal(|ui| {
                 scan = super::text_button::TextButton::new("Rescan")
                     .enabled(!searching)
                     .show(ui)
                     .clicked();
-                cancel = super::text_button::TextButton::new("Cancel")
+                cancel |= super::text_button::TextButton::new("Cancel")
                     .show(ui)
                     .clicked();
             });

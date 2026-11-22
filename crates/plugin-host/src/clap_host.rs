@@ -152,7 +152,41 @@ pub struct ClapMain {
     pub gui: Option<PluginGui>,
     pub gui_open: bool,
     sample_rate: u32,
+    effect: bool,
     input_ports: Vec<usize>,
+    output_ports: Vec<usize>,
+    main_output: usize,
+}
+
+/// Most audio ports per direction an instrument may declare (T43).
+const MAX_PORTS: usize = 128;
+/// Most channels in one port.
+const MAX_PORT_CHANNELS: usize = 32;
+
+/// T43: picks the output port an instrument is heard on (the first flagged main, else port 0)
+/// from each output's channel count and main flag, and checks the layout Clef can host: a mono
+/// or stereo main output and at most `MAX_PORT_CHANNELS` channels in any port.
+fn instrument_main_output(outputs: &[(usize, bool)], inputs: &[usize]) -> Result<usize> {
+    let main = outputs.iter().position(|&(_, main)| main).unwrap_or(0);
+    let channels = outputs
+        .get(main)
+        .ok_or("CLAP instrument has no audio output")?
+        .0;
+    if !(1..=2).contains(&channels) {
+        return Err(format!(
+            "CLAP main output has {channels} channels; Clef plays mono or stereo instruments only"
+        )
+        .into());
+    }
+    if outputs
+        .iter()
+        .map(|&(count, _)| count)
+        .chain(inputs.iter().copied())
+        .any(|count| count > MAX_PORT_CHANNELS)
+    {
+        return Err("CLAP instrument port has too many channels".into());
+    }
+    Ok(main)
 }
 
 impl ClapMain {
@@ -210,35 +244,71 @@ impl ClapMain {
             .get_extension::<PluginAudioPorts>()
             .ok_or("CLAP plugin has no audio-port extension")?;
         let mut buffer = AudioPortInfoBuffer::new();
-        let output = ports
-            .get(&handle, 0, false, &mut buffer)
-            .ok_or("CLAP plugin has no output")?;
-        let input_count = ports.count(&handle, true);
-        if ports.count(&handle, false) != 1
-            || output.channel_count != 2
-            || (!effect && input_count != 0)
-            || (effect && !(1..=32).contains(&input_count))
-        {
-            return Err("unsupported CLAP audio port layout".into());
-        }
+        let output_count = ports.count(&handle, false) as usize;
+        let input_count = ports.count(&handle, true) as usize;
         let mut input_ports = Vec::new();
-        for index in 0..input_count {
-            let input = ports
-                .get(&handle, index, true, &mut buffer)
-                .ok_or("CLAP effect has an unavailable input port")?;
-            if index == 0 && input.channel_count != 2
-                || index != 0
-                    && (input
-                        .flags
-                        .contains(clack_extensions::audio_ports::AudioPortFlags::IS_MAIN)
-                        || !(1..=2).contains(&input.channel_count))
-            {
-                return Err(
-                    "CLAP effect requires a stereo main input and mono or stereo auxiliary inputs"
-                        .into(),
-                );
+        let mut output_ports = Vec::new();
+        let main_output;
+        if effect {
+            let output = ports
+                .get(&handle, 0, false, &mut buffer)
+                .ok_or("CLAP plugin has no output")?;
+            if output_count != 1 || output.channel_count != 2 || !(1..=32).contains(&input_count) {
+                return Err("unsupported CLAP audio port layout".into());
             }
-            input_ports.push(input.channel_count as usize);
+            output_ports.push(2);
+            main_output = 0;
+            for index in 0..input_count {
+                let input = ports
+                    .get(&handle, index as u32, true, &mut buffer)
+                    .ok_or("CLAP effect has an unavailable input port")?;
+                if index == 0 && input.channel_count != 2
+                    || index != 0
+                        && (input
+                            .flags
+                            .contains(clack_extensions::audio_ports::AudioPortFlags::IS_MAIN)
+                            || !(1..=2).contains(&input.channel_count))
+                {
+                    return Err(
+                        "CLAP effect requires a stereo main input and mono or stereo auxiliary inputs"
+                            .into(),
+                    );
+                }
+                input_ports.push(input.channel_count as usize);
+            }
+        } else {
+            // T43: an instrument may have several outputs, of which Clef plays the main one
+            // (flagged main, else port 0) in mono or stereo, and inputs (sidechain), which
+            // receive silence.
+            if output_count == 0 {
+                return Err("CLAP instrument has no audio output".into());
+            }
+            if output_count > MAX_PORTS || input_count > MAX_PORTS {
+                return Err(format!(
+                    "CLAP instrument declares {output_count} output and {input_count} input \
+                     ports; Clef hosts at most {MAX_PORTS} of each"
+                )
+                .into());
+            }
+            let mut outputs = Vec::new();
+            for index in 0..output_count {
+                let port = ports
+                    .get(&handle, index as u32, false, &mut buffer)
+                    .ok_or("CLAP instrument has an unavailable output port")?;
+                outputs.push((
+                    port.channel_count as usize,
+                    port.flags
+                        .contains(clack_extensions::audio_ports::AudioPortFlags::IS_MAIN),
+                ));
+            }
+            for index in 0..input_count {
+                let port = ports
+                    .get(&handle, index as u32, true, &mut buffer)
+                    .ok_or("CLAP instrument has an unavailable input port")?;
+                input_ports.push(port.channel_count as usize);
+            }
+            main_output = instrument_main_output(&outputs, &input_ports)?;
+            output_ports = outputs.into_iter().map(|(channels, _)| channels).collect();
         }
         if !effect {
             let notes = handle
@@ -260,7 +330,10 @@ impl ClapMain {
             gui,
             gui_open: false,
             sample_rate,
+            effect,
             input_ports,
+            output_ports,
+            main_output,
         })
     }
 
@@ -294,11 +367,26 @@ impl ClapMain {
         Ok(ClapAudio {
             processor: processor.into(),
             events: EventBuffer::with_capacity(MAX_EVENTS),
-            outputs: AudioPorts::with_capacity(2, 1),
-            inputs: AudioPorts::with_capacity(2 * self.input_ports.len(), self.input_ports.len()),
-            input_channels: vec![[[0.0; BLOCK]; 2]; self.input_ports.len()],
-            input_ports: self.input_ports.clone(),
-            channels: [vec![0.0; BLOCK], vec![0.0; BLOCK]],
+            outputs: AudioPorts::with_capacity(
+                self.output_ports.iter().sum(),
+                self.output_ports.len(),
+            ),
+            inputs: AudioPorts::with_capacity(
+                self.input_ports.iter().sum(),
+                self.input_ports.len(),
+            ),
+            input_channels: self
+                .input_ports
+                .iter()
+                .map(|&count| vec![[0.0; BLOCK]; count])
+                .collect(),
+            output_channels: self
+                .output_ports
+                .iter()
+                .map(|&count| vec![[0.0; BLOCK]; count])
+                .collect(),
+            effect: self.effect,
+            main_output: self.main_output,
             steady: 0,
             sample_rate: self.sample_rate,
             held: HeldNotes::new(),
@@ -395,9 +483,12 @@ pub struct ClapAudio {
     events: EventBuffer,
     outputs: AudioPorts,
     inputs: AudioPorts,
-    input_channels: Vec<[[f32; BLOCK]; 2]>,
-    input_ports: Vec<usize>,
-    channels: [Vec<f32>; 2],
+    /// One buffer per channel of each input port; only an effect's port 0 carries the track.
+    input_channels: Vec<Vec<[f32; BLOCK]>>,
+    /// One buffer per channel of each output port; Clef plays `main_output`.
+    output_channels: Vec<Vec<[f32; BLOCK]>>,
+    effect: bool,
+    main_output: usize,
     steady: u64,
     sample_rate: u32,
     held: HeldNotes,
@@ -406,7 +497,7 @@ pub struct ClapAudio {
 
 impl ClapAudio {
     pub fn stop(&mut self) -> Result<()> {
-        if self.input_ports.is_empty() {
+        if !self.effect {
             let cleanup = crate::protocol::panic_events();
             self.process(0, &cleanup, BLOCK, &[])?;
         }
@@ -420,7 +511,7 @@ impl ClapAudio {
         frames: usize,
         input: &[Frame],
     ) -> Result<Vec<Frame>> {
-        let effect = !self.input_ports.is_empty();
+        let effect = self.effect;
         if (effect && input.len() != frames) || (!effect && !input.is_empty()) {
             return Err("wrong CLAP input role or length".into());
         }
@@ -434,44 +525,44 @@ impl ClapAudio {
                 &MidiEvent::new(event.offset, 0, event.bytes).with_flags(EventFlags::IS_LIVE),
             );
         }
-        for channel in &mut self.channels {
-            channel.fill(0.0);
+        for port in &mut self.output_channels {
+            for channel in port {
+                channel[..frames].fill(0.0);
+            }
         }
-        let inputs = if effect {
+        if effect {
             for (i, frame) in input.iter().enumerate() {
                 self.input_channels[0][0][i] = frame[0];
                 self.input_channels[0][1][i] = frame[1];
             }
-            self.inputs.with_input_buffers(
-                self.input_channels
-                    .iter_mut()
-                    .zip(&self.input_ports)
-                    .enumerate()
-                    .map(|(index, (channels, &count))| AudioPortBuffer {
+        }
+        let inputs =
+            self.inputs
+                .with_input_buffers(self.input_channels.iter_mut().enumerate().map(
+                    |(index, channels)| AudioPortBuffer {
                         latency: 0,
-                        channels: AudioPortBufferType::f32_input_only(
-                            channels[..count].iter_mut().map(move |channel| {
-                                if index == 0 {
+                        channels: AudioPortBufferType::f32_input_only(channels.iter_mut().map(
+                            move |channel| {
+                                if effect && index == 0 {
                                     InputChannel::variable(&mut channel[..frames])
                                 } else {
                                     channel[..frames].fill(0.0);
                                     InputChannel::constant(&mut channel[..frames])
                                 }
-                            }),
+                            },
+                        )),
+                    },
+                ));
+        let mut outputs =
+            self.outputs
+                .with_output_buffers(self.output_channels.iter_mut().map(|channels| {
+                    AudioPortBuffer {
+                        latency: 0,
+                        channels: AudioPortBufferType::f32_output_only(
+                            channels.iter_mut().map(|channel| &mut channel[..frames]),
                         ),
-                    }),
-            )
-        } else {
-            InputAudioBuffers::empty()
-        };
-        let mut outputs = self.outputs.with_output_buffers([AudioPortBuffer {
-            latency: 0,
-            channels: AudioPortBufferType::f32_output_only(
-                self.channels
-                    .iter_mut()
-                    .map(|channel| &mut channel[..frames]),
-            ),
-        }]);
+                    }
+                }));
         let seconds = position as f64 / f64::from(self.sample_rate);
         let beats = seconds * 100.0 / 60.0;
         let transport = TransportEvent {
@@ -509,9 +600,10 @@ impl ClapAudio {
         // Active process calls already exchange parameter changes in both directions.
         self.signals.flush.store(false, Ordering::Release);
         self.steady += frames as u64;
-        Ok((0..frames)
-            .map(|i| [self.channels[0][i], self.channels[1][i]])
-            .collect())
+        // A mono main output plays on both sides.
+        let main = &self.output_channels[self.main_output];
+        let right = main.len() - 1;
+        Ok((0..frames).map(|i| [main[0][i], main[right][i]]).collect())
     }
 }
 
@@ -596,5 +688,25 @@ mod tests {
         held.track([0xbf, 123, 0], |bytes| offs.push(bytes))
             .unwrap();
         assert_eq!(offs.len(), 2);
+    }
+
+    #[test]
+    fn t43_instruments_play_their_main_output_in_mono_or_stereo_only() {
+        // Several outputs: the port flagged main wins, else port 0.
+        assert_eq!(
+            instrument_main_output(&[(2, false), (2, true), (2, false)], &[2]).unwrap(),
+            1
+        );
+        assert_eq!(
+            instrument_main_output(&[(2, false), (2, false)], &[]).unwrap(),
+            0
+        );
+        assert_eq!(instrument_main_output(&[(1, true)], &[]).unwrap(), 0);
+        // Surround main outputs and oversized ports are refused with a reason.
+        let surround = instrument_main_output(&[(6, true), (2, false)], &[])
+            .unwrap_err()
+            .to_string();
+        assert!(surround.contains("6 channels"), "{surround}");
+        assert!(instrument_main_output(&[(2, true)], &[33]).is_err());
     }
 }
