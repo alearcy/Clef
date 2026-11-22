@@ -74,6 +74,177 @@ pub struct ArrangementUi {
     pub v_offset: f32,
     /// T40: a fit requested by a command, applied on the next frame.
     pub fit: Option<Fit>,
+    /// T41: the time view (offset, zoom) before Fit Width, while the fitted zoom holds.
+    pub fit_width: FitToggle<(u64, u32), u32>,
+    /// T41: the track height and scroll before Fit Height, while the fitted height holds.
+    pub fit_height: FitToggle<(u16, f32), u16>,
+    /// T41: the tool-row track search; a non-empty text shows only matching tracks.
+    pub track_search: String,
+    /// T41 round 2: the track whose header name is being edited in place, the text, and
+    /// whether the field still has to take focus.
+    pub renaming: Option<Renaming>,
+    /// T41 round 2: a header press that may become a drag-to-reorder.
+    pub reorder: Option<Reorder>,
+    /// T41 round 2: a released reorder (track, drops before) shown in its new place until the
+    /// session's track order matches it.
+    pub dropped: Option<(u64, Option<u64>)>,
+    /// T41 round 3 (S10): the track column width the user dragged or stepped to, `None` for
+    /// the default (window session only).
+    pub track_column: Option<f32>,
+}
+
+/// T41 round 2: a header press and, once it travels past 4 points, a reorder drag.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Reorder {
+    pub track: u64,
+    /// Pointer y at the press.
+    pub press: f32,
+    /// Pointer y minus the block's top at the press.
+    pub grab: f32,
+    pub active: bool,
+}
+
+/// Slide time of the track blocks around a reorder drag.
+const SLIDE_SECONDS: f32 = 0.12;
+
+/// T41 round 2: where each visible track block goes this frame. Without a drag the blocks
+/// stack in order; during one the dragged block follows the pointer and the others stack with a
+/// gap at the slot it would drop into. Tops are animated, so the blocks slide.
+pub struct RowLayout {
+    /// The rows' scrolled origin; tops are animated relative to it, so scrolling never lags.
+    base: f32,
+    targets: Vec<(u64, f32, f32)>,
+    pub dragged: Option<u64>,
+    /// The track the dragged one would drop before (`None`: after the last).
+    before: Option<u64>,
+}
+
+/// T41 round 2: `blocks` with `track` moved before `before` (or last).
+pub fn reordered(blocks: &[(u64, f32)], track: u64, before: Option<u64>) -> Vec<(u64, f32)> {
+    let mut rest: Vec<_> = blocks
+        .iter()
+        .copied()
+        .filter(|(id, _)| *id != track)
+        .collect();
+    if let Some(&moved) = blocks.iter().find(|(id, _)| *id == track) {
+        let at = before
+            .and_then(|id| rest.iter().position(|(other, _)| *other == id))
+            .unwrap_or(rest.len());
+        rest.insert(at, moved);
+    }
+    rest
+}
+
+impl RowLayout {
+    pub fn new(
+        blocks: &[(u64, f32)],
+        top: f32,
+        drag: Option<Reorder>,
+        pointer: Option<f32>,
+    ) -> Self {
+        let dragged = drag.and_then(|drag| {
+            blocks
+                .iter()
+                .find(|(id, _)| *id == drag.track)
+                .map(|&(id, height)| (id, height, drag.grab))
+        });
+        let mut targets = Vec::with_capacity(blocks.len());
+        let mut before = None;
+        match (dragged, pointer) {
+            (Some((id, height, grab)), Some(pointer)) => {
+                let dragged_top = pointer - grab;
+                let centre = dragged_top + height / 2.0;
+                let others: Vec<_> = blocks.iter().filter(|(other, _)| *other != id).collect();
+                let mut y = top;
+                let mut slot = others.len();
+                for (index, (_, h)) in others.iter().enumerate() {
+                    if centre < y + h / 2.0 {
+                        slot = index;
+                        break;
+                    }
+                    y += h;
+                }
+                let mut y = top;
+                for (index, &&(other, h)) in others.iter().enumerate() {
+                    if index == slot {
+                        y += height;
+                    }
+                    targets.push((other, y, h));
+                    y += h;
+                }
+                targets.push((id, dragged_top, height));
+                before = others.get(slot).map(|(other, _)| *other);
+            }
+            _ => {
+                let mut y = top;
+                for &(id, h) in blocks {
+                    targets.push((id, y, h));
+                    y += h;
+                }
+            }
+        }
+        Self {
+            base: top,
+            targets,
+            dragged: dragged.filter(|_| pointer.is_some()).map(|(id, ..)| id),
+            before,
+        }
+    }
+
+    fn target(&self, id: u64) -> (f32, f32) {
+        self.targets
+            .iter()
+            .find(|(other, ..)| *other == id)
+            .map_or((0.0, 0.0), |&(_, top, height)| (top, height))
+    }
+
+    /// The block's top this frame: the dragged block follows the pointer; the others slide.
+    pub fn top(&self, ctx: &egui::Context, id: u64) -> f32 {
+        let (target, _) = self.target(id);
+        let time = if self.dragged == Some(id) {
+            0.0
+        } else {
+            SLIDE_SECONDS
+        };
+        self.base
+            + ctx.animate_value_with_time(Id::new(("track-slide", id)), target - self.base, time)
+    }
+
+    pub fn height(&self, id: u64) -> f32 {
+        self.target(id).1
+    }
+
+    /// On release: the dragged track and the track it drops before.
+    pub fn drop_after(&self, dragged: u64) -> Option<(u64, Option<u64>)> {
+        (self.dragged == Some(dragged)).then_some((dragged, self.before))
+    }
+}
+
+/// T41 round 2: an inline header rename.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Renaming {
+    pub track: u64,
+    pub text: String,
+    pub focus: bool,
+}
+
+/// How an inline rename ended this frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RenameEnd {
+    /// Enter or a click elsewhere: keep the text.
+    Commit,
+    /// Tab (+1) or Shift+Tab (−1): keep the text and rename the neighbouring track.
+    Next(i32),
+    /// Escape: drop the text.
+    Cancel,
+}
+
+impl ArrangementUi {
+    /// T41: whether a track name matches the track search (case-insensitive substring).
+    pub fn matches(&self, name: &str) -> bool {
+        let search = self.track_search.trim();
+        search.is_empty() || name.to_lowercase().contains(&search.to_lowercase())
+    }
 }
 
 /// T40: fit the content to the visible width or height.
@@ -81,6 +252,39 @@ pub struct ArrangementUi {
 pub enum Fit {
     Width,
     Height,
+}
+
+/// T41: a fit glyph is a toggle. The first press saves the view and fits; while the fitted
+/// value holds the glyph is lit and a second press restores the saved view. A manual zoom of
+/// that axis changes the value and ends the fit, discarding the saved view.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FitToggle<S, V> {
+    saved: Option<(S, V)>,
+}
+
+impl<S: Copy, V: Copy + PartialEq> FitToggle<S, V> {
+    /// Whether the fit is active (the glyph is lit).
+    pub fn active(&self) -> bool {
+        self.saved.is_some()
+    }
+
+    /// A press: returns the view to restore, or `None` when the caller should fit now and
+    /// then call [`Self::fitted`].
+    pub fn press(&mut self) -> Option<S> {
+        self.saved.take().map(|(saved, _)| saved)
+    }
+
+    /// Records the view before the fit and the fitted value.
+    pub fn fitted(&mut self, before: S, value: V) {
+        self.saved = Some((before, value));
+    }
+
+    /// Ends the fit once the current value differs from the fitted one.
+    pub fn track(&mut self, value: V) {
+        if self.saved.is_some_and(|(_, fitted)| fitted != value) {
+            self.saved = None;
+        }
+    }
 }
 
 /// A track height in points, clamped to the saved range.
@@ -720,6 +924,68 @@ fn snap_step_for_bar(timeline: &Timeline, tick: u64) -> u64 {
 mod tests {
     use super::*;
     use egui::{Event, PointerButton, RawInput, pos2, vec2};
+
+    #[test]
+    fn a_reorder_drag_opens_a_gap_at_the_drop_slot_and_drops_before_that_track() {
+        let blocks = [(1, 40.0), (2, 40.0), (3, 60.0)];
+        let still = RowLayout::new(&blocks, 100.0, None, Some(150.0));
+        assert_eq!(still.dragged, None);
+        assert_eq!(still.target(3), (180.0, 60.0));
+        // Track 1 grabbed 10 points below its top, pointer moved to 155: its centre (165)
+        // passes track 2's middle (120) but not track 3's (170), so 2 moves up and 1 drops
+        // before 3.
+        let drag = Reorder {
+            track: 1,
+            press: 110.0,
+            grab: 10.0,
+            active: true,
+        };
+        let layout = RowLayout::new(&blocks, 100.0, Some(drag), Some(155.0));
+        assert_eq!(layout.target(2), (100.0, 40.0));
+        assert_eq!(layout.target(3), (180.0, 60.0));
+        assert_eq!(layout.target(1), (145.0, 40.0));
+        assert_eq!(layout.drop_after(1), Some((1, Some(3))));
+        let last = RowLayout::new(&blocks, 100.0, Some(drag), Some(400.0));
+        assert_eq!(last.drop_after(1), Some((1, None)));
+        assert_eq!(
+            reordered(&blocks, 1, Some(3)),
+            vec![(2, 40.0), (1, 40.0), (3, 60.0)]
+        );
+        assert_eq!(
+            reordered(&blocks, 1, None),
+            vec![(2, 40.0), (3, 60.0), (1, 40.0)]
+        );
+    }
+
+    #[test]
+    fn track_search_filters_by_name_ignoring_case() {
+        let mut ui = ArrangementUi::default();
+        assert!(ui.matches("Strings"), "an empty search shows every track");
+        ui.track_search = " str ".into();
+        assert!(ui.matches("Strings"));
+        assert!(ui.matches("Low STRINGS"));
+        assert!(!ui.matches("Horns"));
+    }
+
+    #[test]
+    fn a_fit_toggles_back_and_a_manual_zoom_ends_it() {
+        let mut fit = FitToggle::<(u64, u32), u32>::default();
+        assert!(!fit.active());
+        assert_eq!(fit.press(), None, "the first press fits");
+        fit.fitted((480, 96_000), 40_000);
+        fit.track(40_000);
+        assert!(fit.active(), "lit while the fitted zoom holds");
+        assert_eq!(
+            fit.press(),
+            Some((480, 96_000)),
+            "the second press restores"
+        );
+        assert!(!fit.active());
+        fit.fitted((0, 96_000), 40_000);
+        fit.track(50_000);
+        assert!(!fit.active(), "a manual zoom ends the fit");
+        assert_eq!(fit.press(), None, "and the next press fits again");
+    }
 
     struct Harness {
         context: egui::Context,

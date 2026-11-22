@@ -144,6 +144,39 @@ impl Session {
         Ok(())
     }
 
+    /// T41: commits one drag-paint gesture (the same control on several channels) as one
+    /// undo step. Every change is checked before any is applied.
+    pub(super) fn commit_mix_batch(&mut self, changes: Vec<MixChange>) -> Result<()> {
+        self.mixer.preview = None;
+        let Some(control) = changes.first().map(|change| change.control) else {
+            return Ok(());
+        };
+        if !self.view.project_open
+            || changes
+                .iter()
+                .any(|change| change.epoch != self.view.project_epoch || change.control != control)
+        {
+            return Err("The project changed before the mixer edit was applied.".into());
+        }
+        let mut candidate = self.view.project.clone();
+        let mut recorded = Vec::new();
+        for change in &changes {
+            let before = candidate.mix(change.target)?.get(control);
+            candidate.set_mix(change.target, control, change.value)?;
+            if before != change.value {
+                recorded.push((change.target, before, change.value));
+            }
+        }
+        self.view.project = candidate;
+        if !recorded.is_empty() {
+            self.record_edit(Edit::MixBatch {
+                control,
+                changes: recorded,
+            });
+        }
+        Ok(())
+    }
+
     pub(super) fn reset_meter(&mut self, target: Target) {
         let Some(engine) = &self.engine else { return };
         match target {

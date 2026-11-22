@@ -51,3 +51,21 @@ Typing into the counter is not part of this phase.
 
 **Evidence:** gallery `snapshots/egui/t18-segment-display-{1024,760}.png` and `t18-segment-display-1024@2x.png`
 (Retina); accessible names checked by `gallery::tests::every_gallery_control_has_an_accessible_name`.
+
+## Clef T41 round 3 — two-row readout
+
+[T41 round 3](../../specs/T41-session-window-layout.md#round-3--gui-review-2026-11-22) (S12):
+
+```rust
+pub fn two_row_readout(ui: &mut egui::Ui, name: &str, rows: [(&str, &str); 2]) -> egui::Response;
+```
+
+Two rows of small seven-segment digits (5.5 × 8, 1.4-point strokes, 8-point advance) in one
+recessed well 28 points high (`toolTarget`, the transport row), each row right-aligned before a
+9-point `secondary` unit caption. Unlit ghosts are omitted at this size. The transport uses it for
+the project format: sample rate on top (`48.0 kHz`, dashes while audio is off), bit depth below
+(`24 bit`, `32 float`); a click opens Project Format. Accessible: a label named `name` whose value
+reads both rows with their units.
+
+**Evidence:** `snapshots/egui/t41-*-{1024,760}.png`; unit test
+`the_format_readout_reads_kilohertz_and_bits_as_digits`.

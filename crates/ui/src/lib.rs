@@ -15,8 +15,10 @@ use std::{
     time::{Duration, Instant},
 };
 mod primitives {
+    pub mod accordion;
     pub mod checkbox;
     pub mod chip;
+    pub mod empty_state;
     pub mod fader;
     pub mod glyph_toggle;
     pub mod history;
@@ -31,6 +33,7 @@ mod primitives {
     pub mod mixer;
     pub mod mute_solo;
     pub mod notice_box;
+    pub mod panel_controls;
     pub mod piano_roll;
     pub mod power_button;
     pub mod project;
@@ -84,6 +87,35 @@ enum Transition {
     Open(PathBuf),
     Close,
 }
+/// T41 round 2 (R16): the Project Format dialog's choices.
+#[derive(Clone, Copy)]
+struct FormatDialog {
+    rate: u32,
+    bits: clef_model::project::BitDepth,
+}
+
+/// Sample rates the Project Format dialog offers.
+const PROJECT_RATES: [u32; 6] = [44_100, 48_000, 88_200, 96_000, 176_400, 192_000];
+
+/// T41 round 2 (R13): the New Tracks dialog's choices.
+struct NewTracks {
+    count: usize,
+    bus: bool,
+    name: String,
+    plugin: Option<Plugin>,
+}
+
+impl Default for NewTracks {
+    fn default() -> Self {
+        Self {
+            count: 1,
+            bus: false,
+            name: String::new(),
+            plugin: None,
+        }
+    }
+}
+
 enum Confirm {
     Unsaved(Transition),
     Replace(Plugin),
@@ -194,6 +226,21 @@ struct App {
     arrangement_ui: arrangement::ArrangementUi,
     piano_roll: piano_roll::PianoRoll,
     piano_roll_open: bool,
+    /// T41: the Track Diagnostics window (Window menu) is open.
+    diagnostics_open: bool,
+    /// T41: the left drawer is hidden (window session only, not saved).
+    left_drawer_hidden: bool,
+    /// T41 round 3 (S2): the lower panel (Editor or Mixer) is detached or at full height
+    /// (window session only, not saved).
+    panel: primitives::panel_controls::PanelState,
+    /// The editing column's width on the last frame: the default the track column steps from.
+    track_area_width: f32,
+    /// T41: the open New Tracks dialog.
+    new_tracks: Option<NewTracks>,
+    /// T41: the open Project Format dialog.
+    project_format: Option<FormatDialog>,
+    /// T41: the inspector's content height on the last frame; the left column sizes it.
+    inspector_height: f32,
     mixer_ui: mixer::MixerUi,
     executable: PathBuf,
     quit_gate: Option<QuitGate>,
@@ -240,7 +287,6 @@ struct App {
     quarantine_notice: bool,
     last_notice: u64,
     track_focus: Option<u64>,
-    rename_focus: bool,
     keyboard_mode: bool,
 }
 impl App {
@@ -284,6 +330,13 @@ impl App {
             arrangement_ui: arrangement::ArrangementUi::default(),
             piano_roll: piano_roll::PianoRoll::default(),
             piano_roll_open: false,
+            diagnostics_open: false,
+            left_drawer_hidden: false,
+            panel: Default::default(),
+            track_area_width: 1024.0,
+            new_tracks: None,
+            project_format: None,
+            inspector_height: 0.0,
             mixer_ui: mixer::MixerUi::default(),
             quit_gate: None,
             backend: Backend::spawn(executable.clone(), move || context.request_repaint()),
@@ -326,7 +379,6 @@ impl App {
             quarantine_notice: false,
             last_notice: 0,
             track_focus: None,
-            rename_focus: false,
             keyboard_mode: false,
         }
     }
@@ -382,8 +434,10 @@ impl App {
             }
         }
         match command {
+            // The arrangement stays usable beside a docked half-height mixer (T41 S1).
             command if command.is_clip() => {
-                !self.mixer_ui.open && self.clip_command_enabled(command)
+                !(self.mixer_ui.open && self.panel.full && !self.panel.detached)
+                    && self.clip_command_enabled(command)
             }
             ShowMixer | MixerPrevious | MixerNext | MixerMute | MixerSolo | ResetMixerClip => {
                 self.mixer_command_available(command)
@@ -473,6 +527,17 @@ impl App {
                 self.take_command_enabled(command)
             }
             FitArrangementWidth | FitArrangementHeight => self.view.project_open,
+            TogglePanelFull => {
+                self.view.project_open
+                    && (self.mixer_ui.open || self.piano_roll_open)
+                    && !self.panel.detached
+            }
+            TogglePanelDetach => {
+                self.view.project_open && (self.mixer_ui.open || self.piano_roll_open)
+            }
+            WiderTrackColumn | NarrowerTrackColumn => self.view.project_open,
+            ShowEditor => self.piano_roll_open || self.editor_clip().is_some(),
+            NewTracks => self.view.project.tracks.len() < crate::project::MAX_TRACKS,
             FitRollWidth | FitRollHeight => self.view.project_open && self.piano_roll_open,
             RollSelectAll | RollDelete | RollCopy | RollPaste | RollDuplicate | RollEnter
             | RollEarlier | RollLater | RollUp | RollDown | RollShorten | RollLengthen => {
@@ -486,7 +551,7 @@ impl App {
     fn button(&self, ui: &mut egui::Ui, command: Command) -> bool {
         let hint = self.keymap.text(ui.ctx(), command);
         let title = match command {
-            Command::ShowMixer if self.mixer_ui.open => "Sequencer",
+            Command::ShowMixer if self.mixer_ui.open => "Hide Mixer",
             Command::ShowMixer => "Mixer",
             Command::Settings if self.mixer_ui.open => "Settings",
             Command::Commands if self.mixer_ui.open => "Commands",
@@ -659,6 +724,33 @@ impl App {
                 self.refresh_devices(ctx.clone());
             }
             Commands => self.commands_open = true,
+            TrackDiagnostics => self.diagnostics_open = !self.diagnostics_open,
+            ShowEditor => self.toggle_editor(),
+            ToggleLeftDrawer => self.left_drawer_hidden = !self.left_drawer_hidden,
+            TogglePanelFull => self.panel.full = !self.panel.full,
+            TogglePanelDetach => self.panel.detached = !self.panel.detached,
+            WiderTrackColumn | NarrowerTrackColumn => {
+                let step = if command == WiderTrackColumn {
+                    20.0
+                } else {
+                    -20.0
+                };
+                let current = self
+                    .arrangement_ui
+                    .track_column
+                    .unwrap_or(crate::transport::header_width(self.track_area_width, None));
+                self.arrangement_ui.track_column = Some((current + step).clamp(
+                    theme::metric::MINIMUM_HEADER_WIDTH,
+                    theme::metric::MAXIMUM_HEADER_WIDTH,
+                ));
+            }
+            NewTracks => self.open_new_tracks(ctx),
+            ProjectFormat => {
+                self.project_format = Some(FormatDialog {
+                    rate: self.project_rate(),
+                    bits: self.view.project.format.bits,
+                });
+            }
             Palette => self.open_palette(ctx),
             RollSelectAll | RollDelete | RollCopy | RollPaste | RollDuplicate | RollEnter
             | RollEarlier | RollLater | RollUp | RollDown | RollShorten | RollLengthen => {
@@ -692,9 +784,14 @@ impl App {
             Restart => self.confirm = Some(Confirm::Restart),
             Rescan => self.scan(ctx.clone()),
             Refresh => self.refresh_devices(ctx.clone()),
+            // T41 round 2: Rename Track edits the name in its header.
             Rename => {
-                if let Some(id) = self.view.selected {
-                    self.send(Action::Rename(id, self.rename.clone()));
+                if let Some(track) = self.view.track() {
+                    self.arrangement_ui.renaming = Some(crate::arrangement::Renaming {
+                        track: track.id,
+                        text: track.name.clone(),
+                        focus: true,
+                    });
                 }
             }
             RemoveTrack => {
@@ -1107,6 +1204,273 @@ impl App {
             );
         }
     }
+    /// T41: the clip the Editor opens: a selected clip, else the selected track's first clip.
+    fn editor_clip(&self) -> Option<clef_model::midi::ClipId> {
+        self.arrangement_ui.selected.first().copied().or_else(|| {
+            let track = self.view.selected?;
+            self.view
+                .project
+                .midi
+                .tracks
+                .get(&track)?
+                .first()
+                .map(|clip| clip.id())
+        })
+    }
+
+    /// T41: the status-row Editor button and Show Editor command. Opening shows the arrangement
+    /// with the piano roll of the selected clip or track, closing the mixer; a second press
+    /// closes the roll.
+    fn toggle_editor(&mut self) {
+        if self.piano_roll_open && !self.mixer_ui.open {
+            self.piano_roll_open = false;
+            return;
+        }
+        if self.mixer_ui.open {
+            self.dispatch_mixer(Command::ShowMixer);
+        }
+        if !self.piano_roll_open
+            && let Some(clip) = self.editor_clip()
+        {
+            if !self.arrangement_ui.selected.contains(&clip) {
+                self.arrangement_ui.selected = std::collections::BTreeSet::from([clip]);
+            }
+            self.arrangement_ui.open_roll = Some(clip);
+        }
+    }
+
+    /// T41 round 2: opens the New Tracks dialog (R13).
+    fn open_new_tracks(&mut self, ctx: &egui::Context) {
+        self.new_tracks = Some(NewTracks::default());
+        if self.catalog.plugins.is_empty() {
+            self.scan(ctx.clone());
+        }
+    }
+
+    /// T41 round 2 (R16): sample rate (the project's audio override, applied by restarting
+    /// audio; a rate the device refuses leaves everything as it was) and recording bit depth.
+    fn project_format_window(&mut self, ctx: &egui::Context) {
+        let Some(mut dialog) = self.project_format.take() else {
+            return;
+        };
+        if !self.view.project_open {
+            return;
+        }
+        let base = self
+            .view
+            .project
+            .audio
+            .clone()
+            .or_else(|| self.view.audio.clone())
+            .or_else(|| self.view.audio_preferences.clone());
+        let mut open = true;
+        let mut apply = false;
+        let mut cancel = false;
+        ToolWindow::new("Project Format")
+            .width(360.0)
+            .show(ctx, &mut open, |ui| {
+                ui.spacing_mut().item_spacing.y = 8.0;
+                text::caption(ui, "Sample rate");
+                let label = |rate: u32| {
+                    if rate.is_multiple_of(1_000) {
+                        format!("{} kHz", rate / 1_000)
+                    } else {
+                        format!("{:.1} kHz", f64::from(rate) / 1_000.0)
+                    }
+                };
+                let (_, chosen) = menu_button(
+                    ui,
+                    "project-rate",
+                    "Sample rate",
+                    None,
+                    &label(dialog.rate),
+                    base.is_some(),
+                    |ui| {
+                        PROJECT_RATES
+                            .into_iter()
+                            .find(|&rate| choice(ui, &label(rate), rate == dialog.rate))
+                    },
+                );
+                if let Some(Some(rate)) = chosen {
+                    dialog.rate = rate;
+                }
+                if base.is_none() {
+                    text::caption(ui, "Choose an audio device in Audio/MIDI Settings first.");
+                } else {
+                    text::caption(
+                        ui,
+                        "Saved with the project; audio restarts at the new rate.",
+                    );
+                }
+                text::caption(ui, "Recording bit depth");
+                primitives::segmented::Segmented::new(
+                    "Recording bit depth",
+                    &mut dialog.bits,
+                    &clef_model::project::BitDepth::ALL.map(|bits| (bits, bits.label())),
+                )
+                .show(ui);
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    if TextButton::new("Apply")
+                        .primary(true)
+                        .enabled(self.busy_since.is_none())
+                        .show(ui)
+                        .clicked()
+                    {
+                        apply = true;
+                    }
+                    if TextButton::new("Cancel").show(ui).clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if apply {
+            if dialog.bits != self.view.project.format.bits {
+                self.send(Action::SetFormat(clef_model::project::ProjectFormat {
+                    bits: dialog.bits,
+                    ..self.view.project.format
+                }));
+            }
+            if let Some(mut audio) = base
+                && dialog.rate != self.project_rate()
+            {
+                audio.rate = dialog.rate;
+                self.send(Action::Settings {
+                    audio,
+                    project: true,
+                });
+            }
+        } else if open && !cancel {
+            self.project_format = Some(dialog);
+        }
+    }
+
+    /// T41 round 2 (R13): the New Tracks dialog.
+    fn new_tracks_window(&mut self, ctx: &egui::Context) {
+        let Some(mut dialog) = self.new_tracks.take() else {
+            return;
+        };
+        if !self.view.project_open {
+            return;
+        }
+        let room = crate::project::MAX_TRACKS.saturating_sub(self.view.project.tracks.len());
+        let mut open = true;
+        let mut create = false;
+        let mut cancel = false;
+        ToolWindow::new("New Tracks")
+            .width(420.0)
+            .show(ctx, &mut open, |ui| {
+                ui.spacing_mut().item_spacing.y = 8.0;
+                text::caption(ui, "Type");
+                primitives::segmented::Segmented::new(
+                    "Track type",
+                    &mut dialog.bus,
+                    &[(false, "Instrument"), (true, "Bus")],
+                )
+                .show(ui);
+                text::caption(ui, "Number of tracks");
+                ui.horizontal(|ui| {
+                    if TextButton::new("−")
+                        .accessible("Fewer tracks")
+                        .enabled(dialog.count > 1)
+                        .show(ui)
+                        .clicked()
+                    {
+                        dialog.count -= 1;
+                    }
+                    text::body(ui, &dialog.count.to_string());
+                    if TextButton::new("+")
+                        .accessible("More tracks")
+                        .enabled(dialog.count < room)
+                        .show(ui)
+                        .clicked()
+                    {
+                        dialog.count += 1;
+                    }
+                });
+                text::caption(ui, "Name");
+                TextField::new(&mut dialog.name, "Track name")
+                    .hint(if dialog.bus {
+                        "Bus 1, Bus 2…"
+                    } else {
+                        "Instrument 1, Instrument 2…"
+                    })
+                    .width(380.0)
+                    .show(ui);
+                if dialog.count > 1 && !dialog.name.trim().is_empty() {
+                    text::caption(
+                        ui,
+                        &format!(
+                            "{} 1 … {} {}",
+                            dialog.name.trim(),
+                            dialog.name.trim(),
+                            dialog.count
+                        ),
+                    );
+                }
+                if !dialog.bus {
+                    text::caption(ui, "Instrument");
+                    let current = dialog.plugin.as_ref().map_or_else(
+                        || "None".to_owned(),
+                        |p| format!("{} · {}", p.name, p.format),
+                    );
+                    let plugins = &self.catalog.plugins;
+                    let (_, chosen) = menu_button(
+                        ui,
+                        "new-tracks-instrument",
+                        "Instrument",
+                        None,
+                        &current,
+                        true,
+                        |ui| {
+                            if choice(ui, "None", dialog.plugin.is_none()) {
+                                return Some(None);
+                            }
+                            plugins.iter().find_map(|plugin| {
+                                let label = format!("{} · {}", plugin.name, plugin.format);
+                                choice(ui, &label, dialog.plugin.as_ref() == Some(plugin))
+                                    .then(|| Some(plugin.clone()))
+                            })
+                        },
+                    );
+                    if let Some(Some(plugin)) = chosen {
+                        dialog.plugin = plugin;
+                    }
+                    if plugins.is_empty() {
+                        text::caption(ui, "No instruments scanned yet: Window › Rescan Plugins.");
+                    }
+                }
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    if TextButton::new("Create")
+                        .primary(true)
+                        .enabled(room > 0 && self.busy_since.is_none())
+                        .show(ui)
+                        .clicked()
+                    {
+                        create = true;
+                    }
+                    if TextButton::new("Cancel").show(ui).clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if create {
+            self.send(Action::AddTracks {
+                kind: if dialog.bus {
+                    clef_model::project::TrackKind::Bus
+                } else {
+                    clef_model::project::TrackKind::Instrument
+                },
+                count: dialog.count,
+                name: dialog.name.clone(),
+                plugin: dialog.plugin.clone().filter(|_| !dialog.bus),
+            });
+        } else if open && !cancel {
+            self.new_tracks = Some(dialog);
+        }
+    }
+
     fn select_track(&mut self, id: u64) {
         let rename = self
             .view
@@ -1201,241 +1565,506 @@ impl App {
             }
         }
     }
+    /// T41 window layout, top to bottom: menu bar and project title; the full-width transport
+    /// band with its region shadow; the workspace (tool row, inspector and channel strip on the
+    /// left, arrangement and piano roll on the right, or the mixer); the status row.
     fn main_surface(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        let mut selected = self.menu_bar(ui);
-        let project_title = |ui: &mut egui::Ui| {
-            text::heading(
-                ui,
-                &self
-                    .view
-                    .path
-                    .as_ref()
-                    .and_then(|p| p.file_stem())
-                    .map(|s| s.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "Untitled".into()),
-            );
-            if self.has_unsaved_changes() {
-                text::caption(ui, "Unsaved changes");
-            }
-        };
-        let audio_control = |ui: &mut egui::Ui| {
-            ui.set_min_height(ui.spacing().interact_size.y);
-            ui.colored_label(
-                if self.view.active {
-                    theme::ACCENT
-                } else {
-                    theme::SECONDARY
-                },
-                if self.view.active {
-                    "Audio active"
-                } else {
-                    "Audio off"
-                },
-            );
-            if self.busy_visible {
-                ui.spinner();
-                ui.label("Working…");
-            }
-        };
-        if self.piano_roll_open || self.mixer_ui.open {
-            ui.horizontal_wrapped(|ui| {
-                project_title(ui);
-                audio_control(ui);
+        let mut selected = None;
+        ui.spacing_mut().item_spacing.y = 0.0;
+        egui::Frame::new()
+            .inner_margin(egui::Margin {
+                left: 12,
+                right: 12,
+                top: 12,
+                bottom: 8,
+            })
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 8.0;
+                selected = self.menu_bar(ui);
+                ui.horizontal_wrapped(|ui| self.project_title(ui));
             });
-        } else {
-            ui.add_space(20.0);
-            ui.horizontal(project_title);
-            ui.add_space(12.0);
-            ui.horizontal_wrapped(audio_control);
+        // The transport keeps the window's side margins (T41 round 2).
+        egui::Frame::new()
+            .inner_margin(egui::Margin::symmetric(12, 0))
+            .show(ui, |ui| {
+                selected = self.transport_bar(ui).or(selected.take());
+            });
+        egui::Frame::new()
+            .inner_margin(egui::Margin {
+                left: 12,
+                right: 12,
+                top: 12,
+                bottom: 8,
+            })
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 8.0;
+                selected = self.workspace(ui).or(selected.take());
+            });
+        self.finish_paint(ctx);
+        if let Some(command) = selected {
+            self.dispatch(command, ctx);
         }
-        ui.add_space(12.0);
-        selected = self.transport_bar(ui).or(selected);
+    }
+
+    /// The project name and its unsaved state; "Audio off" only when audio is not running.
+    fn project_title(&self, ui: &mut egui::Ui) {
+        text::heading(
+            ui,
+            &self
+                .view
+                .path
+                .as_ref()
+                .and_then(|p| p.file_stem())
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "Untitled".into()),
+        );
+        if self.has_unsaved_changes() {
+            text::caption(ui, "Unsaved changes");
+        }
+        if !self.view.active {
+            text::caption(ui, "Audio off");
+        }
+        if self.busy_visible {
+            ui.spinner();
+            text::caption(ui, "Working…");
+        }
+    }
+
+    fn workspace(&mut self, ui: &mut egui::Ui) -> Option<Command> {
+        let mut selected = None;
+        let width = ui.available_width();
+        let status_height = theme::metric::CONTROL_HEIGHT;
+        let body_height = (ui.available_height() - status_height - 8.0).max(150.0);
+        let (body, _) =
+            ui.allocate_exact_size(egui::vec2(width, body_height), egui::Sense::hover());
+        // Each region is a child on its own rectangle, so its content never moves the
+        // workspace cursor: the status row always follows the body.
+        let region = |rect| {
+            egui::UiBuilder::new()
+                .max_rect(rect)
+                .layout(egui::Layout::top_down(egui::Align::Min))
+        };
+        {
+            let gap = 12.0;
+            let left = egui::Rect::from_min_size(
+                body.min,
+                egui::vec2(theme::metric::INSPECTOR_WIDTH, body.height()),
+            );
+            // A hidden drawer gives its width to the arrangement.
+            let right = if self.left_drawer_hidden {
+                body
+            } else {
+                selected = self.left_column(&mut ui.new_child(region(left)), left);
+                egui::Rect::from_min_max(egui::pos2(left.right() + gap, body.top()), body.max)
+            };
+            let editing = self.editing_column(&mut ui.new_child(region(right)), right);
+            selected = editing.or(selected);
+        }
         ui.add_space(8.0);
-        if self.mixer_ui.open {
-            self.show_mixer(ui);
-            if let Some(command) = selected {
-                self.dispatch(command, ctx);
-            }
-            return;
-        }
-        let mut choose = None;
-        let mut transport_action = None;
-        let mut track_mode = None;
-        let height = (ui.available_height() - 78.0).max(150.0);
-        let arrangement_height = if self.piano_roll_open {
-            self.piano_roll.split_height(height)
-        } else {
-            height
-        };
-        let details_width = if ui.available_width() >= 920.0 {
-            292.0
-        } else {
-            244.0
-        };
-        let arrangement_width =
-            (ui.available_width() - details_width - ui.spacing().item_spacing.x).max(300.0);
-        ui.horizontal_top(|ui| {
-            ui.vertical(|ui| {
-                ui.set_width(arrangement_width);
-                let result = self.timeline_surface(ui, arrangement_height, arrangement_width);
-                choose = result.0;
-                transport_action = result.2;
-                if result.1 { selected = Some(Command::AddTrack); }
+        self.status_row(ui, width).or(selected)
+    }
+
+    /// T41 left column: the selected-track inspector over the channel strips. The inspector
+    /// takes the height of its content (measured on the previous frame, at most 60 % of the
+    /// column); the strips take the rest, each part with its own scroll.
+    fn left_column(&mut self, ui: &mut egui::Ui, rect: egui::Rect) -> Option<Command> {
+        let gap = 8.0;
+        let margin = 12.0;
+        let wanted = self.inspector_height + 2.0 * margin;
+        let top_height = wanted.min(rect.height() * 0.6).max(64.0).floor();
+        let top = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), top_height));
+        let bottom =
+            egui::Rect::from_min_max(egui::pos2(rect.left(), top.bottom() + gap), rect.max);
+        ui.painter().rect_filled(top, 0, theme::PANEL);
+        let inner = top.shrink(margin);
+        let mut column = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(inner)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        let output = egui::ScrollArea::vertical()
+            .id_salt("track-details")
+            .max_height(inner.height())
+            .auto_shrink([false, true])
+            .show(&mut column, |ui| {
+                let start = ui.cursor().top();
+                let selected = self.inspector(ui);
+                (selected, ui.cursor().top() - start)
             });
-            egui::Frame::new().fill(theme::PANEL).inner_margin(12.0).show(ui, |ui| { ui.vertical(|ui| {
-                ui.set_width(details_width - 24.0);
-                egui::ScrollArea::vertical().id_salt("track-details").max_height(arrangement_height).show(ui,|ui| {
-                    if let Some(track) = self.view.track().cloned() {
-                        text::heading(ui, "Selected instrument track");
-                        text::caption(ui, "Track name");
-                        let edit = TextField::new(&mut self.rename, "Track name").id(ui.make_persistent_id(("track-name",track.id))).enabled(!self.busy_visible).show(ui);
-                        if self.rename_focus { edit.request_focus(); self.rename_focus=false; }
-                        if edit.has_focus() && ui.input_mut(|i|i.consume_key(Modifiers::NONE,Key::Escape)) { self.rename=track.name.clone(); }
-                        if edit.lost_focus() && ui.input(|i|i.key_pressed(Key::Enter)) { selected=Some(Command::Rename); }
-                        ui.horizontal_wrapped(|ui| { for command in [Command::Rename,Command::MoveUp,Command::MoveDown,Command::RemoveTrack] {
-                            if self.button(ui,command) {selected=Some(command);}
-                        }});
-                        ui.add_space(12.0);
-                        ui.label(track.plugin.as_ref().map(|p|format!("{} · {}",p.name,p.format)).unwrap_or_else(||"No instrument".into()));
-                        let state = self.view.state(track.id).map(|s|s.status.as_str()).unwrap_or("Empty");
-                        if self.view.failed { text::danger(ui, state); } else { text::caption(ui, state); }
-                        ui.add_space(8.0);
-                        let mode_enabled = !self.view.recording
-                            && !self.view.transport.pending
-                            && self.busy_since.is_none()
-                            && self.view.tracks.iter().all(|track| !track.loading);
-                        let (_, chosen) = menu_button(
-                            ui,
-                            ("track-record-mode", track.id),
-                            "Record mode",
-                            Some("Record mode"),
-                            track.record_mode.label(),
-                            mode_enabled,
-                            |ui| {
-                                TrackMode::ALL
-                                    .into_iter()
-                                    .find(|&mode| choice(ui, mode.label(), mode == track.record_mode))
-                            },
-                        );
-                        if let Some(Some(mode)) = chosen
-                            && mode != track.record_mode
-                        {
-                            track_mode = Some(mode);
-                        }
-                        text::caption(ui, "Global follows the transport record mode.");
-                        ui.horizontal_wrapped(|ui| { for command in [Command::Instrument,Command::Editor,Command::CloseEditor] {if self.button(ui,command) {selected=Some(command);}} });
-                        ui.horizontal_wrapped(|ui| { for command in [Command::Restart,Command::Reactivate,Command::Quarantine] {if self.button(ui,command) {selected=Some(command);}} });
-                        ui.add_space(12.0);
-                        let audio = self.view.audio.clone().unwrap_or_default();
-                        let midi = self.devices.midi.iter().find(|(id,_)| id == &audio.midi).map(|(_,n)| n.as_str()).unwrap_or("MIDI input unavailable / not selected");
-                        let target = self.view.armed.and_then(|id| self.view.project.tracks.iter().find(|track| track.id == id));
-                        ui.label(format!("MIDI: {midi} / {}", target.map_or("selected track", |track| track.name.as_str())));
-                        ui.label(format!("Output: stereo {}–{}",audio.pair[0]+1,audio.pair[1]+1));
-                    } else {
-                        ui.label("Add an instrument track, choose a plugin, then play the selected track.");
-                    }
-                });
-            }); });
+        let (selected, content) = output.inner;
+        if (content - self.inspector_height).abs() > 0.5 {
+            self.inspector_height = content;
+            ui.ctx().request_repaint();
+        }
+        ui.painter().rect_filled(bottom, 0, theme::PANEL);
+        let mut strips = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(bottom)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        egui::ScrollArea::vertical()
+            .id_salt("selected-strip")
+            .max_height(bottom.height())
+            .auto_shrink([false, false])
+            .show(&mut strips, |ui| {
+                ui.add_space(8.0);
+                self.selected_strips(ui);
+            });
+        selected
+    }
+
+    /// The selected instrument track's inspector (no debug MIDI status line, T41).
+    fn inspector(&mut self, ui: &mut egui::Ui) -> Option<Command> {
+        let mut selected = None;
+        let Some(track) = self.view.track().cloned() else {
+            text::caption(
+                ui,
+                "Add an instrument track, choose a plugin, then play the selected track.",
+            );
+            return None;
+        };
+        ui.spacing_mut().item_spacing.y = 6.0;
+        // T41 round 2: rename, move and remove live on the header (double-click, drag,
+        // context menu) and in the Track menu, not here.
+        text::section(ui, "Track");
+        text::body(ui, &track.name);
+        ui.add_space(8.0);
+        text::section(ui, "Instrument");
+        text::body(
+            ui,
+            &track
+                .plugin
+                .as_ref()
+                .map(|p| format!("{} · {}", p.name, p.format))
+                .unwrap_or_else(|| "No instrument".into()),
+        );
+        let state = self
+            .view
+            .state(track.id)
+            .map(|s| s.status.as_str())
+            .unwrap_or("Empty");
+        if self.view.failed {
+            text::danger(ui, state);
+        } else {
+            text::caption(ui, state);
+        }
+        ui.horizontal_wrapped(|ui| {
+            // Plugin editors open from their slot in the channel strip.
+            for command in [Command::Instrument] {
+                if self.button(ui, command) {
+                    selected = Some(command);
+                }
+            }
         });
-        if let Some(mode) = track_mode
-            && let Some(id) = self.view.selected
+        ui.horizontal_wrapped(|ui| {
+            for command in [Command::Restart, Command::Reactivate, Command::Quarantine] {
+                if self.button(ui, command) {
+                    selected = Some(command);
+                }
+            }
+        });
+        ui.add_space(8.0);
+        text::section(ui, "Recording");
+        let mode_enabled = !self.view.recording
+            && !self.view.transport.pending
+            && self.busy_since.is_none()
+            && self.view.tracks.iter().all(|track| !track.loading);
+        let (_, chosen) = menu_button(
+            ui,
+            ("track-record-mode", track.id),
+            "Record mode",
+            Some("Record mode"),
+            track.record_mode.label(),
+            mode_enabled,
+            |ui| {
+                TrackMode::ALL
+                    .into_iter()
+                    .find(|&mode| choice(ui, mode.label(), mode == track.record_mode))
+            },
+        );
+        if let Some(Some(mode)) = chosen
+            && mode != track.record_mode
         {
             self.send(Action::Transport(TransportAction::SetTrackRecordMode(
-                id, mode,
+                track.id, mode,
             )));
         }
+        text::caption(ui, "Global follows the transport record mode.");
+        selected
+    }
+
+    /// T41 right column: tool row, arrangement, and the lower panel (piano roll or mixer)
+    /// under it when open and docked. At full height (S2) the lower panel takes the whole
+    /// column and the arrangement is hidden.
+    fn editing_column(&mut self, ui: &mut egui::Ui, rect: egui::Rect) -> Option<Command> {
+        self.track_area_width = rect.width();
+        let docked = (self.piano_roll_open || self.mixer_ui.open) && !self.panel.detached;
+        let full = docked && self.panel.full;
+        let mut selected = None;
+        if !full {
+            selected = self.tool_row(ui, rect.width());
+            ui.add_space(8.0);
+            let height = ui.available_height().max(150.0);
+            let arrangement_height = if docked {
+                self.piano_roll.split_height(height)
+            } else {
+                height
+            };
+            let (choose, transport_action) =
+                self.timeline_surface(ui, arrangement_height, rect.width());
+            if let Some(action) = transport_action {
+                self.send(Action::Transport(action));
+            }
+            if let Some(id) = choose {
+                self.select_track(id);
+            }
+            if docked {
+                self.piano_roll.gutter(ui, height);
+            }
+        }
         if let Some(id) = self.arrangement_ui.open_roll.take()
-            && let Some((_, clip)) = self.view.project.midi.find_clip(id)
+            && self.view.project.midi.find_clip(id).is_some()
         {
-            self.piano_roll.open(id, clip);
+            // Editor and Mixer share the lower panel: opening the editor closes the mixer.
+            if self.mixer_ui.open {
+                self.dispatch_mixer(Command::ShowMixer);
+            }
+            if let Some((_, clip)) = self.view.project.midi.find_clip(id) {
+                self.piano_roll.open(id, clip);
+            }
             self.piano_roll_open = true;
             ui.ctx().request_repaint();
         }
-        if self.piano_roll_open {
-            self.piano_roll.gutter(ui, height);
+        if docked {
+            selected = self.lower_panel(ui).or(selected);
+        }
+        selected
+    }
+
+    /// T41 round 3 (S1, S2): the lower panel's content, docked or in its own window: the
+    /// mixer or the piano roll, with the panel controls at the right end of its tool row.
+    fn lower_panel(&mut self, ui: &mut egui::Ui) -> Option<Command> {
+        let mut control = None;
+        if self.mixer_ui.open {
+            control = self.show_mixer(ui);
+        } else if self.piano_roll_open {
             let editor_height = ui.available_height();
             let enabled = self.view.edit_history.available
                 && self.busy_since.is_none()
                 && self.confirm.is_none()
                 && self.file.is_none();
+            self.piano_roll.panel = self.panel;
+            self.piano_roll.keyboard = self.keyboard_mode;
             if let Some(action) = self.piano_roll.show(
                 ui,
                 editor_height,
                 &self.view,
                 &self.arrangement_ui.selected,
                 enabled,
-                &mut self.piano_roll_open,
             ) {
                 self.send(action);
             }
+            control = self.piano_roll.panel_request.take();
         }
-        egui::ScrollArea::vertical()
-            .id_salt("session-status")
-            .max_height(ui.available_height().max(1.0))
-            .show(ui, |ui| {
-                ui.collapsing("Track diagnostics", |ui| {
-                    egui::ScrollArea::vertical()
-                        .id_salt("track-diagnostics")
-                        .max_height(100.0)
-                        .show(ui, |ui| {
-                            for track in &self.view.project.tracks {
-                                if let Some(state) = self.view.state(track.id) {
-                                    ui.label(format!(
-                                        "{} · {} · {}",
-                                        track.name, state.status, state.diagnostics
-                                    ));
-                                }
-                            }
-                        });
-                });
-                if !self.view.quarantine_error.is_empty() {
-                    text::danger(ui, &self.view.quarantine_error);
-                }
-                if !self.view.history_message.is_empty() {
-                    text::danger(ui, &self.view.history_message);
-                }
-                ui.add_space(8.0);
-                if !self.view.actual.is_empty() {
-                    ui.colored_label(theme::SECONDARY, &self.view.actual);
-                }
-                if self.view.recording {
-                    let label = match self.view.transport.phase {
-                        clef_session::TransportPhase::CountingIn => "Count-in",
-                        clef_session::TransportPhase::Playing
-                            if self.view.recording_region.is_some() =>
-                        {
-                            "Recording MIDI"
-                        }
-                        _ => "Preparing MIDI recording",
-                    };
-                    ui.colored_label(theme::DANGER, label);
-                } else if let Some(reason) = self.view.record_unavailable {
-                    ui.colored_label(theme::SECONDARY, reason);
-                }
-                let message = if self.status.is_empty() {
-                    &self.view.message
+        use primitives::panel_controls::PanelControl;
+        match control? {
+            PanelControl::Detach => Some(Command::TogglePanelDetach),
+            PanelControl::Full => Some(Command::TogglePanelFull),
+            PanelControl::Close => {
+                if self.mixer_ui.open {
+                    Some(Command::ShowMixer)
                 } else {
-                    &self.status
-                };
-                ui.colored_label(
-                    if self.view.failed {
-                        theme::DANGER
-                    } else {
-                        theme::SECONDARY
-                    },
-                    message,
-                );
-            });
-        if let Some(action) = transport_action {
-            self.send(Action::Transport(action));
+                    self.piano_roll_open = false;
+                    None
+                }
+            }
         }
-        if let Some(id) = choose {
-            self.select_track(id);
+    }
+
+    /// T41 round 3 (S2): a detached lower panel in its own OS window (an egui viewport),
+    /// which can sit on another monitor. Closing the window closes the panel; Attach docks it.
+    fn detached_panel(&mut self, ctx: &egui::Context) {
+        if !self.view.project_open
+            || !self.panel.detached
+            || !(self.mixer_ui.open || self.piano_roll_open)
+        {
+            return;
         }
+        let title = if self.mixer_ui.open {
+            "Mixer — Clef"
+        } else {
+            "Editor — Clef"
+        };
+        let builder = egui::ViewportBuilder::default()
+            .with_title(title)
+            .with_inner_size([1100.0, 680.0])
+            .with_min_inner_size([520.0, 320.0]);
+        let selected = ctx.show_viewport_immediate(panel_viewport(), builder, |ui, _| {
+            let rect = ui.max_rect();
+            ui.painter().rect_filled(rect, 0.0, theme::BACKGROUND);
+            let closing = ui.input(|input| input.viewport().close_requested());
+            let selected = egui::Frame::new()
+                .inner_margin(egui::Margin::same(12))
+                .show(ui, |ui| {
+                    ui.set_min_size(ui.available_size());
+                    self.lower_panel(ui)
+                })
+                .inner;
+            if closing {
+                Some(if self.mixer_ui.open {
+                    Command::ShowMixer
+                } else {
+                    Command::ShowEditor
+                })
+            } else {
+                selected
+            }
+        });
+        self.finish_paint(ctx);
         if let Some(command) = selected {
             self.dispatch(command, ctx);
         }
     }
+
+    /// T41 status row: engine diagnostics at the left, the Editor and Mixer toggles centred,
+    /// the latest message or error at the right.
+    fn status_row(&mut self, ui: &mut egui::Ui, width: f32) -> Option<Command> {
+        let mut selected = None;
+        let (row, _) = ui.allocate_exact_size(
+            egui::vec2(width, theme::metric::CONTROL_HEIGHT),
+            egui::Sense::hover(),
+        );
+        let centre_width = 160.0;
+        let side = ((width - centre_width) / 2.0 - 12.0).max(0.0);
+        let layout =
+            |align| egui::Layout::left_to_right(egui::Align::Center).with_main_align(align);
+        let left = egui::Rect::from_min_size(row.min, egui::vec2(side, row.height()));
+        let centre =
+            egui::Rect::from_center_size(row.center(), egui::vec2(centre_width, row.height()));
+        let right = egui::Rect::from_min_max(egui::pos2(row.right() - side, row.top()), row.max);
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(left)
+                .layout(layout(egui::Align::Min)),
+            |ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                let name = self.keymap.tooltip(ui.ctx(), Command::ToggleLeftDrawer);
+                if crate::primitives::tool_button::tool_button(
+                    ui,
+                    crate::primitives::icons::Icon::Drawer,
+                    &name,
+                    self.command_available(Command::ToggleLeftDrawer, false),
+                    !self.left_drawer_hidden,
+                    self.keyboard_mode,
+                )
+                .clicked()
+                    && self.enabled(Command::ToggleLeftDrawer)
+                {
+                    selected = Some(Command::ToggleLeftDrawer);
+                }
+                text::status(ui, &self.view.actual, false);
+            },
+        );
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(centre)
+                .layout(layout(egui::Align::Center)),
+            |ui| {
+                // Flat texts with a divider (T41 round 2); a click on the lit one hides it.
+                let commands = [Command::ShowEditor, Command::ShowMixer];
+                let shown = if self.mixer_ui.open {
+                    Some(1)
+                } else if self.piano_roll_open {
+                    Some(0)
+                } else {
+                    None
+                };
+                let enabled = commands.map(|command| self.command_available(command, false));
+                if let Some(index) = crate::primitives::tabs::toggle_tabs(
+                    ui,
+                    "Lower views",
+                    &["Editor", "Mixer"],
+                    shown,
+                    &enabled,
+                ) && self.enabled(commands[index])
+                {
+                    selected = Some(commands[index]);
+                }
+            },
+        );
+        let (message, danger) = self.status_message();
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(right)
+                .layout(layout(egui::Align::Max)),
+            |ui| {
+                text::status(ui, &message, danger);
+            },
+        );
+        selected
+    }
+
+    /// The status row's message: errors first, then the recording state, then the latest
+    /// session message, then why recording is unavailable.
+    fn status_message(&self) -> (String, bool) {
+        if !self.view.quarantine_error.is_empty() {
+            return (self.view.quarantine_error.clone(), true);
+        }
+        if !self.view.history_message.is_empty() {
+            return (self.view.history_message.clone(), true);
+        }
+        if self.view.recording {
+            let label = match self.view.transport.phase {
+                clef_session::TransportPhase::CountingIn => "Count-in",
+                clef_session::TransportPhase::Playing if self.view.recording_region.is_some() => {
+                    "Recording MIDI"
+                }
+                _ => "Preparing MIDI recording",
+            };
+            return (label.into(), true);
+        }
+        let message = if self.status.is_empty() {
+            &self.view.message
+        } else {
+            &self.status
+        };
+        if !message.is_empty() {
+            return (message.clone(), self.view.failed);
+        }
+        (
+            self.view.record_unavailable.unwrap_or_default().into(),
+            false,
+        )
+    }
+
+    /// T41: per-track diagnostics, opened from Window → Track Diagnostics.
+    fn diagnostics_window(&mut self, ctx: &egui::Context) {
+        if !self.view.project_open || !self.diagnostics_open {
+            return;
+        }
+        let mut open = true;
+        ToolWindow::new("Track Diagnostics")
+            .width(560.0)
+            .show(ctx, &mut open, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("track-diagnostics")
+                    .max_height(320.0)
+                    .show(ui, |ui| {
+                        for track in &self.view.project.tracks {
+                            if let Some(state) = self.view.state(track.id) {
+                                text::body(ui, &track.name);
+                                text::caption(
+                                    ui,
+                                    &format!("{} · {}", state.status, state.diagnostics),
+                                );
+                                ui.add_space(6.0);
+                            }
+                        }
+                    });
+            });
+        self.diagnostics_open = open;
+    }
+
     fn plugin_picker(&mut self, ctx: &egui::Context) {
         if !self.picker_open {
             return;
@@ -1789,7 +2418,7 @@ impl App {
     fn command_label(&self, command: Command) -> String {
         let history = &self.view.edit_history;
         if command == Command::ShowMixer && self.mixer_ui.open {
-            return "Show Sequencer".into();
+            return "Hide Mixer".into();
         }
         let edit = match command {
             Command::Undo => history
@@ -1899,6 +2528,11 @@ impl App {
         }
     }
 }
+/// T41 round 3 (S2): the viewport of the detached lower panel.
+fn panel_viewport() -> egui::ViewportId {
+    egui::ViewportId::from_hash_of("clef-lower-panel")
+}
+
 impl eframe::App for App {
     fn clear_color(&self, _: &egui::Visuals) -> [f32; 4] {
         theme::BACKGROUND.to_normalized_gamma_f32()
@@ -1954,9 +2588,7 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         if self.view.project_open {
-            egui::Frame::new().inner_margin(12.0).show(ui, |ui| {
-                self.main_surface(ui, &ctx);
-            });
+            self.main_surface(ui, &ctx);
         } else {
             self.startup_surface(ui, &ctx);
         }
@@ -1964,6 +2596,10 @@ impl eframe::App for App {
         self.settings(&ctx);
         self.transport_windows(&ctx);
         self.command_window(&ctx);
+        self.diagnostics_window(&ctx);
+        self.detached_panel(&ctx);
+        self.new_tracks_window(&ctx);
+        self.project_format_window(&ctx);
         self.command_palette(&ctx);
         if cfg!(debug_assertions) {
             self.primitive_gallery_window(&ctx);

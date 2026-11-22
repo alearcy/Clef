@@ -136,12 +136,48 @@ pub fn under_shadow(painter: &Painter, body: Rect) {
     );
 }
 
+/// The lift shadow (shadows, "Lift") under a track block, note or part while a drag
+/// displaces it: black 45 %, 4 points down, 12-point blur. Paint it, then the lifted shape.
+pub fn lift_shadow(painter: &Painter, body: Rect) {
+    painter.add(
+        eframe::egui::epaint::Shadow {
+            offset: [0, 4],
+            blur: 12,
+            spread: 0,
+            color: Color32::from_black_alpha(115),
+        }
+        .as_shape(body, CornerRadius::ZERO),
+    );
+}
+
 /// Black alpha of the raised drop shadow (35 %).
 const RAISED_SHADOW: u8 = 90;
 /// White alpha of a raised body's 1-point top light (5 %).
 const TOP_LIGHT: u8 = 12;
 
 /// The one selected-row, header, strip or node cue: 1.5-point `accent` at 80 % inside `rect`.
+/// Height of a region shadow's falloff (T41).
+pub const REGION_SHADOW: f32 = 6.0;
+/// Black alpha of a region shadow where it meets its region (30 %).
+const REGION_SHADOW_ALPHA: f32 = 0.30;
+
+/// The region shadow (shadows, "Region"): a short falloff a chrome region casts into the margin
+/// below it, black 30 % at its edge easing to nothing over `REGION_SHADOW` points. It sits in
+/// spacing only and is never a separator line.
+pub fn region_shadow(painter: &Painter, region: Rect) {
+    let steps = REGION_SHADOW as usize * 2;
+    for step in 0..steps {
+        let t = step as f32 / steps as f32;
+        let alpha = REGION_SHADOW_ALPHA * (1.0 - t) * (1.0 - t);
+        let top = region.bottom() + t * REGION_SHADOW;
+        painter.rect_filled(
+            Rect::from_x_y_ranges(region.x_range(), top..=top + REGION_SHADOW / steps as f32),
+            0,
+            Color32::from_black_alpha((alpha * 255.0).round() as u8),
+        );
+    }
+}
+
 pub fn selection_edge(painter: &Painter, rect: Rect) {
     painter.rect_stroke(
         rect,

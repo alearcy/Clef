@@ -42,3 +42,15 @@ has no Plugin slot and no sends. Clicking anywhere on a strip selects the channe
 - Neutral surface: no stripe, no colour wash; the [selection edge](../components/selection-edge.md)
   only. MIDI tracks label the first slot **Plugin**. M/S appear once.
 - Every section stays reachable by scrolling; a hidden drawer gives its width back.
+
+## Clef T41 left column
+
+The selected track's strip sits in the bottom half of the left column, under the inspector, and
+scrolls vertically. It is the mixer's own strip (`App::selected_strip`), so every control and
+event behaves as in the mixer. It draws no selection edge, since it always shows the selected
+track. With no track selected the half shows "No track selected".
+
+### T41 round 2
+
+The left drawer shows two strips side by side: the selected track's and its output
+destination's (its bus, else Master), both the mixer's own strips.

@@ -13,6 +13,14 @@ pub(crate) enum Command {
     Redo,
     EditHistory,
     ShowMixer,
+    ShowEditor,
+    ToggleLeftDrawer,
+    TogglePanelFull,
+    TogglePanelDetach,
+    WiderTrackColumn,
+    NarrowerTrackColumn,
+    NewTracks,
+    ProjectFormat,
     MixerPrevious,
     MixerNext,
     MixerMute,
@@ -50,6 +58,7 @@ pub(crate) enum Command {
     DiscardRecovery,
     RecoveryLater,
     Settings,
+    TrackDiagnostics,
     Commands,
     Palette,
     AddTrack,
@@ -195,6 +204,14 @@ specs! {
     Undo, "edit.undo", "Undo", cmd(Key::Z), Global;
     EditHistory, "edit.history", "Edit History…", None, Global;
     ShowMixer, "view.mixer", "Show Mixer", key(CMD_SHIFT, Key::M), Global;
+    ShowEditor, "view.editor", "Show Editor", key(CMD_SHIFT, Key::E), Global;
+    ToggleLeftDrawer, "view.left-drawer", "Show / Hide Left Drawer", None, Global;
+    TogglePanelFull, "view.panel-full", "Lower Panel: Half / Full Height", None, Global;
+    TogglePanelDetach, "view.panel-detach", "Lower Panel: Detach / Attach", None, Global;
+    WiderTrackColumn, "view.track-column-wider", "Wider Track Column", None, Global;
+    NarrowerTrackColumn, "view.track-column-narrower", "Narrower Track Column", None, Global;
+    NewTracks, "track.new", "New Tracks…", None, Global;
+    ProjectFormat, "transport.project-format", "Project Format…", None, Global;
     MixerPrevious, "mixer.previous", "Mixer: Previous Channel", None, Mixer;
     MixerNext, "mixer.next", "Mixer: Next Channel", None, Mixer;
     MixerMute, "mixer.mute", "Mixer: Toggle Mute", None, Mixer;
@@ -230,6 +247,7 @@ specs! {
     DiscardRecovery, "startup.discard", "Discard…", None, Global;
     RecoveryLater, "startup.later", "Later", None, Global;
     Settings, "window.settings", "Audio/MIDI Settings", None, Global;
+    TrackDiagnostics, "window.track-diagnostics", "Track Diagnostics", None, Global;
     Commands, "window.commands", "Commands / Keyboard Shortcuts", cmd(Key::K), Global;
     Palette, "window.palette", "Command Palette…", key(CMD_SHIFT, Key::P), Global;
     AddTrack, "track.add", "Add Instrument Track", None, Global;

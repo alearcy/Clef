@@ -252,3 +252,21 @@ on master) and ◆, output, and the name box tinted by the track or role colour 
 - Fader caps of routing channels take their role colour.
 - The Sections menu stays open while toggling (`ToggleMenuItem` rows, UI10.6): click, Return or
   Space toggles a section and the strips relayout at once; each toggle is a registry command.
+
+## Clef T41 round 2
+
+Mute and Solo drag-paint across strips as in the [track header](track-header.md): press a lamp,
+drag across the others, release to commit every touched channel as one undo step.
+
+## Clef T41 round 3
+
+[T41 round 3](../../specs/T41-session-window-layout.md#round-3--gui-review-2026-11-22): the mixer opens in the lower panel under the arrangement, like the editor, and the two are
+exclusive (S1). It has no title and no "+ Bus" (S3, S4): buses come from New Tracks… and Add Bus.
+Its tool row is the lower-panel controls at the right (S2): Detach into its own window, Half / Full
+height (full hides the tool row and the arrangement), Close. With no tracks or buses the bank shows
+the [empty state](../components/empty-state.md) "No tracks yet." (S9); Master stays docked right.
+"Show Mixer" reads "Hide Mixer" while it is open.
+
+**Evidence:** `snapshots/egui/t41-{mixer,mixer-full,empty}-{1024,760}.png`; the t11, t12 and t15
+goldens render it at full height without the drawer; test
+`the_lower_panel_docks_one_view_and_full_height_hides_the_arrangement`.

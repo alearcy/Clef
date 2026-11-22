@@ -34,3 +34,25 @@ Length. While it is on, Length gives its place to the step controls: the step le
 (64 wide, "1/8 ▾", STEP is its caption), the triplet and dotted [glyph toggles](../components/glyph-toggle.md)
 and "Velocity: Keyboard ▾" (140 wide: From keyboard, Fixed values, Other…). The status row shows the
 step state and the rest, tie and back keys with their live bindings. Snapshot `step-input.png`.
+
+## Clef T41 arrangement tool row
+
+The arrangement's 28-point row sits under the transport, above the arrangement. Over the track
+headers (the header width): **+ Track** (Add Instrument Track) and a [search field](../components/search-field.md)
+"Find tracks" that filters the track rows by name, case-insensitive; Escape or the clear glyph
+shows every track again. Over the lanes: Snap and the Fit Width / Fit Height glyphs.
+
+The fit glyphs are toggles in both rows (arrangement and piano roll): the first press saves the
+view and fits, the glyph turns `accent`; a second press restores the saved view. A manual zoom of
+that axis ends the fit and discards the saved view (`arrangement::FitToggle`).
+
+### T41 round 2 order
+
+Over the track headers: the track search, then the create glyph (`CREATE` "+", 24 points like the
+field; opens New Tracks…). The fit toggles sit at the right end of the row. Snap moved to the
+[transport](transport-bar.md).
+
+## Clef T41 round 3
+
+[T41 round 3](../../specs/T41-session-window-layout.md#round-3--gui-review-2026-11-22): the arrangement tool row is hidden while the lower panel is at full height. The piano roll's
+tool row puts its fit toggles right-aligned before the lower-panel controls (S5).

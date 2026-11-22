@@ -22,6 +22,45 @@ pub use super::{icons::Icon, tool_button::tool_button};
 
 /// The bar.beat.tick counter as a segment display; the count-in state is a caption beside it,
 /// never only a colour.
+/// T41: the second counter's text for the time `nanos` from the project start: time
+/// `h:mm:ss.mmm`, samples at `rate`, or SMPTE `hh:mm:ss:ff`.
+pub fn second_counter_text(
+    counter: clef_model::project::SecondCounter,
+    fps: u8,
+    nanos: u128,
+    rate: u32,
+) -> String {
+    use clef_model::project::SecondCounter;
+    let seconds = nanos / 1_000_000_000;
+    let (h, m, s) = (seconds / 3600, seconds / 60 % 60, seconds % 60);
+    match counter {
+        SecondCounter::Time => {
+            let millis = nanos / 1_000_000 % 1_000;
+            format!("{h}:{m:02}:{s:02}.{millis:03}")
+        }
+        SecondCounter::Samples => {
+            format!(
+                "{}",
+                (nanos * u128::from(rate) + 500_000_000) / 1_000_000_000
+            )
+        }
+        SecondCounter::Smpte => {
+            let frames = nanos * u128::from(fps) / 1_000_000_000 % u128::from(fps);
+            format!("{h:02}:{m:02}:{s:02}:{frames:02}")
+        }
+    }
+}
+
+/// T41: the second counter's menu label.
+pub fn second_counter_label(counter: clef_model::project::SecondCounter, fps: u8) -> String {
+    use clef_model::project::SecondCounter;
+    match counter {
+        SecondCounter::Time => "Time".into(),
+        SecondCounter::Samples => "Samples".into(),
+        SecondCounter::Smpte => format!("SMPTE {fps} fps"),
+    }
+}
+
 pub fn counter(ui: &mut Ui, position: Position, counting: bool, recording: bool) {
     let text = format!("{}.{:02}.{:04}", position.bar, position.beat, position.tick);
     super::segment_display::segment_display(ui, "Bar, beat and tick", &text, recording, 120.0)
@@ -31,17 +70,22 @@ pub fn counter(ui: &mut Ui, position: Position, counting: bool, recording: bool)
     }
 }
 
-pub fn bar(ui: &mut Ui, draw: impl FnOnce(&mut Ui)) {
-    egui::Frame::new()
+/// T41: the transport band. It spans the full width it is given, `panel` with a 12-point side
+/// margin, and casts a region shadow into the space below it.
+pub fn band(ui: &mut Ui, draw: impl FnOnce(&mut Ui)) {
+    let response = egui::Frame::new()
         .fill(theme::PANEL)
-        .inner_margin(6.0)
+        .inner_margin(egui::Margin::symmetric(12, 6))
         .show(ui, |ui| {
+            ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
                 ui.set_min_height(28.0);
                 draw(ui);
             });
-        });
+        })
+        .response;
+    crate::paint::region_shadow(ui.painter(), response.rect);
 }
 
 /// Zoom range of the editing surfaces, in pixels per quarter note.
@@ -144,6 +188,32 @@ pub fn tick_field(ui: &mut Ui, label: &str, tick: &mut u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clef_model::project::SecondCounter;
+
+    #[test]
+    fn second_counters_read_time_samples_and_smpte() {
+        let nanos = 3_723_540_000_000; // 1 h 2 min 3.54 s
+        assert_eq!(
+            second_counter_text(SecondCounter::Time, 25, nanos, 48_000),
+            "1:02:03.540"
+        );
+        assert_eq!(
+            second_counter_text(SecondCounter::Samples, 25, 1_500_000_000, 48_000),
+            "72000"
+        );
+        assert_eq!(
+            second_counter_text(SecondCounter::Smpte, 25, nanos, 48_000),
+            "01:02:03:13"
+        );
+        assert_eq!(
+            second_counter_text(SecondCounter::Smpte, 30, nanos, 48_000),
+            "01:02:03:16"
+        );
+        assert_eq!(
+            second_counter_label(SecondCounter::Smpte, 24),
+            "SMPTE 24 fps"
+        );
+    }
     use egui::{Event, Modifiers, PointerButton, Pos2, RawInput, Shape};
 
     #[test]

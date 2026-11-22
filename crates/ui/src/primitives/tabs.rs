@@ -14,6 +14,34 @@ const PADDING: f32 = 10.0;
 /// Draws the tab row named `name`; returns true when `selected` changed.
 pub fn tabs(ui: &mut Ui, name: &str, labels: &[&str], selected: &mut usize) -> bool {
     let before = *selected;
+    let enabled = vec![true; labels.len()];
+    if let Some(index) = row(ui, name, labels, Some(*selected), &enabled, true) {
+        *selected = index;
+    }
+    *selected != before
+}
+
+/// T41: the same flat texts as toggles. `shown` is the lit item, if any; returns the item
+/// clicked, which the caller shows or, when it is the lit one, hides. Arrows move focus only.
+pub fn toggle_tabs(
+    ui: &mut Ui,
+    name: &str,
+    labels: &[&str],
+    shown: Option<usize>,
+    enabled: &[bool],
+) -> Option<usize> {
+    row(ui, name, labels, shown, enabled, false)
+}
+
+fn row(
+    ui: &mut Ui,
+    name: &str,
+    labels: &[&str],
+    shown: Option<usize>,
+    enabled: &[bool],
+    arrows_select: bool,
+) -> Option<usize> {
+    let mut picked = None;
     let id = ui.id().with(("clef-tabs", name));
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
@@ -36,19 +64,27 @@ pub fn tabs(ui: &mut Ui, name: &str, labels: &[&str], selected: &mut usize) -> b
                 vec2(galley.size().x + 2.0 * PADDING, metric::TAB_HEIGHT),
                 Sense::hover(),
             );
-            let response = ui.interact(rect, id.with(index), Sense::click());
-            let shown = *selected == index;
+            let usable = enabled.get(index).copied().unwrap_or(true);
+            let sense = if usable {
+                Sense::click()
+            } else {
+                Sense::hover()
+            };
+            let response = ui.interact(rect, id.with(index), sense);
+            let lit = shown == Some(index);
             response.widget_info(|| {
-                WidgetInfo::selected(WidgetType::SelectableLabel, true, shown, *label)
+                WidgetInfo::selected(WidgetType::SelectableLabel, usable, lit, *label)
             });
             if response.clicked() {
-                *selected = index;
+                picked = Some(index);
             }
             if response.has_focus() {
                 focused = Some(index);
             }
-            let colour = if shown {
+            let colour = if lit {
                 theme::ACCENT
+            } else if !usable {
+                theme::DISABLED
             } else if response.hovered() {
                 theme::TEXT
             } else {
@@ -77,10 +113,12 @@ pub fn tabs(ui: &mut Ui, name: &str, labels: &[&str], selected: &mut usize) -> b
             });
             if step != 0 {
                 let next = (index as i32 + step).rem_euclid(labels.len() as i32) as usize;
-                *selected = next;
+                if arrows_select {
+                    picked = Some(next);
+                }
                 ui.memory_mut(|memory| memory.request_focus(id.with(next)));
             }
         }
     });
-    *selected != before
+    picked
 }

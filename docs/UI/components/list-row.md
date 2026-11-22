@@ -102,3 +102,8 @@ pickers and the file list (22).
 `ListRow::trailing(&str)` paints right-aligned `BODY` text in `secondary` (`disabled` when the
 row is unavailable) on the first line and narrows the name to fit; an empty string paints
 nothing. The [command palette](../views/command-palette.md) uses it for live shortcuts.
+
+## Clef T41 header mode
+
+`.header()` rows keep `panel` when selected and paint no selection edge: the track header that
+owns the row draws the edge around its whole bounds.

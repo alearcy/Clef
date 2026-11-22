@@ -29,6 +29,67 @@ pub(super) struct MixerUi {
     send_deferred: bool,
     pub(super) reveal: Option<u64>,
     pub(super) gallery_insert_focus: Option<u64>,
+    /// T41: a Mute or Solo drag-paint in progress, shared by headers and strips.
+    pub(super) paint: std::cell::RefCell<Option<MixPaint>>,
+}
+
+impl MixerUi {
+    /// T41: the lamp state to show: a channel the paint gesture touched shows the painted value.
+    pub(super) fn painted(&self, target: Target, control: Control, stored: bool) -> bool {
+        match &*self.paint.borrow() {
+            Some(paint) if paint.control == control && paint.targets.contains(&target) => {
+                paint.value != 0
+            }
+            _ => stored,
+        }
+    }
+
+    /// T41: feeds one drawn Mute or Solo lamp to the paint gesture. A primary press starts it
+    /// with the opposite of the shown state; while the button is held, the same lamp of any
+    /// other channel under the pointer joins it. Returns true for a keyboard activation, which
+    /// the caller toggles as before.
+    pub(super) fn paint_lamp(
+        &self,
+        ui: &egui::Ui,
+        response: &egui::Response,
+        target: Target,
+        control: Control,
+        shown: bool,
+    ) -> bool {
+        let (pressed, down, pointer) = ui.input(|input| {
+            (
+                input.pointer.primary_pressed(),
+                input.pointer.primary_down(),
+                input.pointer.interact_pos(),
+            )
+        });
+        let mut paint = self.paint.borrow_mut();
+        if response.enabled() && pressed && response.is_pointer_button_down_on() {
+            *paint = Some(MixPaint {
+                control,
+                value: i16::from(!shown),
+                targets: vec![target],
+            });
+        } else if down
+            && let Some(paint) = paint.as_mut()
+            && paint.control == control
+            && response.enabled()
+            && pointer.is_some_and(|pos| response.rect.contains(pos))
+            && !paint.targets.contains(&target)
+        {
+            paint.targets.push(target);
+            ui.ctx().request_repaint();
+        }
+        response.clicked() && !response.clicked_by(egui::PointerButton::Primary)
+    }
+}
+
+/// T41 drag-paint: the control, the state it sets, and the channels it has touched so far.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct MixPaint {
+    pub control: Control,
+    pub value: i16,
+    pub targets: Vec<Target>,
 }
 
 /// A send-level drag: previews go to the session unacknowledged, like fader previews.
@@ -106,7 +167,6 @@ enum Event {
     NewBus {
         track: u64,
     },
-    AddBus,
 }
 
 struct DragInsert(Target, u64);
@@ -271,6 +331,9 @@ impl App {
             Command::ShowMixer => {
                 self.cancel_mix_gesture();
                 self.mixer_ui.open = !self.mixer_ui.open;
+                if self.mixer_ui.open {
+                    self.piano_roll_open = false;
+                }
                 self.mixer_ui.effect_picker = None;
             }
             Command::MixerPrevious | Command::MixerNext => {
@@ -351,7 +414,7 @@ impl App {
         self.commit_mixer(change);
     }
 
-    fn run_mixer_command(&mut self, command: Command, target: Target) {
+    pub(super) fn run_mixer_command(&mut self, command: Command, target: Target) {
         if command == Command::ResetMixerClip {
             self.send(Action::ResetMeter(self.view.project_epoch, target));
             return;
@@ -365,6 +428,27 @@ impl App {
             && let Ok(channel) = self.view.project.mix(target)
         {
             self.commit_mixer(self.make_change(target, control, 1 - channel.get(control)));
+        }
+    }
+
+    /// T41: commits a released paint gesture as one undo step.
+    pub(super) fn finish_paint(&mut self, ctx: &egui::Context) {
+        // A paint may run in the main window or in the detached lower panel (T41 S2).
+        let down = |id| ctx.input_for(id, |input| input.pointer.primary_down());
+        if down(egui::ViewportId::ROOT) || down(crate::panel_viewport()) {
+            return;
+        }
+        let Some(paint) = self.mixer_ui.paint.borrow_mut().take() else {
+            return;
+        };
+        let changes = paint
+            .targets
+            .iter()
+            .filter(|target| target.accepts(paint.control))
+            .map(|&target| self.make_change(target, paint.control, paint.value))
+            .collect::<Vec<_>>();
+        if !changes.is_empty() {
+            self.send(Action::CommitMixBatch(changes));
         }
     }
 
@@ -471,11 +555,13 @@ impl App {
         self.flush_send_commit();
     }
 
-    fn mixer_controls_enabled(&self) -> bool {
+    pub(super) fn mixer_controls_enabled(&self) -> bool {
         self.busy_since.is_none() && self.confirm.is_none() && self.file.is_none()
     }
 
-    pub(super) fn show_mixer(&mut self, ui: &mut egui::Ui) {
+    /// The insert rows every strip reserves, so strips line up (shared by the mixer and the
+    /// selected-track strip).
+    fn update_insert_rows(&mut self) {
         let effects = self
             .view
             .project
@@ -488,21 +574,88 @@ impl App {
             .min(2);
         self.mixer_ui.visible_insert_rows =
             1 + effects + usize::from(!self.view.project.tracks.is_empty());
+    }
+
+    /// T41: the selected track's channel strip in the left column, below the inspector. It is
+    /// the mixer's own strip, so every control behaves as it does in the mixer.
+    /// T41 round 2, as in Logic: the selected track's strip and, beside it, the strip of its
+    /// output destination (its bus, else Master). Both are the mixer's own strips.
+    pub(super) fn selected_strips(&mut self, ui: &mut egui::Ui) {
+        let Some(track) = self.view.track().cloned() else {
+            crate::primitives::text::caption(ui, "No track selected");
+            return;
+        };
+        self.update_insert_rows();
+        let enabled = self.mixer_controls_enabled();
+        let destination = track
+            .output
+            .and_then(|id| self.view.project.tracks.iter().find(|bus| bus.id == id))
+            .cloned();
+        let event = ui
+            .horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = MIX_GAP;
+                ui.add_space(MIX_GAP);
+                // The selected track's strip draws no selection edge: it is always selected.
+                let (_, mut event, _) = self.mixer_track(ui, &track, None, None);
+                let (_, output, _) = match &destination {
+                    Some(bus) => self.mixer_track(ui, bus, None, None),
+                    None => self.master_strip(ui, None, None),
+                };
+                event = output.or(event);
+                event
+            })
+            .inner;
+        self.finish_mixer_frame(ui, event, None, enabled);
+    }
+
+    fn master_strip(
+        &self,
+        ui: &mut egui::Ui,
+        selected: Option<Target>,
+        selection: Option<Target>,
+    ) -> (egui::Response, Option<Event>, bool) {
+        let target = Target::Master;
+        let channel = Channel {
+            level: self.view.project.master,
+            ..Default::default()
+        };
+        self.mixer_strip(
+            ui,
+            Strip {
+                target,
+                name: "Master",
+                channel,
+                selected: selected == Some(target),
+                focus: selection == Some(target),
+                kind: TrackKind::Instrument,
+                sends: &[],
+                output: None,
+                inputs: 0,
+            },
+        )
+    }
+
+    /// The mixer in the lower panel (T41 round 3): no title and no "+ Bus" (S3, S4; buses are
+    /// created from New Tracks… and Add Bus), the panel controls at the right end of its tool
+    /// row (S2), and an empty state while the project has no tracks (S9). Returns a pressed
+    /// panel control.
+    pub(super) fn show_mixer(
+        &mut self,
+        ui: &mut egui::Ui,
+    ) -> Option<crate::primitives::panel_controls::PanelControl> {
+        self.update_insert_rows();
         let enabled = self.mixer_controls_enabled();
         let selected = self.mixer_selection();
         let mut event = None;
         let mut selected_strip = None;
-        ui.horizontal(|ui| {
-            crate::primitives::text::heading(ui, "Mixer");
-            if crate::primitives::text_button::TextButton::new("+ Bus")
-                .enabled(enabled)
-                .tooltip("Add a bus used as a group or FX return")
-                .show(ui)
-                .clicked()
-            {
-                event = Some(Event::AddBus);
-            }
-        });
+        let (row, _) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width(), crate::theme::TOOL_TARGET),
+            egui::Sense::hover(),
+        );
+        let control =
+            crate::primitives::panel_controls::at_right(ui, row, self.panel, self.keyboard_mode);
+        ui.add_space(4.0);
+        let empty_height = (ui.available_height() - 8.0).max(160.0);
         let selection = if enabled {
             self.mixer_ui.focus.take()
         } else {
@@ -553,6 +706,14 @@ impl App {
                                 .show(ui, |ui| {
                                     ui.horizontal_top(|ui| {
                                         ui.spacing_mut().item_spacing.x = MIX_GAP;
+                                        if instruments.is_empty() && buses.is_empty() {
+                                            crate::primitives::empty_state::fill(
+                                                ui,
+                                                empty_height.min(480.0),
+                                                crate::primitives::icons::Icon::Faders,
+                                                "No tracks yet.",
+                                            );
+                                        }
                                         for track in &instruments {
                                             let target = if track.is_bus() {
                                                 Target::Bus(track.id)
@@ -616,24 +777,7 @@ impl App {
                         );
                     }
                     let target = Target::Master;
-                    let channel = Channel {
-                        level: self.view.project.master,
-                        ..Default::default()
-                    };
-                    let (_, result, clicked) = self.mixer_strip(
-                        ui,
-                        Strip {
-                            target,
-                            name: "Master",
-                            channel,
-                            selected: selected == Some(target),
-                            focus: selection == Some(target),
-                            kind: TrackKind::Instrument,
-                            sends: &[],
-                            output: None,
-                            inputs: 0,
-                        },
-                    );
+                    let (_, result, clicked) = self.master_strip(ui, selected, selection);
                     if clicked {
                         selected_strip = Some(target);
                     }
@@ -643,6 +787,19 @@ impl App {
                     controls::small_label(ui, &self.status);
                 }
             });
+        self.finish_mixer_frame(ui, event, selected_strip, enabled);
+        control
+    }
+
+    /// Applies a strip frame's selection and event, commits released drags and shows the
+    /// effect picker.
+    fn finish_mixer_frame(
+        &mut self,
+        ui: &mut egui::Ui,
+        event: Option<Event>,
+        selected_strip: Option<Target>,
+        enabled: bool,
+    ) {
         if enabled && let Some(target) = selected_strip {
             self.select_mixer(target);
         }
@@ -745,9 +902,6 @@ impl App {
                 self.send(Action::AddBus {
                     assign: Some(track),
                 });
-            }
-            Event::AddBus => {
-                self.send(Action::AddBus { assign: None });
             }
             Event::Focus(target) => self.focus_mixer(target),
             Event::Command(command, target) => self.run_mixer_command(command, target),
@@ -890,14 +1044,19 @@ impl App {
                                     if !shortcuts[index].is_empty() {
                                         hint.push_str(&format!(" ({})", shortcuts[index]));
                                     }
-                                    if controls::lamp(
+                                    let shown = self.mixer_ui.painted(target, control, active);
+                                    let response = controls::lamp(
                                         ui,
                                         label,
                                         &hint,
                                         control == Control::Solo,
-                                        active,
+                                        shown,
                                         enabled,
-                                    ) {
+                                    );
+                                    if self
+                                        .mixer_ui
+                                        .paint_lamp(ui, &response, target, control, shown)
+                                    {
                                         event = Some(Event::Command(command, target));
                                     }
                                 }
@@ -1722,6 +1881,9 @@ mod tests {
         app.view.project_open = true;
         app.view.selected = Some(1);
         app.mixer_ui.open = true;
+        // The mixer at full height without the drawer: the whole workspace (T41 S2).
+        app.panel.full = true;
+        app.left_drawer_hidden = true;
         app.catalog.effects = vec![insert(4, "Plate Reverb").plugin];
         app
     }

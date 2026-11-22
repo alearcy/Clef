@@ -62,3 +62,9 @@ the fill alone. Accessible: checkbox role named by `hint` ("Mute Strings").
 
 **Evidence:** gallery `snapshots/egui/t18-mute-solo-{1024,760}.png` and `t18-mute-solo-1024@2x.png`
 (Retina); accessible names checked by `gallery::tests::every_gallery_control_has_an_accessible_name`.
+
+## Clef T41 round 2
+
+`lamp` returns its `Response`; headers and strips feed it to `MixerUi::paint_lamp` for
+drag-paint (press sets the opposite state, dragging over other lamps of the same control joins
+them, release commits one undo step). A keyboard activation still toggles one channel.

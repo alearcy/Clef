@@ -21,6 +21,7 @@ reference and remains a planning draft.
 
 | Task | Status | Specification | Next step / dependency |
 | --- | --- | --- | --- |
+| T41 — Session Window Layout Cleanup | In Progress | [T41 specification](docs/specs/T41-session-window-layout.md) | P1. Round 3 implemented; awaiting the user's GUI check. |
 | T14 — Audio Tracks and Recording | Todo | [T14 specification](docs/specs/T14-audio-recording.md) | P1. After T05 and T11; media-storage decision required. |
 | T27 — Audio Comping and Take Lanes | Todo | [T27 specification](docs/specs/T27-audio-comping.md) | P2. After T14 and T26; T14 media-storage decision required. |
 | T28 — FX Rack and Virtual Cable Graph | Todo | [T28 specification](docs/specs/T28-fx-rack.md) | P2. After T12 and T15; audio and MIDI nodes connected by virtual cables. |
@@ -33,3 +34,4 @@ reference and remains a planning draft.
 | T23 — Packaging and Cross-Platform Groundwork | Todo | [T23 specification](docs/specs/T23-packaging.md) | P3. After a stable feature set; distribution and platform scope to agree. |
 | T13 — Export and Bounce | Todo | [T13 specification](docs/specs/T13-export.md) | P1, deferred to the end on 2026-11-20; after T23 and before T29, which needs its render path. |
 | T29 — ARA 2 Hosting and Audio Part Editing | Todo | [T29 specification](docs/specs/T29-ara2-hosting.md) | P3. After T14, T13, and T16; ARA host probe gates implementation. |
+| T42 — Multi-Project Window with Tabs (Exploratory) | Todo | [T42 specification](docs/specs/T42-multi-project-tabs.md) | P3. After T41; interview required. |

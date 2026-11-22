@@ -35,7 +35,17 @@ fn width(text: &str) -> f32 {
 }
 
 fn digit(painter: &Painter, origin: Pos2, mask: u8, colour: Color32) {
-    let [w, h] = DIGIT;
+    digit_sized(painter, origin, DIGIT, STROKE, mask, colour);
+}
+
+fn digit_sized(
+    painter: &Painter,
+    origin: Pos2,
+    [w, h]: [f32; 2],
+    stroke: f32,
+    mask: u8,
+    colour: Color32,
+) {
     let half = h / 2.0;
     let p = |x: f32, y: f32| origin + vec2(x, y);
     let lines = [
@@ -49,7 +59,7 @@ fn digit(painter: &Painter, origin: Pos2, mask: u8, colour: Color32) {
     ];
     for (index, (a, b)) in lines.into_iter().enumerate() {
         if mask & (1 << index) != 0 {
-            painter.line_segment([a, b], Stroke::new(STROKE, colour));
+            painter.line_segment([a, b], Stroke::new(stroke, colour));
         }
     }
 }
@@ -104,6 +114,87 @@ pub fn segment_display(
             };
             for y in dots {
                 painter.circle_filled(pos2(centre, top + DIGIT[1] * y), 1.2, ink);
+            }
+        }
+    }
+    response
+}
+
+/// Small digits of the two-row readout (T41 S12).
+const SMALL_DIGIT: [f32; 2] = [5.5, 8.0];
+const SMALL_ADVANCE: f32 = 8.0;
+const SMALL_SEPARATOR: f32 = 3.5;
+const SMALL_STROKE: f32 = 1.4;
+const UNIT_WIDTH: f32 = 22.0;
+
+/// T41 S12: two rows of small segment digits in one recessed well as tall as a tool target
+/// (28 points, the transport row's height), each
+/// row right-aligned before its unit caption (`48.0 kHz` over `24 bit`). `name` is the
+/// accessible name; the value read out is both rows with their units.
+pub fn two_row_readout(ui: &mut Ui, name: &str, rows: [(&str, &str); 2]) -> Response {
+    let digits = rows
+        .iter()
+        .map(|(text, _)| {
+            text.chars()
+                .map(|c| {
+                    if c.is_ascii_digit() || c == '-' {
+                        SMALL_ADVANCE
+                    } else {
+                        SMALL_SEPARATOR
+                    }
+                })
+                .sum::<f32>()
+        })
+        .fold(0.0_f32, f32::max);
+    let size = vec2(digits + UNIT_WIDTH + 2.0 * 6.0, metric::TOOL_TARGET);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
+    let value = format!("{} {}, {} {}", rows[0].0, rows[0].1, rows[1].0, rows[1].1);
+    response.widget_info(|| {
+        let mut info = WidgetInfo::labeled(WidgetType::Label, true, name);
+        info.current_text_value = Some(value.clone());
+        info
+    });
+    ui.ctx()
+        .accesskit_node_builder(response.id, |node| node.set_label(name));
+    let body = paint::control_body(ui.painter(), rect, Depth::Recessed, BodyState::default());
+    let painter = ui.painter_at(body);
+    let ink = theme::TEXT;
+    // Unlit ghosts would crowd digits this small: only lit segments are drawn.
+    let gap = (body.height() - 2.0 * SMALL_DIGIT[1]) / 3.0;
+    for (index, (text, unit)) in rows.iter().enumerate() {
+        let top = body.top() + gap + index as f32 * (SMALL_DIGIT[1] + gap);
+        let unit_left = body.right() - 6.0 - UNIT_WIDTH;
+        painter.text(
+            pos2(unit_left + 3.0, top + SMALL_DIGIT[1] / 2.0),
+            eframe::egui::Align2::LEFT_CENTER,
+            *unit,
+            theme::text::font(theme::text::TINY),
+            theme::SECONDARY,
+        );
+        let mut x = unit_left;
+        for character in text.chars().rev() {
+            if let Some(value) = character.to_digit(10) {
+                x -= SMALL_ADVANCE;
+                let origin = pos2(x + (SMALL_ADVANCE - SMALL_DIGIT[0]) / 2.0, top);
+                digit_sized(
+                    &painter,
+                    origin,
+                    SMALL_DIGIT,
+                    SMALL_STROKE,
+                    SEGMENTS[value as usize],
+                    ink,
+                );
+            } else if character == '-' {
+                x -= SMALL_ADVANCE;
+                let origin = pos2(x + (SMALL_ADVANCE - SMALL_DIGIT[0]) / 2.0, top);
+                digit_sized(&painter, origin, SMALL_DIGIT, SMALL_STROKE, 0b100_0000, ink);
+            } else {
+                x -= SMALL_SEPARATOR;
+                painter.circle_filled(
+                    pos2(x + SMALL_SEPARATOR / 2.0, top + SMALL_DIGIT[1]),
+                    0.9,
+                    ink,
+                );
             }
         }
     }

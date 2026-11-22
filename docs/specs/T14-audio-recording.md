@@ -62,3 +62,12 @@ no partial recordings published as complete; monitoring and PDC; disk failure ha
 
 This document is a planning draft. The media-storage decision, an interview, an approved
 specification, and an approved written UI proposal are required before any implementation.
+
+## Carried over from T41 (2026-11-21)
+
+- **Track Monitor control.** T41 left Monitor out of the instrument track header because Clef has
+  no monitor function yet; define it here with audio input monitoring and add it to the header
+  between arm and Mute ([track header](../UI/views/track-header.md)).
+- **Recording bit depth in the transport.** The T41 transport shows the device sample rate; once
+  the audio recording format is decided, the readout becomes `<rate> kHz · <bits>-bit`.
+

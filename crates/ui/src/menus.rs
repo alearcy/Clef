@@ -64,7 +64,15 @@ impl App {
                 2 => {
                     let mut picked = self.menu_commands(
                         ui,
-                        &[AddTrack, AddBus, Rename, MoveUp, MoveDown, RemoveTrack],
+                        &[
+                            NewTracks,
+                            AddTrack,
+                            AddBus,
+                            Rename,
+                            MoveUp,
+                            MoveDown,
+                            RemoveTrack,
+                        ],
                     );
                     menu::separator(ui);
                     picked = picked.or(self.menu_commands(
@@ -127,10 +135,10 @@ impl App {
                         ],
                     ));
                     menu::separator(ui);
-                    picked.or(self.menu_commands(ui, &[TempoMap, TransportSettings]))
+                    picked.or(self.menu_commands(ui, &[TempoMap, TransportSettings, ProjectFormat]))
                 }
                 4 => {
-                    let picked = self.menu_commands(ui, &[ShowMixer]);
+                    let picked = self.menu_commands(ui, &[ShowMixer, ShowEditor, ToggleLeftDrawer]);
                     menu::separator(ui);
                     picked.or(self.menu_commands(
                         ui,
@@ -143,7 +151,8 @@ impl App {
                     ))
                 }
                 _ => {
-                    let picked = self.menu_commands(ui, &[Commands, Palette, Settings]);
+                    let picked =
+                        self.menu_commands(ui, &[Commands, Palette, Settings, TrackDiagnostics]);
                     menu::separator(ui);
                     let picked = picked.or(self.menu_commands(ui, &[Quarantine, Rescan, Refresh]));
                     // Debug builds only, and not a registry command: a developer view that
@@ -158,21 +167,14 @@ impl App {
                 }
             },
             |ui| {
-                let settings = self.keymap.tooltip(ui.ctx(), Settings);
+                // T41: Settings lives in the Window menu only; Commands… stays here.
                 let palette = self.keymap.tooltip(ui.ctx(), Palette);
-                let settings = TextButton::new("Settings")
-                    .tooltip(&settings)
-                    .enabled(self.command_available(Settings, false))
-                    .show(ui)
-                    .clicked();
                 let commands = TextButton::new("Commands…")
                     .tooltip(&palette)
                     .enabled(self.command_available(Palette, false))
                     .show(ui)
                     .clicked();
-                (settings && self.enabled(Settings))
-                    .then_some(Settings)
-                    .or((commands && self.enabled(Palette)).then_some(Palette))
+                (commands && self.enabled(Palette)).then_some(Palette)
             },
         )
     }

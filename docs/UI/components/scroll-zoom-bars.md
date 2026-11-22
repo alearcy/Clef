@@ -59,3 +59,8 @@ vertical bar beside its grid (pitch-row height steps).
 scroll: `scroll` (points; egui already turns Shift-wheel into horizontal scroll),
 `zoom_horizontal` (continuous factor from ⌘-wheel or pinch) and `zoom_vertical` (whole ×1.25
 steps from ⌘⇧-wheel, accumulated across frames), plus the pointer as the zoom anchor.
+
+## Clef T41 corner
+
+In the arrangement the vertical bar runs past the Master row, so its − / + buttons end right
+above the horizontal bar's − / + at the shared bottom-right corner. Neither bar overlaps the other.

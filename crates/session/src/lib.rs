@@ -117,6 +117,10 @@ pub enum Action {
     Shutdown,
     PreviewMix(Option<MixChange>),
     CommitMix(MixChange),
+    /// T41: a drag-paint over several channels' Mute or Solo, one undo step.
+    CommitMixBatch(Vec<MixChange>),
+    /// T41: the project's recording bit depth and transport second counter.
+    SetFormat(clef_model::project::ProjectFormat),
     ResetMeter(u64, clef_model::mixer::Target),
     Insert(u64, clef_model::mixer::Target, InsertAction),
     InstrumentBypass {
@@ -145,6 +149,14 @@ pub enum Action {
         use_retained: Vec<(u64, u64)>,
     },
     AddTrack(Option<(u64, String)>),
+    /// T41: the New Tracks dialog: `count` tracks of `kind`, named `name` (numbered when more
+    /// than one; empty keeps the default names), Instrument tracks optionally loading `plugin`.
+    AddTracks {
+        kind: TrackKind,
+        count: usize,
+        name: String,
+        plugin: Option<Plugin>,
+    },
     AddBus {
         assign: Option<u64>,
     },
@@ -309,6 +321,8 @@ pub struct Snapshot {
     pub failed: bool,
     pub message: String,
     pub actual: String,
+    /// The running device's sample rate in hertz, 0 while audio is off (T41).
+    pub rate: u32,
     /// The audio configuration in use while audio runs, after any fallback (T39).
     pub audio: Option<AudioSettings>,
     /// Clef's global audio preferences, when saved.
@@ -392,6 +406,7 @@ impl Snapshot {
                 arrangement_view: self.project.arrangement_view,
                 master: self.project.master,
                 master_inserts: without_state(&self.project.master_inserts),
+                format: self.project.format,
                 tracks: self
                     .project
                     .tracks
@@ -437,6 +452,7 @@ impl Snapshot {
             failed: self.failed,
             message: self.message.clone(),
             actual: self.actual.clone(),
+            rate: self.rate,
             audio: self.audio.clone(),
             audio_preferences: self.audio_preferences.clone(),
             shortcuts: self.shortcuts.clone(),
@@ -1026,7 +1042,8 @@ impl Session {
                 audible_tick: tick,
                 ..Default::default()
             };
-            self.view.actual = engine.summary();
+            self.view.actual = engine.diagnostics();
+            self.view.rate = 0;
             for (id, runtime) in &mut self.runtimes {
                 if let (Some(broker), Some(instrument)) =
                     (runtime.broker.take(), runtime.instrument.as_mut())
@@ -1431,6 +1448,18 @@ impl Session {
                 self.publish_mix();
                 result?;
             }
+            Action::SetFormat(format) => {
+                format.validate()?;
+                if self.view.project.format != format {
+                    self.view.project.format = format;
+                    self.mark_other_change();
+                }
+            }
+            Action::CommitMixBatch(changes) => {
+                let result = self.commit_mix_batch(changes);
+                self.publish_mix();
+                result?;
+            }
             Action::ResetMeter(epoch, target) => {
                 if epoch == self.view.project_epoch {
                     self.reset_meter(target);
@@ -1581,57 +1610,16 @@ impl Session {
                 if let Some((id, name)) = rename {
                     self.rename(id, name)?;
                 }
-                if self.view.project.tracks.len() >= crate::project::MAX_TRACKS {
-                    return Err("project track safety limit reached".into());
-                }
-                let id = self.view.project.next_id;
-                let next = id.checked_add(1).ok_or("track ID exhausted")?;
-                self.select(None)?;
-                let track = Track {
-                    colour: Some(clef_model::project::next_track_colour(
-                        self.view.project.tracks.len(),
-                    )),
-                    id,
-                    name: format!(
-                        "Instrument {}",
-                        self.view
-                            .project
-                            .tracks
-                            .iter()
-                            .filter(|track| track.is_instrument())
-                            .count()
-                            + 1
-                    ),
-                    plugin: None,
-                    instrument_bypassed: false,
-                    instrument_offline: false,
-                    record_mode: clef_model::project::TrackMode::Global,
-                    mix: Default::default(),
-                    inserts: Vec::new(),
-                    take_lanes: clef_model::project::TakeLanes::default(),
-                    kind: clef_model::project::TrackKind::Instrument,
-                    output: None,
-                    sends: Vec::new(),
-                    state: Arc::default(),
-                };
-                let index = self.view.project.tracks.len();
-                self.view.project.tracks.push(track.clone());
-                self.view.project.next_id = next;
-                self.view.selected = Some(id);
-                self.record_edit(Edit::Track {
-                    slot: Box::new(TrackSlot {
-                        track,
-                        index,
-                        clips: Vec::new(),
-                    }),
-                    added: true,
-                });
-                if let Some(engine) = &self.engine {
-                    engine.clock.select(id);
-                }
+                self.add_instrument(None)?;
             }
-            Action::AddBus { assign } => self.add_bus(assign, None)?,
-            Action::AddBusSend { track } => self.add_bus(None, Some(track))?,
+            Action::AddTracks {
+                kind,
+                count,
+                name,
+                plugin,
+            } => self.add_tracks(kind, count, &name, plugin)?,
+            Action::AddBus { assign } => self.add_bus(assign, None, None)?,
+            Action::AddBusSend { track } => self.add_bus(None, Some(track), None)?,
             Action::SetOutput {
                 epoch,
                 track,
@@ -1820,7 +1808,7 @@ impl Session {
                     self.mark_other_change();
                 }
                 self.start_audio()?;
-                if self.view.message == "Audio active." {
+                if self.view.message.is_empty() {
                     self.view.message = "Settings applied. Audio restarted.".into();
                 }
             }
@@ -2194,6 +2182,7 @@ impl Session {
         self.view.audio = Some(settings);
         self.volatile = Volatile::default();
         self.view.actual.clear();
+        self.view.rate = self.engine.as_ref().map_or(0, |engine| engine.rate());
         self.sync_instrument_bypasses(&self.view.project);
         if let Err(error) = self.reconcile_inserts(&self.view.project.clone(), true) {
             let _ = self.stop();
@@ -2230,11 +2219,8 @@ impl Session {
         if !failures.is_empty() {
             message.push(format!("Some paths unavailable: {}", failures.join("; ")));
         }
-        self.view.message = if message.is_empty() {
-            "Audio active.".into()
-        } else {
-            message.join(" ")
-        };
+        // T41: a running engine is the normal state and needs no status message.
+        self.view.message = message.join(" ");
         Ok(())
     }
 
@@ -2623,7 +2609,107 @@ impl Session {
             }
         }
     }
-    fn add_bus(&mut self, assign: Option<u64>, send: Option<u64>) -> Result<()> {
+    /// Adds one instrument track, selected, named `name` or "Instrument n".
+    fn add_instrument(&mut self, name: Option<String>) -> Result<u64> {
+        if self.view.project.tracks.len() >= crate::project::MAX_TRACKS {
+            return Err("project track safety limit reached".into());
+        }
+        let id = self.view.project.next_id;
+        let next = id.checked_add(1).ok_or("track ID exhausted")?;
+        self.select(None)?;
+        let name = name.unwrap_or_else(|| {
+            format!(
+                "Instrument {}",
+                self.view
+                    .project
+                    .tracks
+                    .iter()
+                    .filter(|track| track.is_instrument())
+                    .count()
+                    + 1
+            )
+        });
+        let track = Track {
+            colour: Some(clef_model::project::next_track_colour(
+                self.view.project.tracks.len(),
+            )),
+            id,
+            name,
+            plugin: None,
+            instrument_bypassed: false,
+            instrument_offline: false,
+            record_mode: clef_model::project::TrackMode::Global,
+            mix: Default::default(),
+            inserts: Vec::new(),
+            take_lanes: clef_model::project::TakeLanes::default(),
+            kind: clef_model::project::TrackKind::Instrument,
+            output: None,
+            sends: Vec::new(),
+            state: Arc::default(),
+        };
+        let index = self.view.project.tracks.len();
+        self.view.project.tracks.push(track.clone());
+        self.view.project.next_id = next;
+        self.view.selected = Some(id);
+        self.record_edit(Edit::Track {
+            slot: Box::new(TrackSlot {
+                track,
+                index,
+                clips: Vec::new(),
+            }),
+            added: true,
+        });
+        if let Some(engine) = &self.engine {
+            engine.clock.select(id);
+        }
+        Ok(id)
+    }
+
+    /// T41 New Tracks: checks the whole request against the track limit first, so a refused
+    /// request adds nothing; then adds each track (one undo step per track) and loads `plugin`
+    /// on each new instrument track.
+    fn add_tracks(
+        &mut self,
+        kind: TrackKind,
+        count: usize,
+        name: &str,
+        plugin: Option<Plugin>,
+    ) -> Result<()> {
+        if count == 0 {
+            return Err("Choose at least one track.".into());
+        }
+        if self.view.project.tracks.len() + count > crate::project::MAX_TRACKS {
+            return Err(format!(
+                "Only {} more tracks fit in this project.",
+                crate::project::MAX_TRACKS.saturating_sub(self.view.project.tracks.len())
+            )
+            .into());
+        }
+        let name = name.trim();
+        for number in 1..=count {
+            let label = match (name.is_empty(), count) {
+                (true, _) => None,
+                (false, 1) => Some(name.to_owned()),
+                (false, _) => Some(format!("{name} {number}")),
+            };
+            if kind.is_bus() {
+                self.add_bus(None, None, label)?;
+            } else {
+                let id = self.add_instrument(label)?;
+                if let Some(plugin) = &plugin {
+                    self.request_load(id, Some(plugin.clone()))?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn add_bus(
+        &mut self,
+        assign: Option<u64>,
+        send: Option<u64>,
+        name: Option<String>,
+    ) -> Result<()> {
         if !self.view.project_open {
             return Err("Open a project before adding a bus.".into());
         }
@@ -2650,7 +2736,7 @@ impl Session {
                 self.view.project.tracks.len(),
             )),
             id,
-            name: format!("Bus {count}"),
+            name: name.unwrap_or_else(|| format!("Bus {count}")),
             plugin: None,
             instrument_bypassed: false,
             instrument_offline: false,
@@ -3196,7 +3282,8 @@ impl Session {
         if let Some(engine) = &self.engine
             && (due || self.view.actual.is_empty())
         {
-            self.view.actual = engine.summary();
+            self.view.actual = engine.diagnostics();
+            self.view.rate = engine.rate();
         }
         self.volatile = volatile;
     }
@@ -3549,6 +3636,69 @@ mod tests {
         session.apply(Action::Open(path)).unwrap();
         assert_eq!(session.view.project.arrangement_view, settings);
         assert_eq!(session.view.project.midi.find_clip(id).unwrap().0, 1);
+    }
+
+    #[test]
+    fn new_tracks_adds_numbered_tracks_of_one_kind_and_refuses_past_the_limit() {
+        let (_directory, mut session) = isolated();
+        session.apply(Action::New).unwrap();
+        session
+            .apply(Action::AddTracks {
+                kind: TrackKind::Instrument,
+                count: 3,
+                name: "Strings".into(),
+                plugin: None,
+            })
+            .unwrap();
+        session
+            .apply(Action::AddTracks {
+                kind: TrackKind::Bus,
+                count: 1,
+                name: " Reverb ".into(),
+                plugin: None,
+            })
+            .unwrap();
+        session
+            .apply(Action::AddTracks {
+                kind: TrackKind::Instrument,
+                count: 1,
+                name: String::new(),
+                plugin: None,
+            })
+            .unwrap();
+        let names: Vec<_> = session
+            .view
+            .project
+            .tracks
+            .iter()
+            .map(|track| (track.name.as_str(), track.is_bus()))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ("Strings 1", false),
+                ("Strings 2", false),
+                ("Strings 3", false),
+                ("Reverb", true),
+                ("Instrument 4", false),
+            ]
+        );
+        let before = session.view.project.tracks.len();
+        assert!(
+            session
+                .apply(Action::AddTracks {
+                    kind: TrackKind::Instrument,
+                    count: crate::project::MAX_TRACKS,
+                    name: String::new(),
+                    plugin: None,
+                })
+                .is_err()
+        );
+        assert_eq!(
+            session.view.project.tracks.len(),
+            before,
+            "a refused request adds nothing"
+        );
     }
 
     #[test]

@@ -75,12 +75,65 @@ Settings, Commands). The startup chooser has no menu bar.
 | Edit | Undo *edit*, Redo *edit*, Edit History… · Select All Clips, Duplicate, Split at Playhead, Delete |
 | Track | Add Instrument Track, Add Bus, Rename Track, Move Track Up/Down, Remove Track… · Choose Instrument, Open/Close Editor, Restart Instrument, Toggle Instrument Bypass/Offline · Toggle Record Arm, Show/Hide Take Lanes, *Track Record Mode* (Global, Merge, Replace, New take, ticked) |
 | Transport | Play / Stop, Return to Start, Record MIDI · Loop, Metronome, One-Bar Count-In (ticked) · *Record Mode* (ticked) · *Stop Mode* (ticked) · Tempo and Meter Map…, Transport Settings… |
-| View | Show Mixer / Show Sequencer · Fit Arrangement to Width/Height, Fit Piano Roll to Width/Height |
-| Window | Commands / Keyboard Shortcuts, Command Palette…, Audio/MIDI Settings · Show Quarantined Plugins…, Rescan Plugins, Refresh Devices · Primitive Gallery (Debug) — debug builds only, not a registry command |
+| View | Show Mixer / Hide Mixer, Show Editor (T41) · Lower Panel: Half / Full Height, Detach / Attach · Wider / Narrower Track Column (T41 round 3) · Fit Arrangement to Width/Height, Fit Piano Roll to Width/Height |
+| Window | Commands / Keyboard Shortcuts, Command Palette…, Audio/MIDI Settings, Track Diagnostics (T41) · Show Quarantined Plugins…, Rescan Plugins, Refresh Devices · Primitive Gallery (Debug) — debug builds only, not a registry command |
 
-Right-aligned: **Commands…** opens the [command palette](command-palette.md); **Settings** opens
-Audio/MIDI Settings. Open Recent and Recovery stay on the startup chooser: with a project open
+Right-aligned: **Commands…** opens the [command palette](command-palette.md). Since T41 Audio/MIDI
+Settings is in the Window menu only; the Settings button is gone. Open Recent and Recovery stay on the startup chooser: with a project open
 they are unavailable, so they are not in File.
 
 Evidence: every T07–T40 project-window snapshot shows the bar; `t18-menu-bar-{1024,760}.png`
 shows an open menu.
+
+## Clef Rust/egui — session window layout (T41)
+
+Top to bottom, `workspacePadding` 12 at the sides:
+
+1. Menu bar, then the project title row: the name, "Unsaved changes", "Audio off" only while audio
+   is not running, and the working spinner. There is no "Audio active" label.
+2. The [transport bar](transport-bar.md) band, full window width, casting the region
+   [shadow](../components/shadows.md) into the 12-point gap below it.
+3. The workspace body:
+   - **Left column**, `inspectorWidth` 208, full body height: the selected-track inspector in the
+     top half and the selected track's [channel strip](channel-strip.md) in the bottom half, each
+     on `panel` with its own vertical scroll.
+   - **Right column**, 12 points after it: the [tool row](tool-row.md), the arrangement and, when
+     open, the piano roll under it.
+   - With the mixer open, the [mixer](mixer.md) takes the whole body instead.
+4. The status row, `controlHeight` 24: the engine diagnostics (buffer, lead, plugin latency,
+   clipped samples) at the left in `secondary`, truncated with the full text on hover; **Editor**
+   and **Mixer** text-button toggles centred, lit while their view is shown; the latest message at
+   the right, `danger` for errors and recording.
+
+Editor (Show Editor, ⌘⇧E) opens the piano roll of the selected clips, or of the selected track's
+first clip, closing the mixer; pressed again it closes the roll. Mixer is Show Mixer. Track
+Diagnostics (Window menu) opens a tool window with each track's status and diagnostics.
+
+Snapshots: `snapshots/egui/t41-{session,editor,mixer,search,fit}-{1024,760}.png`. See the
+[T41 specification](../../specs/T41-session-window-layout.md).
+
+### T41 round 2 (2026-11-22)
+
+- The transport band keeps the 12-point side margins of the rest of the window.
+- **Status row**: the `drawer` glyph at the left end shows and hides the left drawer (Show / Hide
+  Left Drawer; lit while shown; a hidden drawer gives its width to the arrangement; not saved).
+  Editor and Mixer are [toggle tabs](../components/tabs.md): flat uppercase texts with a divider,
+  `accent` while shown, a click on the lit one hides it.
+- **Left drawer**: the inspector takes its content's height (at most 60 % of the drawer); the
+  rest holds two strips side by side, as in Logic: the selected track's and its output
+  destination's (its bus, else Master). The inspector shows the track name, the instrument
+  (Choose Instrument, Restart, Reactivate, Show Quarantined Plugins) and the record mode; rename,
+  move and remove live on the header and in the Track menu, plugin editors open from their slot.
+- **New Tracks…** (tool-row "+", Track menu): number of tracks, Instrument or Bus, a name
+  (numbered when more than one), and for instruments an optional plugin loaded on each.
+- **Project Format…** (transport readout, Transport menu): sample rate (the project's audio
+  override; audio restarts; a refused rate changes nothing) and recording bit depth (16, 24 or
+  32-bit float, saved with the project for audio recording).
+
+## Clef T41 round 3 lower panel
+
+[T41 round 3](../../specs/T41-session-window-layout.md#round-3--gui-review-2026-11-22): the Editor (piano roll) and the Mixer share one lower panel under the arrangement, one at a
+time (S1). The split between arrangement and panel is the existing resize gutter. Each panel's tool
+row ends in Detach, Half / Full and Close (S2): Full gives the panel the whole editing column (tool
+row and arrangement hidden, clip commands wait), Detach moves it into its own OS window (an egui
+viewport) that can sit on another monitor. The left drawer stays beside the panel in every mode.

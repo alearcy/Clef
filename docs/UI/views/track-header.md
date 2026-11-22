@@ -105,3 +105,34 @@ opens the creation menu at the pointer (New MIDI Track, New Audio Track, separat
 New Bus Track, New Folder (groups the selection), separator, Add Multiple Tracks…), each a registry
 command with its live binding. The mixer bank's empty space takes the same three gestures; the
 FX/bus dock takes none.
+
+## Clef T41 controls and selection
+
+Left to right after the name: the take-lane chip when present, record arm, Mute, Solo, then the
+meter. Mute and Solo are the [mute and solo](../components/mute-solo.md) lamps
+(`LAMP_WIDTH` 25), the same controls and commands as the track's mixer strip. Monitor is not shown
+until audio tracks exist ([T14](../../specs/T14-audio-recording.md)). The selected header draws the
+[selection edge](../components/selection-edge.md) around the whole header, not around the name
+slot; its name row ([list row](../components/list-row.md) in header mode) paints no edge of its own.
+
+### T41 round 2 interaction
+
+- **Rename in place**: double-click the name (or Rename Track) edits it in the header. Enter or a
+  click elsewhere keeps it, Tab keeps it and renames the next track (Shift+Tab the previous one),
+  Escape drops it.
+- **Drag to reorder**: press on the header outside its controls and drag past 4 points. The
+  header lifts (lift [shadow](../components/shadows.md)) and follows the pointer; the other
+  tracks slide out of its way over 120 ms. Release moves the track (one undo step); Escape
+  cancels and the tracks slide back. No insertion line is drawn.
+- **Drag-paint Mute and Solo**: pressing a lamp sets the opposite state; dragging over the same
+  lamp of other tracks sets theirs too; release commits all of them as one undo step. Arm stays
+  one track at a time. The mixer strips paint the same way.
+- **Context menu**: Rename Track, Choose Instrument, Remove Track….
+
+## Clef T41 round 3 column width
+
+[T41 round 3](../../specs/T41-session-window-layout.md#round-3--gui-review-2026-11-22) (S10): the divider between the track headers and the lanes can be dragged (resize-column
+cursor, a 1-point `accent` line while hovered or dragged), and View → Wider / Narrower Track Column
+steps it by 20 points. The width stays between `minimumHeaderWidth` (160) and `maximumHeaderWidth`
+(400) and always leaves the lanes 240 points; the default stays 220 (176 below 550 points). The
+tool row's search field follows the column. Window session only.

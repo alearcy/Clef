@@ -123,6 +123,8 @@ impl PitchGrid<'_> {
                     egui::pos2(self.keys.right(), key_bottom - 0.5),
                 );
                 painter.rect_filled(key, 1.0, theme::CAP);
+                // T41 round 3 (S8): a faint shade toward the key's front edge gives depth.
+                paint_front_shade(&painter, key, theme::KEY_FRONT_SHADE);
                 if cursor == Some(pitch) {
                     painter.rect_filled(key, 1.0, theme::ACCENT.gamma_multiply(0.45));
                 }
@@ -149,12 +151,24 @@ impl PitchGrid<'_> {
                         top + self.row,
                     ),
                 );
-                painter.rect_filled(
-                    key.translate(egui::vec2(1.0, 1.0)),
-                    1.0,
-                    egui::Color32::from_black_alpha(60),
-                );
+                // T41 round 3 (S8): a short soft drop shadow onto the white keys, and a lit
+                // front edge on the black key.
+                for (offset, alpha) in [(2.5, 28), (1.5, 48), (0.75, 64)] {
+                    painter.rect_filled(
+                        key.translate(egui::vec2(offset, offset)),
+                        1.5,
+                        egui::Color32::from_black_alpha(alpha),
+                    );
+                }
                 painter.rect_filled(key, 1.0, theme::BACKGROUND);
+                painter.rect_filled(
+                    Rect::from_min_max(
+                        egui::pos2(key.right() - 2.0, key.top() + 1.0),
+                        egui::pos2(key.right() - 1.0, key.bottom() - 1.0),
+                    ),
+                    0.0,
+                    egui::Color32::from_white_alpha(22),
+                );
                 if cursor == Some(pitch) {
                     painter.rect_filled(key, 1.0, theme::ACCENT.gamma_multiply(0.45));
                 }
@@ -167,6 +181,21 @@ impl PitchGrid<'_> {
         for tick in bounds {
             paint_marker(ui, self.grid, self.time, tick, theme::SECONDARY);
         }
+    }
+}
+
+/// T41 round 3 (S8): a shade over the last fifth of a white key, darker toward its front edge.
+fn paint_front_shade(painter: &egui::Painter, key: Rect, shade: egui::Color32) {
+    let band = (key.width() * 0.2).max(4.0);
+    let steps = 4;
+    for step in 0..steps {
+        let fraction = (step + 1) as f32 / steps as f32;
+        let left = key.right() - band * (1.0 - step as f32 / steps as f32);
+        painter.rect_filled(
+            Rect::from_min_max(egui::pos2(left, key.top()), key.max),
+            egui::CornerRadius::ZERO,
+            shade.gamma_multiply(0.35 * fraction),
+        );
     }
 }
 
@@ -231,16 +260,8 @@ pub fn summary(ui: &mut Ui, name: &str, active: bool, repeated: bool) -> bool {
         .clicked()
 }
 
-pub fn heading(ui: &mut Ui, title: &str) {
-    super::text::body(ui, title);
-}
-
 pub fn button(ui: &mut Ui, text: &str, enabled: bool) -> bool {
     super::transport::button(ui, text, text, enabled, false)
-}
-
-pub fn close(ui: &mut Ui) -> bool {
-    super::transport::button(ui, "Close", "Close Piano Roll", true, false)
 }
 
 pub fn toggle(ui: &mut Ui, text: &str, value: &mut bool) {
@@ -667,6 +688,23 @@ pub fn paint_values(
                 position.y..=rect.bottom(),
                 Stroke::new(theme::ROLL_POINT, color),
             );
+            // T41 round 3 (S7): a lollipop head on every velocity stem, the grab target; a
+            // selected value carries an `accent` outline around the note colour.
+            if cc.is_none() {
+                let head = if event.active {
+                    colour
+                } else {
+                    colour.gamma_multiply(0.35)
+                };
+                painter.circle_filled(position, theme::ROLL_VELOCITY_HEAD, head);
+                if selection.contains(&event.id) {
+                    painter.circle_stroke(
+                        position,
+                        theme::ROLL_VELOCITY_HEAD + 0.5,
+                        Stroke::new(theme::ROLL_LINE, theme::ACCENT),
+                    );
+                }
+            }
         } else {
             painter.circle_filled(position, theme::ROLL_POINT, color);
         }

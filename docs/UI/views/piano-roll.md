@@ -154,3 +154,22 @@ Transpose, Note operator and Strum with the drawer's values. On macOS ⌃-click 
 ## Rules
 Host owns zoom, scroll and quantization; the kit paints. Several open parts keep their colours,
 non-active at 70 %, ghosts at 22 % never hit-tested.
+
+## Clef T41 round 3
+
+[T41 round 3](../../specs/T41-session-window-layout.md#round-3--gui-review-2026-11-22):
+
+- **Tool row (S3, S5, S2).** No "Piano Roll" title. Snap, Follow and MIDI Functions at the left; Fit
+  Width and Fit Height right-aligned, just left of the lower-panel controls (Detach, Half / Full,
+  Close; see [detach button](../components/detach-button.md)). The text "Close" button is gone.
+- **MIDI Functions (S6)** open the [drawer](midi-functions.md) left of the keyboard.
+- **Velocity handles (S7).** Each velocity stem ends in a filled lollipop head (`ROLL_VELOCITY_HEAD`,
+  4.5-point radius) in the note colour, 35 % while inactive; a selected value adds an `accent`
+  outline.
+- **Keyboard shading (S8).** White keys darken toward their front edge over the last fifth of the
+  key (`KEY_FRONT_SHADE`, applied in four steps); black keys cast a short soft drop shadow (three
+  offset layers, 2.5 points at most) and carry a faint lit front edge.
+- **No clip (S9).** The editor shows the [empty state](../components/empty-state.md) "Select a MIDI
+  clip in the arrangement." with `Icon::Keys`.
+
+**Evidence:** `snapshots/egui/t41-{editor,functions,no-clip}-{1024,760}.png`, t10 and t40 goldens.

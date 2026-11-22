@@ -59,7 +59,7 @@ introduce one, and do not compute one at a call site.
 | `OUT_OF_SCALE` | — (token only) | #C75A50 | Piano-roll row outside the scale in force (D06.3, revised 2026-11-13): a 3-pixel edge at the row's visible left, the row tinted at 5 % |
 | `SIDECHAIN` | sidechain | #A98BD0 | Sidechain outlines, pins and cables only |
 | `MIDI` | midi | #C08A4E | MIDI pins and cables, velocity bars in nodes, range bands |
-| `CREATE` | create | #E0913A | The track band's "+" (create a track) only (D101) |
+| `CREATE` | create | #E0913A | The "+" that creates tracks only (D101; T41: the tool-row create glyph) |
 
 `theme::routing_accent(role)` gives routing channels their accent: FX oxblood, bus peacock, master
 accent, tracks secondary. Role accents tint only a name box, a fader cap and cables, at 10 % when
@@ -172,6 +172,7 @@ example `controlHeight` → `CONTROL_HEIGHT`):
 | channelWidth | 92 |
 | channelGap | 1 |
 | minimumHeaderWidth | 160 |
+| maximumHeaderWidth | 400 |
 | folderHeight | 24 |
 | transportHeight | 40 |
 | menuBarHeight | 28 |

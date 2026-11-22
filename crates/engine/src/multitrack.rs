@@ -1852,9 +1852,18 @@ impl Engine {
     }
 
     pub fn summary(&self) -> String {
+        format!("{} Hz · {}", self.rate, self.diagnostics())
+    }
+
+    /// The device sample rate in hertz.
+    pub fn rate(&self) -> u32 {
+        self.rate
+    }
+
+    /// The buffer, lead, latency and clip counters, without the sample rate (T41 status row).
+    pub fn diagnostics(&self) -> String {
         format!(
-            "{} Hz · requested {} frames · actual {}–{} frames · lead {} samples · plugin latency {} samples · clipped samples {}",
-            self.rate,
+            "requested {} frames · actual {}–{} frames · lead {} samples · plugin latency {} samples · clipped samples {}",
             self.buffer,
             if self.clock.callbacks.load(Ordering::Relaxed) == 0 {
                 0

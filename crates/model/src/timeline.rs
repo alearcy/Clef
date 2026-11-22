@@ -114,6 +114,25 @@ impl Timeline {
         }
     }
 
+    /// T41: the time from the project start to `tick` in nanoseconds, through the tempo map
+    /// (`bpm` counts quarter notes, as in the engine's sample map).
+    pub fn nanos(&self, tick: u64) -> u128 {
+        let tick = tick.min(MAX_TICK);
+        let sections: Vec<_> = self.sections().collect();
+        let mut total = 0u128;
+        for (index, &(start, tempo)) in sections.iter().enumerate() {
+            if start >= tick {
+                break;
+            }
+            let end = sections
+                .get(index + 1)
+                .map_or(tick, |&(next, _)| next.min(tick));
+            total += u128::from(end - start) * 60 * 1_000_000_000
+                / (u128::from(tempo.bpm) * u128::from(QUARTER));
+        }
+        total
+    }
+
     pub fn bar_start(&self, bar: u32) -> u64 {
         let bar = bar.max(1);
         let (start, tempo) = self
@@ -128,5 +147,26 @@ impl Timeline {
         let (start, tempo) = self.section_at(tick);
         let beat = tempo.beat_ticks();
         (start + ((tick - start + beat / 2) / beat) * beat).min(MAX_TICK)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nanos_follow_the_tempo_map() {
+        let mut timeline = Timeline::default();
+        // 120 quarters per minute: one quarter is half a second.
+        assert_eq!(timeline.nanos(0), 0);
+        assert_eq!(timeline.nanos(QUARTER), 500_000_000);
+        timeline.changes.push(Tempo {
+            bar: 2,
+            bpm: 60,
+            beats: 4,
+            unit: 4,
+        });
+        // Bar 1 (4 quarters at 120) is 2 s; one quarter at 60 adds 1 s.
+        assert_eq!(timeline.nanos(5 * QUARTER), 3_000_000_000);
     }
 }

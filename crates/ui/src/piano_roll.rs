@@ -73,13 +73,31 @@ pub struct PianoRoll {
     takes: BTreeMap<ClipId, u64>,
     take_lane: Option<usize>,
     pub fit: Option<crate::arrangement::Fit>,
+    /// T41: the time view (offset, zoom) before Fit Width, while the fitted zoom holds.
+    fit_width: crate::arrangement::FitToggle<(u64, f32), f32>,
+    /// T41: the row height and scroll before Fit Height, while the fitted height holds.
+    fit_height: crate::arrangement::FitToggle<(f32, f32), f32>,
     /// The live roll shortcuts, copied from the app's key map when it changes (T18).
     pub(crate) keys: crate::commands::Keymap,
     /// A roll command chosen in the palette, run by the focused lane on the next frame.
     pub(crate) requested: std::cell::Cell<Option<Command>>,
     /// A roll lane had keyboard focus on the last frame.
     pub(crate) had_focus: bool,
+    /// T41 round 3 (S2): the lower panel state the controls show, set by the app each frame.
+    pub(crate) panel: crate::primitives::panel_controls::PanelState,
+    /// The app is in keyboard mode (focus rings on the panel controls).
+    pub(crate) keyboard: bool,
+    /// A panel control pressed this frame, for the app to apply.
+    pub(crate) panel_request: Option<crate::primitives::panel_controls::PanelControl>,
+    /// T41 round 3 (S6): which MIDI Functions drawer sections are open (Quantize, Transpose,
+    /// Humanize; window session only).
+    sections: [bool; 3],
 }
+
+/// Width of the MIDI Functions drawer (S6), the inspector's width.
+const DRAWER_WIDTH: f32 = theme::metric::INSPECTOR_WIDTH;
+/// Gap between the drawer and the keyboard.
+const DRAWER_GAP: f32 = 8.0;
 
 impl Default for PianoRoll {
     fn default() -> Self {
@@ -119,9 +137,15 @@ impl Default for PianoRoll {
             takes: BTreeMap::new(),
             take_lane: None,
             fit: None,
+            fit_width: Default::default(),
+            fit_height: Default::default(),
             keys: crate::commands::Keymap::default(),
             requested: std::cell::Cell::new(None),
             had_focus: false,
+            panel: Default::default(),
+            keyboard: false,
+            panel_request: None,
+            sections: [true, false, false],
         }
     }
 }
@@ -137,6 +161,12 @@ struct LaneContext<'a> {
 }
 
 impl PianoRoll {
+    /// Gallery: open the MIDI Functions drawer with the given sections expanded, or close it.
+    pub(crate) fn gallery_functions(&mut self, sections: Option<[bool; 3]>) {
+        self.functions = sections.is_some();
+        self.sections = sections.unwrap_or([true, false, false]);
+    }
+
     pub(crate) fn gallery_state(&mut self, case: &str, clip: &Clip) {
         self.open(clip.id(), clip);
         if matches!(case, "selection" | "snap-preview" | "unavailable") {
@@ -274,9 +304,8 @@ impl PianoRoll {
         view: &Snapshot,
         selected: &BTreeSet<ClipId>,
         enabled: bool,
-        open: &mut bool,
     ) -> Option<Action> {
-        let action = self.show_lanes(ui, height, view, selected, enabled, open);
+        let action = self.show_lanes(ui, height, view, selected, enabled);
         // A palette request no focused lane took this frame is dropped.
         self.requested.set(None);
         action
@@ -298,7 +327,6 @@ impl PianoRoll {
         view: &Snapshot,
         selected: &BTreeSet<ClipId>,
         enabled: bool,
-        open: &mut bool,
     ) -> Option<Action> {
         self.had_focus = false;
         self.cancel(ui);
@@ -347,44 +375,83 @@ impl PianoRoll {
         }
         let mut action = None;
         let mut fit = self.fit.take();
-        ui.horizontal_wrapped(|ui| {
-            draw::heading(ui, "Piano Roll");
-            if let Some(lane) = self.take_lane {
-                let name = clips
-                    .first()
-                    .and_then(|(track, _)| {
-                        view.project.tracks.iter().find(|item| item.id == *track)
-                    })
-                    .map(|track| track.take_lanes.name(lane))
-                    .unwrap_or_else(|| format!("Take {}", lane + 1));
-                ui.colored_label(
-                    theme::ACCENT,
-                    format!(
-                        "Editing Take {} · {name} · {} clips",
-                        lane + 1,
-                        self.takes.len()
+        // T41 round 3: no title (S3); Snap, Follow and MIDI Functions at the left, the fit
+        // toggles right-aligned (S5) just left of the panel controls (S2).
+        let (row, _) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width(), theme::TOOL_TARGET),
+            egui::Sense::hover(),
+        );
+        let controls_left = row.right() - crate::primitives::panel_controls::WIDTH - 12.0;
+        let fits_width = 2.0 * theme::TOOL_TARGET + 4.0;
+        let fits = Rect::from_min_max(
+            egui::pos2(controls_left - fits_width, row.top()),
+            egui::pos2(controls_left, row.bottom()),
+        );
+        let tools = Rect::from_min_max(row.min, egui::pos2(fits.left() - 8.0, row.bottom()));
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(tools)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            |ui| {
+                if let Some(lane) = self.take_lane {
+                    let name = clips
+                        .first()
+                        .and_then(|(track, _)| {
+                            view.project.tracks.iter().find(|item| item.id == *track)
+                        })
+                        .map(|track| track.take_lanes.name(lane))
+                        .unwrap_or_else(|| format!("Take {}", lane + 1));
+                    ui.colored_label(
+                        theme::ACCENT,
+                        format!(
+                            "Editing Take {} · {name} · {} clips",
+                            lane + 1,
+                            self.takes.len()
+                        ),
+                    );
+                    if draw::button(ui, "Back to Comp", true) {
+                        self.close_take();
+                    }
+                }
+                timeline::snap_control(ui, &mut self.snap);
+                draw::toggle(ui, "Follow", &mut self.follow);
+                draw::toggle(ui, "MIDI Functions", &mut self.functions);
+            },
+        );
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(fits)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            |ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                for (glyph, name, kind, on) in [
+                    (
+                        Icon::FitWidth,
+                        "Fit Piano Roll to Width",
+                        Fit::Width,
+                        self.fit_width.active(),
                     ),
-                );
-                if draw::button(ui, "Back to Comp", true) {
-                    self.close_take();
+                    (
+                        Icon::FitHeight,
+                        "Fit Piano Roll to Height",
+                        Fit::Height,
+                        self.fit_height.active(),
+                    ),
+                ] {
+                    if transport::tool_button(ui, glyph, name, true, on, false).clicked() {
+                        fit = Some(kind);
+                    }
                 }
-            }
-            timeline::snap_control(ui, &mut self.snap);
-            draw::toggle(ui, "Follow", &mut self.follow);
-            draw::toggle(ui, "MIDI Functions", &mut self.functions);
-            for (glyph, name, kind) in [
-                (Icon::FitWidth, "Fit Piano Roll to Width", Fit::Width),
-                (Icon::FitHeight, "Fit Piano Roll to Height", Fit::Height),
-            ] {
-                if transport::tool_button(ui, glyph, name, true, false, false).clicked() {
-                    fit = Some(kind);
-                }
-            }
-            if draw::close(ui) {
-                *open = false;
+            },
+        );
+        if let Some(control) =
+            crate::primitives::panel_controls::at_right(ui, row, self.panel, self.keyboard)
+        {
+            if control == crate::primitives::panel_controls::PanelControl::Close {
                 self.gesture = None;
             }
-        });
+            self.panel_request = Some(control);
+        }
         let names = lane_names(&view.project.tracks, timeline, &clips);
         if clips.len() > 1 {
             ui.horizontal_wrapped(|ui| {
@@ -402,8 +469,60 @@ impl PianoRoll {
             .iter()
             .find(|(_, clip)| Some(clip.id()) == self.active)
         else {
-            draw::heading(ui, "Select a MIDI clip in the arrangement.");
+            crate::primitives::empty_state::fill(
+                ui,
+                120.0,
+                Icon::Keys,
+                "Select a MIDI clip in the arrangement.",
+            );
             return None;
+        };
+        // T41 round 3 (S6): the MIDI Functions drawer, left of the keyboard over the whole
+        // editor height; the ruler, grid and lanes take the rest.
+        let mut body = None;
+        if self.functions {
+            let top = ui.cursor().top();
+            let area = Rect::from_min_size(
+                egui::pos2(ui.cursor().left(), top),
+                egui::vec2(
+                    ui.available_width(),
+                    (height - (top - start_top)).max(theme::roll::LANE_MINIMUM_HEIGHT),
+                ),
+            );
+            ui.allocate_rect(area, egui::Sense::hover());
+            let drawer = Rect::from_min_size(area.min, egui::vec2(DRAWER_WIDTH, area.height()));
+            let lane = LaneContext {
+                time: &timeline::Viewport::with_snap(
+                    timeline,
+                    self.offset,
+                    self.zoom,
+                    1.0,
+                    self.snap,
+                ),
+                timeline,
+                clip: active,
+                width: 1.0,
+                playhead,
+                enabled,
+                colour: theme::ACCENT,
+            };
+            action = self
+                .functions_drawer(ui, drawer, &lane, view)
+                .or(action.take());
+            body = Some(
+                ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_max(
+                            egui::pos2(drawer.right() + DRAWER_GAP, area.top()),
+                            area.max,
+                        ))
+                        .layout(egui::Layout::top_down(egui::Align::Min)),
+                ),
+            );
+        }
+        let ui = match body.as_mut() {
+            Some(body) => body,
+            None => ui,
         };
         let bar = theme::metric::SCROLL_BAR;
         let width = (ui.available_width() - theme::ROLL_KEYBED - bar).max(theme::ROLL_KEYBED);
@@ -474,8 +593,29 @@ impl PianoRoll {
                     Some(range.map_or((key, key), |(low, high)| (low.min(key), high.max(key))))
                 })
         };
-        match fit {
+        // A second press restores the view saved by the first (T41).
+        let restored = match fit {
+            Some(Fit::Width) => self
+                .fit_width
+                .press()
+                .map(|(offset, zoom)| {
+                    self.offset = offset;
+                    self.zoom = zoom;
+                })
+                .is_some(),
+            Some(Fit::Height) => self
+                .fit_height
+                .press()
+                .map(|(row, scroll)| {
+                    self.row = row;
+                    self.v_scroll = scroll;
+                })
+                .is_some(),
+            None => false,
+        };
+        match fit.filter(|_| !restored) {
             Some(Fit::Width) => {
+                let before = (self.offset, self.zoom);
                 let start = clips.iter().map(|(_, clip)| clip.start).min().unwrap_or(0);
                 let end = clips
                     .iter()
@@ -485,8 +625,10 @@ impl PianoRoll {
                 self.zoom = (width * QUARTER as f32 / (end - start).max(1) as f32)
                     .clamp(*transport::ZOOM_RANGE.start(), *transport::ZOOM_RANGE.end());
                 self.offset = start;
+                self.fit_width.fitted(before, self.zoom);
             }
             Some(Fit::Height) => {
+                let before = (self.row, self.v_scroll);
                 let (low, high) = clips
                     .iter()
                     .filter_map(|(_, clip)| range(clip))
@@ -496,6 +638,7 @@ impl PianoRoll {
                     .floor()
                     .clamp(f32::from(*ROW_HEIGHT.start()), f32::from(*ROW_HEIGHT.end()));
                 self.center = Some((low, high));
+                self.fit_height.fitted(before, self.row);
             }
             None => {}
         }
@@ -539,13 +682,7 @@ impl PianoRoll {
             enabled,
             colour: colour_of(active_track),
         };
-        let functions_top = ui.cursor().top();
-        if self.functions {
-            action = self
-                .midi_functions(ui, &active_context, view)
-                .or(action.take());
-        }
-        let functions_height = ui.cursor().top() - functions_top;
+        let functions_height = 0.0;
         let others = clips
             .iter()
             .filter(|(_, clip)| clip.id() != active.id())
@@ -644,6 +781,8 @@ impl PianoRoll {
             Rect::from_x_y_ranges(grid.x_range(), column_top..=lanes_bottom),
             shown,
         );
+        self.fit_width.track(self.zoom);
+        self.fit_height.track(self.row);
         let saved = clef_model::project::PianoRollView {
             zoom_milli: (self.zoom * 1_000.0).round() as u32,
             row_height: self.row.round() as u8,
@@ -1343,12 +1482,37 @@ impl PianoRoll {
         None
     }
 
+    /// T41 round 3 (S6): the MIDI Functions drawer, its sections stacked as accordions.
+    fn functions_drawer(
+        &mut self,
+        ui: &mut Ui,
+        rect: Rect,
+        lane: &LaneContext<'_>,
+        view: &Snapshot,
+    ) -> Option<Action> {
+        ui.painter().rect_filled(rect, 0, theme::PANEL);
+        let mut drawer = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(rect.shrink2(egui::vec2(8.0, 8.0)))
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        egui::ScrollArea::vertical()
+            .id_salt("midi-functions")
+            .auto_shrink([false, false])
+            .show(&mut drawer, |ui| {
+                ui.spacing_mut().item_spacing.y = 6.0;
+                self.midi_functions(ui, lane, view)
+            })
+            .inner
+    }
+
     fn midi_functions(
         &mut self,
         ui: &mut Ui,
         lane: &LaneContext<'_>,
         view: &Snapshot,
     ) -> Option<Action> {
+        use crate::primitives::accordion::section;
         let mut action = None;
         let notes = self
             .picked(lane.clip)
@@ -1357,7 +1521,8 @@ impl PianoRoll {
             .count();
         let enabled = lane.enabled && notes > 0;
         let bounds = lane.clip.roll_source_bounds();
-        ui.horizontal_wrapped(|ui| {
+        let mut sections = self.sections;
+        section(ui, "Quantize", &mut sections[0], |ui| {
             draw::number(ui, "Strength %", &mut self.strength, 0..=100);
             if draw::button(
                 ui,
@@ -1371,6 +1536,8 @@ impl PianoRoll {
                 });
                 action = self.edit(view, lane, "Quantize Notes", changes);
             }
+        });
+        section(ui, "Transpose", &mut sections[1], |ui| {
             draw::number(ui, "Semitones", &mut self.transpose, -127..=127);
             if draw::button(ui, "Transpose", enabled && self.transpose != 0) {
                 let changes = self.transform(lane.clip, |event| {
@@ -1384,6 +1551,8 @@ impl PianoRoll {
                 });
                 action = self.edit(view, lane, "Transpose Notes", changes);
             }
+        });
+        section(ui, "Humanize", &mut sections[2], |ui| {
             draw::number(ui, "Timing (ticks)", &mut self.timing, 0..=960);
             draw::number(ui, "Velocity deviation", &mut self.dynamics, 0..=126);
             if draw::button(
@@ -1403,6 +1572,7 @@ impl PianoRoll {
                 action = self.edit(view, lane, "Humanize Notes", changes);
             }
         });
+        self.sections = sections;
         action
     }
 
@@ -2400,15 +2570,14 @@ mod tests {
         roll.open(b, view.project.midi.find_clip(b).unwrap().1);
         let context = egui::Context::default();
         crate::theme::install_fonts(&context);
-        let mut open = true;
-        let mut show = |roll: &mut PianoRoll, selected: &BTreeSet<ClipId>| {
+        let show = |roll: &mut PianoRoll, selected: &BTreeSet<ClipId>| {
             let _ = context.run_ui(
                 RawInput {
                     screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(1024.0, 768.0))),
                     ..Default::default()
                 },
                 |ui| {
-                    let _ = roll.show(ui, 600.0, &view, selected, true, &mut open);
+                    let _ = roll.show(ui, 600.0, &view, selected, true);
                 },
             );
         };

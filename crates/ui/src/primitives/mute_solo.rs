@@ -4,6 +4,9 @@ use super::mixer::register_activation_focus;
 use crate::{theme, theme::*};
 use eframe::egui::{self, Ui, WidgetInfo, WidgetType, vec2};
 
+/// Width of a mute or solo lamp (the header reserves this per lamp).
+pub(crate) const LAMP_WIDTH: f32 = 25.0;
+
 pub(crate) fn lamp(
     ui: &mut Ui,
     label: &str,
@@ -11,7 +14,7 @@ pub(crate) fn lamp(
     solo: bool,
     lit: bool,
     enabled: bool,
-) -> bool {
+) -> egui::Response {
     let (fill, color) = match (lit, solo) {
         (true, true) => (SOLO, theme::BACKGROUND),
         (true, false) => (OXBLOOD, theme::TEXT),
@@ -21,9 +24,9 @@ pub(crate) fn lamp(
         enabled,
         egui::Button::new(egui::RichText::new(label).color(color))
             .fill(fill)
-            .min_size(vec2(25.0, 20.0)),
+            .min_size(vec2(LAMP_WIDTH, 20.0)),
     );
     response.widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, enabled, lit, hint));
     register_activation_focus(&response);
-    response.on_hover_text(hint).clicked()
+    response.on_hover_text(hint)
 }

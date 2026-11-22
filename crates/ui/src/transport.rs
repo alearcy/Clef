@@ -1,11 +1,14 @@
 use crate::{
     Action, App, Command,
     arrangement::{
-        ArrangementUi, Fit, Lane, LaneInput, TakeLaneInput, TakeLaneRow, clamp_height, paint_kebab,
+        ArrangementUi, Fit, Lane, LaneInput, RenameEnd, Renaming, TakeLaneInput, TakeLaneRow,
+        clamp_height, paint_kebab,
     },
     primitives::{
         list_row::ListRow,
         scroll_zoom_bars,
+        search_field::SearchField,
+        text_field::TextField,
         timeline::{self as timeline_ui, LOOP_HEIGHT, LoopGesture, RULER_HEIGHT, Viewport},
         transport::{self as controls, Icon},
     },
@@ -128,14 +131,44 @@ impl App {
         self.send(Action::Transport(action));
     }
 
-    pub fn transport_bar(&self, ui: &mut egui::Ui) -> Option<Command> {
+    pub fn transport_bar(&mut self, ui: &mut egui::Ui) -> Option<Command> {
+        let mut snap = self.arrangement_ui.settings.snap;
+        let mut format = None;
+        let chosen = self.transport_controls(ui, &mut snap, &mut format);
+        self.arrangement_ui.settings.snap = snap;
+        if let Some(format) = format {
+            self.send(Action::SetFormat(format));
+        }
+        chosen
+    }
+
+    /// T41 round 2: the project's sample rate: the running rate, else the project override's,
+    /// else the global preference's (0 when none is known).
+    pub(crate) fn project_rate(&self) -> u32 {
+        if self.view.rate > 0 {
+            return self.view.rate;
+        }
+        self.view
+            .project
+            .audio
+            .as_ref()
+            .or(self.view.audio_preferences.as_ref())
+            .map_or(0, |audio| audio.rate)
+    }
+
+    fn transport_controls(
+        &self,
+        ui: &mut egui::Ui,
+        snap: &mut clef_model::midi::Snap,
+        format: &mut Option<clef_model::project::ProjectFormat>,
+    ) -> Option<Command> {
         let transport = self.view.transport;
         let timeline = &self.view.project.timeline;
         let position = timeline.position(transport.audible_tick);
         let tempo = timeline.section_at(transport.audible_tick).1;
         let mut chosen = None;
         let compact = ui.available_width() < 860.0;
-        controls::bar(ui, |ui| {
+        controls::band(ui, |ui| {
             for (command, glyph, on) in [
                 (Command::ReturnToStart, Icon::Start, false),
                 (
@@ -207,16 +240,181 @@ impl App {
                     chosen = Some(Command::TempoMap);
                 }
             }
+            let recording = self.view.recording && transport.phase == TransportPhase::Playing;
             controls::counter(
                 ui,
                 position,
                 transport.phase == TransportPhase::CountingIn,
-                self.view.recording && transport.phase == TransportPhase::Playing,
+                recording,
             );
+            // T41 round 2: the second counter; a click picks what it reads. At compact widths it
+            // yields first, so the transport stays on one row.
+            let project = self.view.project.format;
+            if !compact {
+                let text = controls::second_counter_text(
+                    project.counter,
+                    project.smpte_fps,
+                    timeline.nanos(transport.audible_tick),
+                    self.project_rate(),
+                );
+                let label = controls::second_counter_label(project.counter, project.smpte_fps);
+                let display = crate::primitives::segment_display::segment_display(
+                    ui, &label, &text, recording, 120.0,
+                );
+                let display = ui
+                    .interact(display.rect, display.id.with("pick"), egui::Sense::click())
+                    .on_hover_text(format!("{label} — click to choose the counter"));
+                display.widget_info(|| {
+                    egui::WidgetInfo::labeled(
+                        egui::WidgetType::Button,
+                        true,
+                        "Choose second counter",
+                    )
+                });
+                crate::primitives::menu::show(crate::primitives::menu::under(&display), |ui| {
+                    use clef_model::project::{SMPTE_FPS, SecondCounter};
+                    let choices = [SecondCounter::Time, SecondCounter::Samples]
+                        .map(|counter| (counter, project.smpte_fps))
+                        .into_iter()
+                        .chain(SMPTE_FPS.map(|fps| (SecondCounter::Smpte, fps)));
+                    for (counter, fps) in choices {
+                        let ticked = project.counter == counter
+                            && (counter != SecondCounter::Smpte || project.smpte_fps == fps);
+                        if crate::primitives::menu::Item::new(&controls::second_counter_label(
+                            counter, fps,
+                        ))
+                        .ticked(ticked)
+                        .show(ui)
+                        {
+                            *format = Some(clef_model::project::ProjectFormat {
+                                counter,
+                                smpte_fps: fps,
+                                ..project
+                            });
+                        }
+                    }
+                });
+            }
+            // T41 round 3 (S12): the project's sample rate over its bit depth, in segment
+            // digits like the counters; a click opens Project Format.
+            let rate = rate_label(self.project_rate()).unwrap_or_else(|| "— kHz".into());
+            let (bits, bits_unit) = bit_digits(project.bits);
+            let readout = crate::primitives::segment_display::two_row_readout(
+                ui,
+                "Project format",
+                [
+                    (&rate_digits(self.project_rate()), "kHz"),
+                    (bits, bits_unit),
+                ],
+            );
+            let tooltip = self.transport_tooltip(ui, Command::ProjectFormat);
+            let readout = ui
+                .interact(
+                    readout.rect,
+                    readout.id.with("format"),
+                    egui::Sense::click(),
+                )
+                .on_hover_text(tooltip);
+            readout.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::WidgetType::Button,
+                    true,
+                    format!("Project format, {rate}, {}", project.bits.label()),
+                )
+            });
+            if readout.clicked() && self.enabled(Command::ProjectFormat) {
+                chosen = Some(Command::ProjectFormat);
+            }
+            // Its own id: the piano roll has a Snap of its own.
+            ui.push_id("transport-snap", |ui| timeline_ui::snap_control(ui, snap));
             if self.transport_button(ui, Command::TransportSettings, "Transport…", false) {
                 chosen = Some(Command::TransportSettings);
             }
         });
+        chosen
+    }
+
+    /// T41: the arrangement tool row under the transport. Over the track headers: the track
+    /// search and the create-tracks glyph; at the right end: the fit toggles.
+    pub fn tool_row(&mut self, ui: &mut egui::Ui, width: f32) -> Option<Command> {
+        let mut chosen = None;
+        let header = header_width(width, self.arrangement_ui.track_column);
+        let mut search = std::mem::take(&mut self.arrangement_ui.track_search);
+        let (row, _) = ui.allocate_exact_size(
+            egui::vec2(width, crate::theme::metric::TOOL_TARGET),
+            egui::Sense::hover(),
+        );
+        let layout = egui::Layout::left_to_right(egui::Align::Center);
+        let create = crate::theme::metric::CONTROL_HEIGHT;
+        let left = egui::Rect::from_min_size(row.min, egui::vec2(header, row.height()));
+        let search_rect = egui::Rect::from_min_max(
+            left.min,
+            egui::pos2(left.right() - create - 6.0, left.bottom()),
+        );
+        let mut tools = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt("arrangement-tools")
+                .max_rect(row)
+                .layout(layout),
+        );
+        tools.scope_builder(
+            egui::UiBuilder::new().max_rect(search_rect).layout(layout),
+            |ui| {
+                SearchField::new(&mut search, "Find tracks")
+                    .width(search_rect.width().max(48.0))
+                    .show(ui);
+            },
+        );
+        tools.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(egui::Rect::from_min_max(
+                    egui::pos2(search_rect.right() + 6.0, left.top()),
+                    left.max,
+                ))
+                .layout(layout),
+            |ui| {
+                let name = self.keymap.tooltip(ui.ctx(), Command::NewTracks);
+                if crate::primitives::tool_button::create_button(
+                    ui,
+                    &name,
+                    self.command_available(Command::NewTracks, false),
+                )
+                .clicked()
+                    && self.enabled(Command::NewTracks)
+                {
+                    chosen = Some(Command::NewTracks);
+                }
+            },
+        );
+        tools.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(egui::Rect::from_min_max(
+                    egui::pos2(left.right() + 6.0, row.top()),
+                    row.max,
+                ))
+                .layout(egui::Layout::right_to_left(egui::Align::Center)),
+            |ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                // Right to left: Fit Height ends the row, Fit Width before it.
+                for (command, glyph, on) in [
+                    (
+                        Command::FitArrangementHeight,
+                        Icon::FitHeight,
+                        self.arrangement_ui.fit_height.active(),
+                    ),
+                    (
+                        Command::FitArrangementWidth,
+                        Icon::FitWidth,
+                        self.arrangement_ui.fit_width.active(),
+                    ),
+                ] {
+                    if self.transport_tool(ui, command, glyph, on) {
+                        chosen = Some(command);
+                    }
+                }
+            },
+        );
+        self.arrangement_ui.track_search = search;
         chosen
     }
 
@@ -253,9 +451,9 @@ impl App {
         ui: &mut egui::Ui,
         height: f32,
         width: f32,
-    ) -> (Option<u64>, bool, Option<TransportAction>) {
+    ) -> (Option<u64>, Option<TransportAction>) {
         let start_top = ui.cursor().top();
-        let header_width = if width >= 550.0 { 220.0 } else { 176.0 };
+        let header_width = header_width(width, self.arrangement_ui.track_column);
         let lane_width = (width - header_width - crate::theme::metric::SCROLL_BAR)
             .max(crate::theme::metric::SCROLL_BAR);
         let timeline = &self.view.project.timeline;
@@ -273,24 +471,7 @@ impl App {
             && self.confirm.is_none()
             && self.file.is_none()
             && self.view.tracks.iter().all(|track| !track.loading);
-        let mut fit = self.arrangement_ui.fit.take();
-        let mut snap = self.arrangement_ui.settings.snap;
-        ui.horizontal(|ui| {
-            timeline_ui::snap_control(ui, &mut snap);
-            for (command, glyph) in [
-                (Command::FitArrangementWidth, Icon::FitWidth),
-                (Command::FitArrangementHeight, Icon::FitHeight),
-            ] {
-                if self.transport_tool(ui, command, glyph, false) {
-                    fit = Some(if command == Command::FitArrangementWidth {
-                        Fit::Width
-                    } else {
-                        Fit::Height
-                    });
-                }
-            }
-        });
-        self.arrangement_ui.settings.snap = snap;
+        let fit = self.arrangement_ui.fit.take();
         let mut settings = self.arrangement_ui.settings;
         let mut v_offset = self.arrangement_ui.v_offset;
         let surface_top = ui.cursor().top();
@@ -299,16 +480,28 @@ impl App {
         let row_height = f32::from(settings.track_height);
         let master_height = crate::theme::ARRANGEMENT_TRACK_HEIGHT;
         let bar = crate::theme::metric::SCROLL_BAR;
+        // T41 round 3 (S11): the optional second ruler under the bars ruler.
+        let format = self.view.project.format;
+        let second_ruler = format.second_ruler;
+        let rulers_height = RULER_HEIGHT
+            + LOOP_HEIGHT
+            + if second_ruler.is_some() {
+                timeline_ui::UNIT_RULER_HEIGHT
+            } else {
+                0.0
+            };
+        let rate = self.project_rate();
         let tracks_height =
-            (height - (surface_top - start_top) - RULER_HEIGHT - LOOP_HEIGHT - master_height - bar)
+            (height - (surface_top - start_top) - rulers_height - master_height - bar)
                 .max(row_height);
         let instruments: Vec<_> = self
             .view
             .project
             .tracks
             .iter()
-            .filter(|track| track.is_instrument())
+            .filter(|track| track.is_instrument() && self.arrangement_ui.matches(&track.name))
             .collect();
+        let order: Vec<u64> = instruments.iter().map(|track| track.id).collect();
         let height_preview = self.arrangement_ui.lane_height_preview;
         let midi = &self.view.project.midi;
         let take_rows = |track: &clef_model::project::Track| -> Vec<f32> {
@@ -337,13 +530,10 @@ impl App {
         // Wheel and trackpad over the whole surface: scroll, ⌘-wheel and ⌘⇧-wheel zoom.
         let surface = egui::Rect::from_min_size(
             egui::pos2(surface_left, surface_top),
-            egui::vec2(
-                width,
-                RULER_HEIGHT + LOOP_HEIGHT + tracks_height + master_height + bar,
-            ),
+            egui::vec2(width, rulers_height + tracks_height + master_height + bar),
         );
         let wheel = scroll_zoom_bars::wheel(ui, surface);
-        let tracks_top = surface_top + RULER_HEIGHT + LOOP_HEIGHT;
+        let tracks_top = surface_top + rulers_height;
         let zoom = settings.zoom_milli as f32 / 1_000.0;
         let before =
             Viewport::with_snap(timeline, settings.offset, zoom, lane_width, settings.snap);
@@ -364,9 +554,32 @@ impl App {
             (pointer.y - tracks_top).clamp(0.0, tracks_height)
         });
         v_offset -= wheel.scroll.y;
-        // Fit buttons.
-        match fit {
+        // Fit buttons: a second press restores the view saved by the first (T41).
+        let restored = match fit {
+            Some(Fit::Width) => self
+                .arrangement_ui
+                .fit_width
+                .press()
+                .map(|(offset, zoom_milli)| {
+                    settings.offset = offset;
+                    settings.zoom_milli = zoom_milli;
+                })
+                .is_some(),
+            Some(Fit::Height) => self
+                .arrangement_ui
+                .fit_height
+                .press()
+                .map(|(track_height, offset)| {
+                    settings.track_height = track_height;
+                    v_offset = offset;
+                    height_steps = 0;
+                })
+                .is_some(),
+            None => false,
+        };
+        match fit.filter(|_| !restored) {
             Some(Fit::Width) => {
+                let before = (settings.offset, settings.zoom_milli);
                 let end = self
                     .view
                     .project
@@ -383,8 +596,12 @@ impl App {
                     .clamp(*controls::ZOOM_RANGE.start(), *controls::ZOOM_RANGE.end());
                 settings.zoom_milli = (next * 1_000.0).round() as u32;
                 settings.offset = 0;
+                self.arrangement_ui
+                    .fit_width
+                    .fitted(before, settings.zoom_milli);
             }
             Some(Fit::Height) => {
+                let before = (settings.track_height, v_offset);
                 let takes: f32 = instruments
                     .iter()
                     .map(|track| take_rows(track).iter().sum::<f32>())
@@ -394,6 +611,9 @@ impl App {
                 settings.track_height = clamp_height(fitted);
                 v_offset = 0.0;
                 height_steps = 0;
+                self.arrangement_ui
+                    .fit_height
+                    .fitted(before, settings.track_height);
             }
             None => {}
         }
@@ -423,18 +643,79 @@ impl App {
         );
         let mut action = None;
         let mut choose = None;
-        let mut add = false;
         let mut clip_command = None;
         let mut lanes = Vec::new();
         let mut take_action = None;
         let mut take_toggle = None;
+        let mut mix_command = None;
+        let mut rename_end = None;
+        let mut reorder_press = None;
+        // T41 round 2: header drag-to-reorder. A press past 4 points of travel becomes a drag.
+        let mut blocks: Vec<(u64, f32)> = instruments
+            .iter()
+            .map(|track| (track.id, row_height + take_rows(track).iter().sum::<f32>()))
+            .collect();
+        // A drop waiting for the session keeps its new place, so nothing jumps back.
+        if let Some((track, before)) = self.arrangement_ui.dropped {
+            let wanted = crate::arrangement::reordered(&blocks, track, before);
+            // Cleared once the session's order matches, or once nothing is in flight (a
+            // refused move falls back to the session's order).
+            if wanted == blocks
+                || self.actions_in_flight == 0
+                || !blocks.iter().any(|(id, _)| *id == track)
+            {
+                self.arrangement_ui.dropped = None;
+            } else {
+                blocks = wanted;
+            }
+        }
+        let (pointer_y, primary_down, escape) = ui.input(|input| {
+            (
+                input.pointer.interact_pos().map(|pos| pos.y),
+                input.pointer.primary_down(),
+                input.key_pressed(Key::Escape),
+            )
+        });
+        let mut reorder = self.arrangement_ui.reorder.take();
+        if let Some(drag) = reorder.as_mut()
+            && let Some(y) = pointer_y
+            && (y - drag.press).abs() > 4.0
+        {
+            drag.active = true;
+        }
+        let layout = crate::arrangement::RowLayout::new(
+            &blocks,
+            tracks_top - v_offset,
+            reorder.filter(|drag| drag.active),
+            pointer_y,
+        );
+        let mut reorder_drop = None;
+        if let Some(drag) = reorder {
+            if escape {
+                ui.ctx().request_repaint();
+            } else if primary_down {
+                self.arrangement_ui.reorder = Some(drag);
+                if drag.active {
+                    ui.ctx().request_repaint();
+                }
+            } else if drag.active {
+                reorder_drop = layout.drop_after(drag.track);
+            }
+        }
+        let mut context = None;
+        let mut headers = Vec::new();
+        let mix_enabled = self.mixer_controls_enabled();
         let mut loop_gesture = self.transport_ui.loop_gesture.take();
         let mut shown_playhead = transport.audible_tick;
         ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+        let mut ruler_change = None;
         ui.horizontal_top(|ui| {
+            // T41 round 3 (S11): each ruler's unit label over the track headers; a click on
+            // either opens the second-ruler menu.
             ui.vertical(|ui| {
-                ui.set_width(header_width);
-                add = self.button(ui, Command::AddTrack);
+                ruler_change =
+                    timeline_ui::ruler_labels(ui, header_width, second_ruler, format.smpte_fps);
+                ui.allocate_space(egui::vec2(header_width, LOOP_HEIGHT));
             });
             ui.vertical(|ui| {
                 let (locate, shown) = viewport.ruler(
@@ -447,6 +728,9 @@ impl App {
                 shown_playhead = shown;
                 if let Some(tick) = locate {
                     action = Some(TransportAction::Locate(tick));
+                }
+                if let Some(unit) = second_ruler {
+                    viewport.unit_ruler(ui, lane_width, timeline, unit, format.smpte_fps, rate);
                 }
                 if let Some(range) = viewport.loop_band(
                     ui,
@@ -496,7 +780,34 @@ impl App {
                         egui::Rect::from_min_max(egui::pos2(lane_left, row.top()), row.max),
                     );
                 }
-                for (index, track) in instruments.iter().copied().enumerate() {
+                // T41 round 2: each track's block sits at an animated top, so a header drag
+                // slides the other tracks out of its way; the dragged block is drawn last.
+                let mut order_drawn: Vec<(usize, &clef_model::project::Track)> =
+                    instruments.iter().copied().enumerate().collect();
+                if let Some(dragged) = layout.dragged
+                    && let Some(at) = order_drawn.iter().position(|(_, t)| t.id == dragged)
+                {
+                    let item = order_drawn.remove(at);
+                    order_drawn.push(item);
+                }
+                for (index, track) in order_drawn {
+                    let block_top = layout.top(ui.ctx(), track.id);
+                    let mut next_top = block_top;
+                    let mut place = |height: f32| {
+                        let rect = egui::Rect::from_min_size(
+                            egui::pos2(rows_area.left(), next_top),
+                            egui::vec2(rows_area.width(), height),
+                        );
+                        next_top += height;
+                        rect
+                    };
+                    if layout.dragged == Some(track.id) {
+                        let block = egui::Rect::from_min_size(
+                            egui::pos2(rows_area.left(), block_top),
+                            egui::vec2(header_width, layout.height(track.id)),
+                        );
+                        crate::paint::lift_shadow(ui.painter(), block);
+                    }
                     let state = self
                         .view
                         .state(track.id)
@@ -508,10 +819,7 @@ impl App {
                     let take_count = ArrangementUi::take_count(&self.view.project.midi, track.id);
                     let chip = take_count >= 2;
                     let colour = crate::theme::track_colour(track.colour());
-                    let (row, _) = ui.allocate_exact_size(
-                        egui::vec2(rows_area.width(), row_height),
-                        egui::Sense::hover(),
-                    );
+                    let row = place(row_height);
                     let header =
                         egui::Rect::from_min_size(row.min, egui::vec2(header_width, row_height));
                     let rect = egui::Rect::from_min_max(egui::pos2(lane_left, row.top()), row.max);
@@ -526,9 +834,13 @@ impl App {
                             ui.add_space(crate::theme::metric::STRIPE + 1.0);
                             let detail = format!("{plugin} · {state}");
                             let full = format!("{}\n{detail}", track.name);
-                            // Visual (and focus) order: name, take chip, arm, meter at the edge.
+                            // Visual (and focus) order: name, take chip, arm, mute, solo, meter at
+                            // the edge (T41; Monitor waits for T14 audio tracks).
                             let meter_left = header.right() - crate::theme::HEADER_METER;
-                            let arm_left = meter_left - 2.0 - 28.0;
+                            let lamps_left = meter_left
+                                - 2.0
+                                - 2.0 * (crate::primitives::mute_solo::LAMP_WIDTH + 2.0);
+                            let arm_left = lamps_left - 28.0;
                             let chip_left = if chip {
                                 arm_left - 2.0 - 34.0
                             } else {
@@ -543,12 +855,44 @@ impl App {
                                     .layout(egui::Layout::left_to_right(egui::Align::Center))
                             };
                             let name_left = ui.cursor().left();
+                            let name_width = (chip_left - 2.0 - name_left).max(24.0);
                             let header_response = ui
                                 .scope_builder(slot(name_left, chip_left - 2.0), |ui| {
+                                    if let Some(edit) = self.arrangement_ui.renaming.as_mut()
+                                        && edit.track == track.id
+                                    {
+                                        // T41 round 2: rename in place.
+                                        let id = ui.make_persistent_id(("rename", track.id));
+                                        let focused = ui.memory(|memory| memory.has_focus(id));
+                                        let key = |ui: &mut egui::Ui, modifiers, key| {
+                                            focused
+                                                && ui.input_mut(|i| i.consume_key(modifiers, key))
+                                        };
+                                        let end = if key(ui, Modifiers::SHIFT, Key::Tab) {
+                                            Some(RenameEnd::Next(-1))
+                                        } else if key(ui, Modifiers::NONE, Key::Tab) {
+                                            Some(RenameEnd::Next(1))
+                                        } else if key(ui, Modifiers::NONE, Key::Escape) {
+                                            Some(RenameEnd::Cancel)
+                                        } else {
+                                            None
+                                        };
+                                        let field = TextField::new(&mut edit.text, "Track name")
+                                            .id(id)
+                                            .width(name_width - 4.0)
+                                            .show(ui);
+                                        if edit.focus {
+                                            field.request_focus();
+                                            edit.focus = false;
+                                        }
+                                        rename_end = end.or((!edit.focus && field.lost_focus())
+                                            .then_some(RenameEnd::Commit));
+                                        return field;
+                                    }
                                     let mut row_widget = ListRow::new(&track.name)
                                         .accessible(&full)
                                         .height(row_height)
-                                        .width((chip_left - 2.0 - name_left).max(24.0))
+                                        .width(name_width)
                                         .selected(self.view.selected == Some(track.id))
                                         .enabled(self.confirm.is_none())
                                         .header();
@@ -574,7 +918,7 @@ impl App {
                                     }
                                 });
                             }
-                            ui.scope_builder(slot(arm_left, meter_left - 2.0), |ui| {
+                            ui.scope_builder(slot(arm_left, lamps_left - 2.0), |ui| {
                                 let armed = self.view.armed == Some(track.id);
                                 let arm_enabled = !self.view.recording
                                     && !transport.pending
@@ -591,6 +935,38 @@ impl App {
                                     self.keyboard_mode,
                                 ) {
                                     action = Some(TransportAction::Arm(track.id));
+                                }
+                            });
+                            ui.scope_builder(slot(lamps_left, meter_left - 2.0), |ui| {
+                                use clef_model::mixer::{Control, Target};
+                                for (label, command, control, lit) in [
+                                    ("M", Command::MixerMute, Control::Mute, track.mix.mute),
+                                    ("S", Command::MixerSolo, Control::Solo, track.mix.solo),
+                                ] {
+                                    let solo = control == Control::Solo;
+                                    let verb = if solo { "Solo" } else { "Mute" };
+                                    let mut hint = format!("{verb} {}", track.name);
+                                    let keys = self.keymap.text(ui.ctx(), command);
+                                    if !keys.is_empty() {
+                                        hint.push_str(&format!(" ({keys})"));
+                                    }
+                                    let target = Target::Track(track.id);
+                                    let shown = self.mixer_ui.painted(target, control, lit);
+                                    let response = crate::primitives::mute_solo::lamp(
+                                        ui,
+                                        label,
+                                        &hint,
+                                        solo,
+                                        shown,
+                                        mix_enabled,
+                                    );
+                                    // Press and drag paints the state over other tracks (T41).
+                                    if self
+                                        .mixer_ui
+                                        .paint_lamp(ui, &response, target, control, shown)
+                                    {
+                                        mix_command = Some((command, track.id));
+                                    }
                                 }
                             });
                             ui.scope_builder(slot(meter_left, header.right()), |ui| {
@@ -616,6 +992,9 @@ impl App {
                         0,
                         colour,
                     );
+                    if self.view.selected == Some(track.id) {
+                        crate::paint::selection_edge(ui.painter(), header);
+                    }
                     let response = response.expect("header row drawn");
                     viewport.lane_grid(ui, rect);
                     let lane = Lane {
@@ -662,13 +1041,29 @@ impl App {
                         focus_row = Some(row.y_range());
                         self.track_focus = None;
                     }
-                    if response.clicked() {
+                    if response.is_pointer_button_down_on()
+                        && ui.input(|input| input.pointer.primary_pressed())
+                        && let Some(pointer) = ui.input(|input| input.pointer.interact_pos())
+                    {
+                        reorder_press = Some(crate::arrangement::Reorder {
+                            track: track.id,
+                            press: pointer.y,
+                            grab: pointer.y - block_top,
+                            active: false,
+                        });
+                    }
+                    if response.clicked() && layout.dragged.is_none() {
                         choose = Some(track.id);
                     }
                     if response.double_clicked() {
                         choose = Some(track.id);
-                        self.rename_focus = true;
+                        self.arrangement_ui.renaming = Some(Renaming {
+                            track: track.id,
+                            text: track.name.clone(),
+                            focus: true,
+                        });
                     }
+                    headers.push((track.id, response.clone()));
                     if response.has_focus() {
                         if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowDown))
                             && index + 1 < instruments.len()
@@ -682,10 +1077,7 @@ impl App {
                         }
                     }
                     for (take_lane, height) in take_rows(track).into_iter().enumerate() {
-                        let (row, _) = ui.allocate_exact_size(
-                            egui::vec2(rows_area.width(), height),
-                            egui::Sense::hover(),
-                        );
+                        let row = place(height);
                         let header =
                             egui::Rect::from_min_size(row.min, egui::vec2(header_width, height));
                         let band =
@@ -725,23 +1117,26 @@ impl App {
             }
             ui.ctx().request_repaint();
         }
-        // The vertical bar beside the rows: track scroll and track-height zoom.
-        let bar_rect =
-            egui::Rect::from_min_max(egui::pos2(rows_area.right(), tracks.top()), tracks.max);
-        let moved = ui
-            .scope_builder(egui::UiBuilder::new().max_rect(bar_rect), |ui| {
-                scroll_zoom_bars::vertical(
-                    ui,
-                    "Arrangement tracks",
-                    scroll_zoom_bars::Axis {
-                        offset: v_offset,
-                        visible: tracks_height,
-                        total: content_height(row_height).max(tracks_height),
-                    },
-                    true,
-                )
-            })
-            .inner;
+        // The vertical bar beside the rows: track scroll and track-height zoom. It runs down
+        // past the Master row so its zoom buttons meet the horizontal bar's at the corner (T41).
+        let bar_rect = egui::Rect::from_min_max(
+            egui::pos2(rows_area.right(), tracks.top()),
+            tracks.max + egui::vec2(0.0, master_height),
+        );
+        // A child, not a scope: the bar reaches into the Master row's height and must not
+        // push the parent layout down.
+        let moved = scroll_zoom_bars::vertical(
+            &mut ui.new_child(egui::UiBuilder::new().max_rect(bar_rect)),
+            "Arrangement tracks",
+            scroll_zoom_bars::Axis {
+                offset: v_offset,
+                visible: tracks_height,
+                total: content_height(row_height).max(tracks_height),
+            },
+            true,
+        );
+        // The rows' content and the bar are children; the layout continues under the rows.
+        ui.advance_cursor_after_rect(tracks);
         if let Some(next) = moved.offset {
             v_offset = next;
         }
@@ -762,6 +1157,52 @@ impl App {
                 lane
             })
             .inner;
+        // T41 round 3 (S9): no tracks yet, an empty state centred in the track rows.
+        if self
+            .view
+            .project
+            .tracks
+            .iter()
+            .all(|track| !track.is_instrument())
+        {
+            crate::primitives::empty_state::paint(
+                ui,
+                rows_area,
+                crate::primitives::icons::Icon::Lanes,
+                "No tracks yet.",
+            );
+        }
+        // T41 round 3 (S10): the divider between headers and lanes resizes the track column.
+        {
+            let divider = egui::Rect::from_center_size(
+                egui::pos2(lane_left, (surface_top + master.bottom()) / 2.0),
+                egui::vec2(6.0, master.bottom() - surface_top),
+            );
+            let response = ui
+                .interact(
+                    divider,
+                    ui.id().with("track-column-divider"),
+                    egui::Sense::drag(),
+                )
+                .on_hover_cursor(egui::CursorIcon::ResizeColumn);
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Other, true, "Track column width")
+            });
+            if response.dragged() {
+                let start = self.arrangement_ui.track_column.unwrap_or(header_width);
+                self.arrangement_ui.track_column = Some((start + response.drag_delta().x).clamp(
+                    crate::theme::metric::MINIMUM_HEADER_WIDTH,
+                    crate::theme::metric::MAXIMUM_HEADER_WIDTH,
+                ));
+            }
+            if response.hovered() || response.dragged() {
+                ui.painter().vline(
+                    lane_left,
+                    divider.y_range(),
+                    egui::Stroke::new(1.0_f32, crate::theme::ACCENT),
+                );
+            }
+        }
         // The one playhead: from the ruler top through every track row to the Master row.
         viewport.playhead(
             ui,
@@ -835,6 +1276,8 @@ impl App {
             offset = viewport.offset_for_zoom(zoom, anchor);
         }
         self.arrangement_ui.v_offset = v_offset;
+        self.arrangement_ui.fit_width.track(zoom_milli);
+        self.arrangement_ui.fit_height.track(settings.track_height);
         let next = clef_model::project::ArrangementView {
             offset: offset.min(max_offset),
             zoom_milli,
@@ -847,13 +1290,19 @@ impl App {
             self.commit_clip_edit(edit);
         } else if next != self.view.project.arrangement_view
             && action.is_none()
-            && !add
             && choose.is_none()
             && self.confirm.is_none()
             && self.file.is_none()
             && !ui.input(|input| input.pointer.any_down())
         {
             self.send(Action::ArrangementView(next));
+        }
+        if let Some((second_ruler, smpte_fps)) = ruler_change {
+            self.send(Action::SetFormat(clef_model::project::ProjectFormat {
+                second_ruler,
+                smpte_fps,
+                ..self.view.project.format
+            }));
         }
         if let Some((track, lanes)) = take_toggle {
             if !lanes.visible {
@@ -867,7 +1316,96 @@ impl App {
         if let Some(action) = take_action {
             self.apply_take_action(action);
         }
-        (choose, add, action)
+        // Header context menus: the track actions that left the inspector (T41 round 2).
+        for (id, response) in &headers {
+            response.context_menu(|ui| {
+                if self.view.selected != Some(*id) {
+                    choose = Some(*id);
+                }
+                for command in [Command::Rename, Command::Instrument, Command::RemoveTrack] {
+                    if self.menu_command(ui, command, None) {
+                        context = Some((*id, command));
+                        ui.close();
+                    }
+                }
+            });
+        }
+        if let Some(end) = rename_end {
+            self.finish_rename(end, &order);
+        }
+        if let Some(press) = reorder_press {
+            self.arrangement_ui.reorder = Some(press);
+        }
+        if let Some((track, before)) = reorder_drop {
+            self.arrangement_ui.dropped = Some((track, before));
+            self.drop_track(track, before);
+            ui.ctx().request_repaint();
+        }
+        if let Some((command, track)) = mix_command {
+            self.run_mixer_command(command, clef_model::mixer::Target::Track(track));
+        }
+        if let Some((id, command)) = context {
+            if self.view.selected != Some(id) {
+                self.select_track(id);
+            }
+            self.dispatch(command, ui.ctx());
+        }
+        (choose, action)
+    }
+
+    /// T41 round 2: moves `track` so it sits before the track `before` (or last when `None`)
+    /// in the project's track list, as one undo step.
+    fn drop_track(&mut self, track: u64, before: Option<u64>) {
+        let tracks = &self.view.project.tracks;
+        let Some(from) = tracks.iter().position(|t| t.id == track) else {
+            return;
+        };
+        let mut rest: Vec<u64> = tracks
+            .iter()
+            .map(|t| t.id)
+            .filter(|&id| id != track)
+            .collect();
+        let to = before
+            .and_then(|id| rest.iter().position(|&other| other == id))
+            .unwrap_or(rest.len());
+        rest.insert(to, track);
+        let delta = to as isize - from as isize;
+        if delta != 0 {
+            self.send(Action::MoveTrack(track, delta));
+        }
+    }
+
+    /// T41 round 2: ends an inline rename; Tab moves the edit to the neighbouring track in
+    /// `order` (the visible header order).
+    pub(crate) fn finish_rename(&mut self, end: RenameEnd, order: &[u64]) {
+        let Some(edit) = self.arrangement_ui.renaming.take() else {
+            return;
+        };
+        if end != RenameEnd::Cancel {
+            let name = edit.text.trim();
+            let current = self
+                .view
+                .project
+                .tracks
+                .iter()
+                .find(|track| track.id == edit.track)
+                .map(|track| track.name.as_str());
+            if !name.is_empty() && current.is_some_and(|current| current != name) {
+                self.send(Action::Rename(edit.track, name.to_owned()));
+            }
+        }
+        if let RenameEnd::Next(step) = end
+            && let Some(index) = order.iter().position(|&id| id == edit.track)
+            && let Some(&next) = order.get((index as i64 + i64::from(step)) as usize)
+            && let Some(track) = self.view.project.tracks.iter().find(|t| t.id == next)
+        {
+            self.arrangement_ui.renaming = Some(Renaming {
+                track: next,
+                text: track.name.clone(),
+                focus: true,
+            });
+            self.select_track(next);
+        }
     }
 
     pub fn transport_windows(&mut self, ctx: &egui::Context) {
@@ -1002,10 +1540,60 @@ impl App {
     }
 }
 
+/// The track-header column width for an arrangement `width` (T40), shared with the tool row.
+/// T41 round 3 (S10): `column` is the width the user chose, kept within
+/// `minimumHeaderWidth`–`maximumHeaderWidth` and leaving the lanes at least 240 points.
+pub fn header_width(width: f32, column: Option<f32>) -> f32 {
+    use crate::theme::metric::{MAXIMUM_HEADER_WIDTH, MINIMUM_HEADER_WIDTH};
+    let wanted = column
+        .unwrap_or(if width >= 550.0 { 220.0 } else { 176.0 })
+        .clamp(MINIMUM_HEADER_WIDTH, MAXIMUM_HEADER_WIDTH);
+    wanted.min((width - 240.0).max(MINIMUM_HEADER_WIDTH))
+}
+
+/// T41 round 3 (S12): the sample rate in kilohertz with one decimal for the segment
+/// readout (`48.0`, `44.1`), dashes while audio is off.
+fn rate_digits(rate: u32) -> String {
+    if rate == 0 {
+        return "--.-".into();
+    }
+    format!("{:.1}", f64::from(rate) / 1_000.0)
+}
+
+/// T41 round 3 (S12): the bit depth's digits and unit caption for the segment readout.
+fn bit_digits(bits: clef_model::project::BitDepth) -> (&'static str, &'static str) {
+    use clef_model::project::BitDepth;
+    match bits {
+        BitDepth::Int16 => ("16", "bit"),
+        BitDepth::Int24 => ("24", "bit"),
+        BitDepth::Float32 => ("32", "float"),
+    }
+}
+
+/// T41: the transport's sample-rate readout, `None` while audio is off.
+fn rate_label(rate: u32) -> Option<String> {
+    (rate > 0).then(|| {
+        let khz = f64::from(rate) / 1_000.0;
+        if rate.is_multiple_of(1_000) {
+            format!("{khz:.0} kHz")
+        } else {
+            format!("{khz:.1} kHz")
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::{path::PathBuf, time::Instant};
+
+    #[test]
+    fn the_rate_readout_shows_kilohertz_and_hides_while_audio_is_off() {
+        assert_eq!(rate_label(0), None);
+        assert_eq!(rate_label(48_000).as_deref(), Some("48 kHz"));
+        assert_eq!(rate_label(44_100).as_deref(), Some("44.1 kHz"));
+        assert_eq!(rate_label(96_000).as_deref(), Some("96 kHz"));
+    }
 
     #[test]
     fn take_lanes_and_chip_render_at_both_widths() {
@@ -1296,5 +1884,27 @@ mod tests {
         app.view.transport.play_pending = true;
         assert!(app.enabled(Command::Stop));
         assert!(matches!(app.play_stop_command(), Command::Stop));
+    }
+
+    #[test]
+    fn the_track_column_keeps_its_range_and_leaves_room_for_the_lanes() {
+        assert_eq!(header_width(1024.0, None), 220.0);
+        assert_eq!(header_width(500.0, None), 176.0);
+        assert_eq!(header_width(1400.0, Some(320.0)), 320.0);
+        assert_eq!(header_width(1400.0, Some(900.0)), 400.0);
+        assert_eq!(header_width(1400.0, Some(20.0)), 160.0);
+        // A narrow window keeps 240 points of lanes, never below the minimum column.
+        assert_eq!(header_width(600.0, Some(400.0)), 360.0);
+        assert_eq!(header_width(300.0, Some(400.0)), 160.0);
+    }
+
+    #[test]
+    fn the_format_readout_reads_kilohertz_and_bits_as_digits() {
+        use clef_model::project::BitDepth;
+        assert_eq!(rate_digits(48_000), "48.0");
+        assert_eq!(rate_digits(44_100), "44.1");
+        assert_eq!(rate_digits(0), "--.-");
+        assert_eq!(bit_digits(BitDepth::Int24), ("24", "bit"));
+        assert_eq!(bit_digits(BitDepth::Float32), ("32", "float"));
     }
 }

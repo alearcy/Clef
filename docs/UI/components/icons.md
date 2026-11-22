@@ -82,3 +82,16 @@ marker and the rest are added when a Clef surface needs them.
 
 **Evidence:** gallery `snapshots/egui/t18-icons-{1024,760}.png` and `t18-icons-1024@2x.png`
 (Retina); accessible names checked by `gallery::tests::every_gallery_control_has_an_accessible_name`.
+
+## Clef T41 round 2
+
+`Icon::Plus` (the create glyph, drawn in `CREATE` by `tool_button::create_button`) and
+`Icon::Drawer` (a window with its left pane: show or hide the left drawer).
+
+## Clef T41 round 3
+
+[T41 round 3](../../specs/T41-session-window-layout.md#round-3--gui-review-2026-11-22): `Icon::Detach` and `Icon::Attach` (a window with an arrow leaving it or entering it: the
+lower panel's own-window control), `Icon::PanelFull` (a frame with its upper part raised: half or
+full height, lit `accent` while full), and three empty-state glyphs drawn at 48 points:
+`Icon::Keys` (an octave), `Icon::Faders` (three faders) and `Icon::Lanes` (stacked track lanes).
+`Icon::ALL` holds 21 glyphs.

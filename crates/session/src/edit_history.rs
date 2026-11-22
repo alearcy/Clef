@@ -162,6 +162,12 @@ pub(super) enum Edit {
         before: i16,
         after: i16,
     },
+    /// T41: one drag-paint gesture over several channels' Mute or Solo, one undo step.
+    MixBatch {
+        control: clef_model::mixer::Control,
+        /// (channel, before, after)
+        changes: Vec<(clef_model::mixer::Target, i16, i16)>,
+    },
     Track {
         slot: Box<TrackSlot>,
         added: bool,
@@ -355,7 +361,7 @@ impl Edit {
             Self::InstrumentBypass { .. } => "Toggle Instrument Bypass",
             Self::InstrumentOffline { .. } => "Toggle Instrument Offline",
             Self::TakeToNewTrack { .. } => "Take to New Track",
-            Self::Mix { control, .. } => control.label(),
+            Self::Mix { control, .. } | Self::MixBatch { control, .. } => control.label(),
             Self::RecordMode { .. } => "Change Record Mode",
             Self::TrackMode { .. } => "Change Track Record Mode",
             Self::Move { .. } => "Move Track",
@@ -420,6 +426,9 @@ impl Edit {
                 | Self::InstrumentOffline { .. }
                 | Self::Output { .. }
                 | Self::Mix { .. } => 0,
+                Self::MixBatch { changes, .. } => {
+                    changes.capacity() * size_of::<(clef_model::mixer::Target, i16, i16)>()
+                }
             }
     }
 
@@ -585,6 +594,11 @@ impl Edit {
                 after,
             } => {
                 project.set_mix(*target, *control, if forward { *after } else { *before })?;
+            }
+            Self::MixBatch { control, changes } => {
+                for (target, before, after) in changes {
+                    project.set_mix(*target, *control, if forward { *after } else { *before })?;
+                }
             }
             Self::RecordMode { before, after } => {
                 project.record_mode = if forward { *after } else { *before };

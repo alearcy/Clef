@@ -50,8 +50,88 @@ pub struct AudioSettings {
 }
 /// The current project format. Version 5 (T39) stores audio settings only as an explicit
 /// project override; version 6 (T40) adds track colours, the arrangement track height and the
-/// piano-roll view.
-pub const PROJECT_VERSION: u32 = 6;
+/// piano-roll view; version 7 (T41) adds the project format (recording bit depth and the
+/// transport's second counter); version 8 (T41 round 3) adds the arrangement's second ruler.
+pub const PROJECT_VERSION: u32 = 8;
+
+/// T41: bit depth of the audio files the project records (used once T14 records audio).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BitDepth {
+    Int16,
+    #[default]
+    Int24,
+    Float32,
+}
+
+impl BitDepth {
+    pub const ALL: [Self; 3] = [Self::Int16, Self::Int24, Self::Float32];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Int16 => "16-bit",
+            Self::Int24 => "24-bit",
+            Self::Float32 => "32-bit float",
+        }
+    }
+}
+
+/// T41: what the transport's second counter reads.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SecondCounter {
+    /// `h:mm:ss.mmm` from the project start.
+    #[default]
+    Time,
+    /// Samples at the running sample rate.
+    Samples,
+    /// SMPTE `hh:mm:ss:ff` at `ProjectFormat::smpte_fps`.
+    Smpte,
+}
+
+/// SMPTE frame rates the counter offers.
+pub const SMPTE_FPS: [u8; 3] = [24, 25, 30];
+
+/// T41: the project's recording format and counter choice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectFormat {
+    #[serde(default)]
+    pub bits: BitDepth,
+    #[serde(default)]
+    pub counter: SecondCounter,
+    #[serde(default = "default_smpte_fps")]
+    pub smpte_fps: u8,
+    /// T41 round 3: the unit of the arrangement's second ruler, `None` when it is hidden.
+    #[serde(default)]
+    pub second_ruler: Option<SecondCounter>,
+}
+
+fn default_smpte_fps() -> u8 {
+    25
+}
+
+impl Default for ProjectFormat {
+    fn default() -> Self {
+        Self {
+            bits: BitDepth::default(),
+            counter: SecondCounter::default(),
+            smpte_fps: default_smpte_fps(),
+            second_ruler: None,
+        }
+    }
+}
+
+impl ProjectFormat {
+    pub fn validate(self) -> Result<()> {
+        if !SMPTE_FPS.contains(&self.smpte_fps) {
+            return Err("SMPTE frame rate must be 24, 25 or 30.".into());
+        }
+        Ok(())
+    }
+}
+
+fn default_format(format: &ProjectFormat) -> bool {
+    *format == ProjectFormat::default()
+}
 
 /// The nine track hues of the foundations, assigned to new tracks in turn (T40). T18 moved five
 /// of them in CIELAB lightness so their label reaches 4.5:1.
@@ -380,6 +460,9 @@ pub struct Project {
     pub master: crate::mixer::Level,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub master_inserts: Vec<Insert>,
+    /// T41: recording bit depth and the second counter.
+    #[serde(default)]
+    pub format: ProjectFormat,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -480,6 +563,8 @@ struct Metadata {
     master: crate::mixer::Level,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     master_inserts: Vec<Insert>,
+    #[serde(default, skip_serializing_if = "default_format")]
+    format: ProjectFormat,
     state_lengths: Vec<usize>,
 }
 
@@ -523,6 +608,7 @@ impl Default for Project {
             piano_roll_view: PianoRollView::default(),
             master: Default::default(),
             master_inserts: Vec::new(),
+            format: ProjectFormat::default(),
         }
     }
 }
@@ -628,6 +714,7 @@ impl Project {
         }
         self.arrangement_view.validate()?;
         self.piano_roll_view.validate()?;
+        self.format.validate()?;
         let valid_text = |text: &str| text.len() <= 4096 && !text.contains('\0');
         if self.version != PROJECT_VERSION {
             return Err("unsupported Clef project version".into());
@@ -781,6 +868,7 @@ impl Project {
             piano_roll_view: self.piano_roll_view,
             master: self.master,
             master_inserts: self.master_inserts.clone(),
+            format: self.format,
             state_lengths,
         })?;
         if metadata.len() > MAX_METADATA {
@@ -878,6 +966,7 @@ impl Project {
                     piano_roll_view: PianoRollView::default(),
                     master: Default::default(),
                     master_inserts: Vec::new(),
+                    format: ProjectFormat::default(),
                 },
                 lengths,
             )
@@ -913,6 +1002,7 @@ impl Project {
                     piano_roll_view: metadata.piano_roll_view,
                     master: metadata.master,
                     master_inserts: metadata.master_inserts,
+                    format: metadata.format,
                 },
                 metadata.state_lengths,
             )
@@ -1144,6 +1234,52 @@ mod tests {
             loaded.tracks.iter().map(|t| t.colour).collect::<Vec<_>>(),
             vec![Some(TRACK_COLOURS[0]), Some([0x12, 0x34, 0x56])]
         );
+    }
+
+    #[test]
+    fn the_project_format_round_trips_and_version_6_projects_get_the_default() {
+        let mut project = sample();
+        project.format = ProjectFormat {
+            bits: BitDepth::Float32,
+            counter: SecondCounter::Smpte,
+            smpte_fps: 30,
+            second_ruler: Some(SecondCounter::Samples),
+        };
+        let mut bytes = Vec::new();
+        project.write(&mut bytes).unwrap();
+        assert_eq!(Project::decode(&mut bytes.as_slice()).unwrap(), project);
+        let length = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+        let mut metadata: serde_json::Value =
+            serde_json::from_slice(&bytes[16..16 + length]).unwrap();
+        let object = metadata.as_object_mut().unwrap();
+        object.insert("version".into(), 6.into());
+        object.remove("format");
+        let original = container(
+            MAGIC,
+            &serde_json::to_vec(&metadata).unwrap(),
+            &bytes[16 + length..],
+        );
+        let legacy = Project::decode(&mut original.as_slice()).unwrap();
+        assert_eq!(legacy.version, PROJECT_VERSION);
+        assert_eq!(legacy.format, ProjectFormat::default());
+        assert_eq!(legacy.format.bits, BitDepth::Int24);
+        // A version 7 project (T41 round 2) has no second ruler: it loads hidden.
+        let object = metadata.as_object_mut().unwrap();
+        object.insert("version".into(), 7.into());
+        object.insert(
+            "format".into(),
+            serde_json::json!({"bits": "Float32", "counter": "Smpte", "smpte_fps": 30}),
+        );
+        let v7 = container(
+            MAGIC,
+            &serde_json::to_vec(&metadata).unwrap(),
+            &bytes[16 + length..],
+        );
+        let v7 = Project::decode(&mut v7.as_slice()).unwrap();
+        assert_eq!(v7.format.second_ruler, None);
+        assert_eq!(v7.format.smpte_fps, 30);
+        project.format.smpte_fps = 29;
+        assert!(project.validate().is_err());
     }
 
     #[test]

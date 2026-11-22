@@ -67,3 +67,27 @@ pub fn danger(ui: &mut Ui, value: &str) -> Response {
             .color(theme::DANGER),
     )
 }
+
+/// T41 status-row text: one 11-point line, `secondary` or `danger`, truncated with the full text
+/// on hover.
+pub fn status(ui: &mut Ui, value: &str, danger: bool) -> Response {
+    let color = if danger {
+        theme::DANGER
+    } else {
+        theme::SECONDARY
+    };
+    let response = ui.add(
+        egui::Label::new(
+            RichText::new(value)
+                .font(text::font(text::SMALL))
+                .color(color),
+        )
+        .selectable(false)
+        .truncate(),
+    );
+    if value.is_empty() {
+        response
+    } else {
+        response.on_hover_text(value)
+    }
+}

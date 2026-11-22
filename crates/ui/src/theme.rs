@@ -208,6 +208,7 @@ pub mod metric {
     pub const CHANNEL_WIDTH: f32 = 92.0;
     pub const CHANNEL_GAP: f32 = 1.0;
     pub const MINIMUM_HEADER_WIDTH: f32 = 160.0;
+    pub const MAXIMUM_HEADER_WIDTH: f32 = 400.0;
     pub const FOLDER_HEIGHT: f32 = 24.0;
     pub const TRANSPORT_HEIGHT: f32 = 40.0;
     pub const MENU_BAR_HEIGHT: f32 = 28.0;
@@ -242,6 +243,7 @@ pub mod metric {
         ("CHANNEL_WIDTH", CHANNEL_WIDTH),
         ("CHANNEL_GAP", CHANNEL_GAP),
         ("MINIMUM_HEADER_WIDTH", MINIMUM_HEADER_WIDTH),
+        ("MAXIMUM_HEADER_WIDTH", MAXIMUM_HEADER_WIDTH),
         ("FOLDER_HEIGHT", FOLDER_HEIGHT),
         ("TRANSPORT_HEIGHT", TRANSPORT_HEIGHT),
         ("MENU_BAR_HEIGHT", MENU_BAR_HEIGHT),
@@ -335,6 +337,10 @@ pub const ROLL_SELECTION: f32 = 1.5;
 pub const ROLL_HANDLE: f32 = roll::HANDLE_WIDTH;
 pub const ROLL_CONTROLLER_HEIGHT: f32 = roll::CONTROLLER_LANE_HEIGHT;
 pub const ROLL_POINT: f32 = 3.0;
+/// T41 round 3 (S7): radius of the velocity lollipop head.
+pub const ROLL_VELOCITY_HEAD: f32 = 4.5;
+/// T41 round 3 (S8): the white keys' front-edge shade (black at 45 %, applied in steps).
+pub const KEY_FRONT_SHADE: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 115);
 pub const ROLL_HIT: f32 = 8.0;
 pub const ROLL_CURVE_STEPS: u8 = 16;
 pub const ROLL_LANE_HEIGHT: f32 = 144.0;

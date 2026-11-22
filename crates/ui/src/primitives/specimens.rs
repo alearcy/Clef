@@ -542,13 +542,15 @@ fn list_rows(ui: &mut Ui) {
         .height(44.0)
         .width(width)
         .show(ui);
-    ListRow::new("Strings")
+    let header = ListRow::new("Strings")
         .detail("No instrument · Empty")
         .height(44.0)
         .selected(true)
         .header()
         .width(width)
         .show(ui);
+    // The header owner draws the edge around its whole bounds (T41).
+    paint::selection_edge(ui.painter(), header.rect);
 }
 
 fn selection_edges(ui: &mut Ui) {

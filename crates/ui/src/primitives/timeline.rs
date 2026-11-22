@@ -11,6 +11,10 @@ use std::collections::BTreeSet;
 
 pub const RULER_HEIGHT: f32 = 24.0;
 pub const LOOP_HEIGHT: f32 = 10.0;
+/// T41 round 3 (S11): height of the second ruler (time, samples or SMPTE).
+pub const UNIT_RULER_HEIGHT: f32 = 18.0;
+/// Least spacing between two labelled marks of the second ruler, in points.
+const UNIT_LABEL_SPACING: f32 = 96.0;
 const MIN_GRID_PIXELS: f64 = 7.0;
 const LOCATOR_TARGET: f32 = 5.0;
 const NOTE_TOP: f32 = 17.0;
@@ -186,6 +190,93 @@ impl Viewport {
             return (locate, shown);
         }
         (None, shown)
+    }
+
+    /// T41 round 3 (S11): the second ruler, marking `unit` (time, samples, or SMPTE at
+    /// `fps`) over the same view as the bars ruler. Marks fall on round values of the unit,
+    /// spaced at least `UNIT_LABEL_SPACING` apart. Display only.
+    pub fn unit_ruler(
+        &self,
+        ui: &mut Ui,
+        width: f32,
+        timeline: &Timeline,
+        unit: clef_model::project::SecondCounter,
+        fps: u8,
+        rate: u32,
+    ) {
+        use clef_model::project::SecondCounter;
+        let (rect, response) = ui.allocate_exact_size(
+            egui::vec2(width.max(1.0), UNIT_RULER_HEIGHT),
+            Sense::hover(),
+        );
+        let name = super::transport::second_counter_label(unit, fps);
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Label, true, format!("{name} ruler"))
+        });
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(rect, 0.0, theme::CANVAS);
+        painter.hline(
+            rect.x_range(),
+            rect.top() + 0.5,
+            Stroke::new(1.0_f32, theme::FIELD),
+        );
+        let rate = if rate == 0 { 48_000 } else { rate };
+        let first_tick = self.tick_at(0.0);
+        let last_tick = self.tick_at(width);
+        let first = timeline.nanos(first_tick);
+        let last = timeline.nanos(last_tick);
+        let span = last.saturating_sub(first).max(1);
+        let least = span as f64 * f64::from(UNIT_LABEL_SPACING) / f64::from(width.max(1.0));
+        let step = unit_step(unit, fps, rate, least);
+        // The x of a time: the first tick at or after it, found by bisection (the tempo map
+        // makes time monotonic in ticks).
+        let x_of = |nanos: u128| {
+            let (mut low, mut high) = (first_tick, last_tick.max(first_tick + 1));
+            while low < high {
+                let middle = low + (high - low) / 2;
+                if timeline.nanos(middle) < nanos {
+                    low = middle + 1;
+                } else {
+                    high = middle;
+                }
+            }
+            rect.left() + self.x(low)
+        };
+        let mut mark = first.div_ceil(step) * step;
+        let mut drawn = 0;
+        while mark <= last && drawn < 200 {
+            let x = x_of(mark);
+            painter.vline(
+                x,
+                rect.center().y..=rect.bottom(),
+                Stroke::new(1.0_f32, theme::SECONDARY),
+            );
+            let text = match unit {
+                SecondCounter::Samples => format!(
+                    "{}",
+                    (mark * u128::from(rate) + 500_000_000) / 1_000_000_000
+                ),
+                SecondCounter::Time if step < 1_000_000_000 => {
+                    super::transport::second_counter_text(unit, fps, mark, rate)
+                }
+                SecondCounter::Time => {
+                    let text = super::transport::second_counter_text(unit, fps, mark, rate);
+                    text.trim_end_matches(".000").to_owned()
+                }
+                SecondCounter::Smpte => {
+                    super::transport::second_counter_text(unit, fps, mark, rate)
+                }
+            };
+            painter.text(
+                Pos2::new(x + 3.0, rect.top() + 2.0),
+                Align2::LEFT_TOP,
+                text,
+                FontId::proportional(10.0),
+                theme::SECONDARY,
+            );
+            mark += step;
+            drawn += 1;
+        }
     }
 
     pub fn loop_band(
@@ -733,6 +824,114 @@ impl LoopGesture {
     }
 }
 
+/// T41 round 3 (S11): the second ruler's mark step in nanoseconds: the smallest round value
+/// of `unit` that is at least `least` nanoseconds.
+fn unit_step(unit: clef_model::project::SecondCounter, fps: u8, rate: u32, least: f64) -> u128 {
+    use clef_model::project::SecondCounter;
+    const SECOND: u128 = 1_000_000_000;
+    let seconds: [u128; 13] = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1_800, 3_600];
+    let candidates: Vec<u128> = match unit {
+        SecondCounter::Time => [1u128, 2, 5, 10, 20, 50, 100, 200, 500]
+            .iter()
+            .map(|millis| millis * 1_000_000)
+            .chain(seconds.iter().map(|s| s * SECOND))
+            .collect(),
+        SecondCounter::Smpte => {
+            let fps = u128::from(fps.max(1));
+            [1u128, 2, 5, 10]
+                .iter()
+                .filter(|frames| **frames < fps)
+                .map(|frames| frames * SECOND / fps)
+                .chain(seconds.iter().map(|s| s * SECOND))
+                .collect()
+        }
+        SecondCounter::Samples => {
+            let rate = u128::from(rate.max(1));
+            (0..12)
+                .flat_map(|power| [1u128, 2, 5].map(|base| base * 10u128.pow(power)))
+                .map(|samples| (samples * SECOND).div_ceil(rate))
+                .collect()
+        }
+    };
+    candidates
+        .iter()
+        .copied()
+        .find(|step| *step as f64 >= least)
+        .unwrap_or(*candidates.last().unwrap_or(&SECOND))
+        .max(1)
+}
+
+/// T41 round 3 (S11): the unit labels over the track headers, beside the bars ruler and the
+/// second ruler. A click on either opens the second-ruler menu; returns the chosen unit
+/// (`None` hides the second ruler) and the SMPTE frame rate, which the transport counter
+/// shares.
+pub fn ruler_labels(
+    ui: &mut Ui,
+    width: f32,
+    second: Option<clef_model::project::SecondCounter>,
+    fps: u8,
+) -> Option<(Option<clef_model::project::SecondCounter>, u8)> {
+    use clef_model::project::{SMPTE_FPS, SecondCounter};
+    let mut rows = vec![("Bars".to_owned(), RULER_HEIGHT)];
+    if let Some(unit) = second {
+        rows.push((
+            super::transport::second_counter_label(unit, fps),
+            UNIT_RULER_HEIGHT,
+        ));
+    }
+    let mut picked = None;
+    for (index, (label, height)) in rows.into_iter().enumerate() {
+        let (rect, response) = ui.allocate_exact_size(egui::vec2(width, height), Sense::click());
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::WidgetType::Button,
+                true,
+                format!("{label} ruler — choose the second ruler"),
+            )
+        });
+        let painter = ui.painter_at(rect);
+        if response.hovered() {
+            painter.rect_filled(rect, 0.0, crate::paint::hover_fill());
+        }
+        painter.text(
+            Pos2::new(rect.right() - 8.0, rect.center().y),
+            Align2::RIGHT_CENTER,
+            &label,
+            theme::text::font(if index == 0 {
+                theme::text::SMALL
+            } else {
+                theme::text::CAPTION
+            }),
+            theme::SECONDARY,
+        );
+        let response = response.on_hover_text("Click to add, change or hide the second ruler");
+        super::menu::show(super::menu::under(&response), |ui| {
+            super::menu::caption(ui, "Second ruler");
+            if super::menu::Item::new("None")
+                .ticked(second.is_none())
+                .show(ui)
+            {
+                picked = Some((None, fps));
+            }
+            let choices = [SecondCounter::Time, SecondCounter::Samples]
+                .map(|counter| (counter, fps))
+                .into_iter()
+                .chain(SMPTE_FPS.map(|fps| (SecondCounter::Smpte, fps)));
+            for (counter, choice) in choices {
+                let ticked =
+                    second == Some(counter) && (counter != SecondCounter::Smpte || choice == fps);
+                if super::menu::Item::new(&super::transport::second_counter_label(counter, choice))
+                    .ticked(ticked)
+                    .show(ui)
+                {
+                    picked = Some((Some(counter), choice));
+                }
+            }
+        });
+    }
+    picked
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -927,5 +1126,28 @@ mod tests {
         assert_eq!(frame(&timeline, vec![], true, None).1, preview);
         timeline.looping = false;
         assert_eq!(frame(&timeline, vec![], true, None).1, preview);
+    }
+
+    #[test]
+    fn the_second_ruler_marks_round_values_of_its_unit() {
+        use clef_model::project::SecondCounter;
+        const MS: u128 = 1_000_000;
+        // At least 300 ms between marks: 500 ms of time, 10 frames of SMPTE at 25 fps.
+        assert_eq!(
+            unit_step(SecondCounter::Time, 25, 48_000, 300.0 * MS as f64),
+            500 * MS
+        );
+        assert_eq!(
+            unit_step(SecondCounter::Smpte, 25, 48_000, 300.0 * MS as f64),
+            400 * MS
+        );
+        // Samples at 48 kHz: 20 000 samples is the first round count past 300 ms.
+        let samples = unit_step(SecondCounter::Samples, 25, 48_000, 300.0 * MS as f64);
+        assert_eq!(samples * 48_000 / 1_000_000_000, 20_000);
+        // Past every candidate, the largest step.
+        assert_eq!(
+            unit_step(SecondCounter::Time, 25, 48_000, 1e15),
+            3_600 * 1_000 * MS
+        );
     }
 }

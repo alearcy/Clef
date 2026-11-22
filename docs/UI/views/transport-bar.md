@@ -69,3 +69,25 @@ Play and Metronome use `ACCENT` while active. Loop uses `LOOP_ACTIVE` alongside 
 ## Rules
 - One row; it never grows a second row. The time counter yields first at narrow widths.
 - Every control is a registry command with its live shortcut in the tooltip.
+
+## Clef T41 band
+
+The bar is a full-width band: `panel`, 6 points top and bottom, 12 at the sides, with the region
+[shadow](../components/shadows.md) below it (`primitives::transport::band`). After Transport…
+a `secondary` caption shows the device sample rate (`48 kHz`, `44.1 kHz`), hidden while audio is
+off. The recording bit depth joins it once audio recording exists ([T14](../../specs/T14-audio-recording.md)).
+Snap and the fit glyphs are not part of the bar: they are in the [tool row](tool-row.md) under it.
+
+## Clef T41 round 2
+
+Left to right after tempo: the bar.beat.tick [segment display](../components/segment-display.md),
+the **second counter** (time `h:mm:ss.mmm`, samples, or SMPTE `hh:mm:ss:ff` at 24 / 25 / 30 fps,
+picked from a menu on click and saved with the project; hidden below 860 points), the
+**format readout** (sample rate over bit depth in two `secondary` caption rows; a click opens
+Project Format…), **Snap**, then Transport…. The band keeps the window's 12-point side margins.
+
+## Clef T41 round 3
+
+[T41 round 3](../../specs/T41-session-window-layout.md#round-3--gui-review-2026-11-22) (S12): the project format readout beside the counters is a
+[two-row segment readout](../components/segment-display.md#clef-t41-round-3--two-row-readout):
+sample rate on top, bit depth below. A click still opens Project Format.

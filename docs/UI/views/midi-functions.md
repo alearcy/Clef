@@ -2,7 +2,7 @@
 name: MIDI functions drawer
 kind: view
 status: app
-impl: planned
+impl: app
 reference-source: [Source/MidiFunctionsDrawer.cpp, Source/MidiFunctionsDrawer.h, Source/MainComponent.cpp]
 components: [text-button, glyph-toggle, menu-button, checkbox, text-field, icons]
 views: [piano-roll, tool-row]
@@ -62,3 +62,12 @@ Values, open sections and the collapsed state are application settings.
 ## Do / Don't
 - Do keep the drawer for functions that modify notes; Step input lives in the tool row (D103).
 - Don't add a tool-row button for the drawer: it collapses to its rail.
+
+## Clef Rust/egui — T41 round 3
+
+[T41 round 3](../../specs/T41-session-window-layout.md#round-3--gui-review-2026-11-22) (S6). The MIDI Functions toggle in the piano roll's tool row opens the drawer inside the
+editor, left of the keyboard over the whole editor height (ruler, grid and lanes start 8 points to
+its right). It is `inspectorWidth` (208) wide on `panel`, with its own vertical scroll. Clef's
+sections today are Quantize (Strength %), Transpose (Semitones) and Humanize (Timing, Velocity
+deviation), each an [accordion section](../components/accordion.md); Quantize starts open. The rest
+of the legacy design above (target readout, previews, further sections) is not built yet.

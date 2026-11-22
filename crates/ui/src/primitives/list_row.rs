@@ -82,7 +82,8 @@ impl<'a> ListRow<'a> {
         self
     }
 
-    /// A header row (track header): selection keeps `panel`, only the edge marks it.
+    /// A header row (track header): selection keeps `panel` and the row paints no edge; the
+    /// header that owns the row draws the selection edge around its whole bounds (T41).
     pub fn header(mut self) -> Self {
         self.header = true;
         self
@@ -114,7 +115,7 @@ impl<'a> ListRow<'a> {
                 theme::PANEL
             };
             painter.rect_filled(rect, corner, fill);
-            if self.selected {
+            if self.selected && !self.header {
                 paint::selection_edge(painter, rect);
             }
             if response.has_focus() && paint::keyboard(ui.ctx()) {

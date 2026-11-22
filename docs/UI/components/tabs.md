@@ -52,3 +52,10 @@ tab row (T18 Phase 3 decision: gallery only).
 
 **Evidence:** gallery `snapshots/egui/t18-tabs-{1024,760}.png` and `t18-tabs-1024@2x.png`
 (Retina); accessible names checked by `gallery::tests::every_gallery_control_has_an_accessible_name`.
+
+## Clef T41 round 2 — toggle tabs
+
+`primitives::tabs::toggle_tabs(ui, name, labels, shown, enabled) -> Option<usize>`: the same flat
+texts for views that can all be hidden (the status row's Editor | Mixer). `shown` is the lit item
+or none; the call returns the clicked item and the caller shows it or, when lit, hides it.
+Disabled items are `disabled` and take no click; arrows move focus only.

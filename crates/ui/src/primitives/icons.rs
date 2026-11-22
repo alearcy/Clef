@@ -25,11 +25,27 @@ pub enum Icon {
     Triplet,
     /// A note head with its dot (D102).
     Dotted,
+    /// A plus: create (T41 create-tracks glyph, drawn in `CREATE`).
+    Plus,
+    /// A window with its left pane: show or hide the left drawer (T41).
+    Drawer,
+    /// A window with an arrow leaving it: detach a panel into its own window (T41 S2).
+    Detach,
+    /// An arrow entering a window: attach a detached panel again (T41 S2).
+    Attach,
+    /// A frame with its top half raised: half or full height panel (T41 S2).
+    PanelFull,
+    /// A keyboard octave: the editor's empty-state glyph (T41 S9).
+    Keys,
+    /// Three faders: the mixer's empty-state glyph (T41 S9).
+    Faders,
+    /// Stacked track lanes: the arrangement's empty-state glyph (T41 S9).
+    Lanes,
 }
 
 impl Icon {
     /// Every glyph, in gallery order.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 21] = [
         Self::Start,
         Self::Play,
         Self::Stop,
@@ -43,6 +59,14 @@ impl Icon {
         Self::Check,
         Self::Triplet,
         Self::Dotted,
+        Self::Plus,
+        Self::Drawer,
+        Self::Detach,
+        Self::Attach,
+        Self::PanelFull,
+        Self::Keys,
+        Self::Faders,
+        Self::Lanes,
     ];
 }
 
@@ -143,6 +167,89 @@ impl Icon {
                 painter.circle_filled(point(-0.3, 0.45), size * 0.2, color);
                 line(&[(-0.1, 0.45), (-0.1, -0.85)]);
                 painter.circle_filled(point(0.55, 0.45), size * 0.09, color);
+            }
+            Self::Plus => {
+                line(&[(0.0, -0.8), (0.0, 0.8)]);
+                line(&[(-0.8, 0.0), (0.8, 0.0)]);
+            }
+            Self::Drawer => {
+                polygon(
+                    &[(-0.85, -0.7), (0.85, -0.7), (0.85, 0.7), (-0.85, 0.7)],
+                    Color32::TRANSPARENT,
+                    stroke,
+                );
+                line(&[(-0.3, -0.7), (-0.3, 0.7)]);
+            }
+            Self::Detach => {
+                line(&[
+                    (-0.1, -0.55),
+                    (-0.85, -0.55),
+                    (-0.85, 0.85),
+                    (0.55, 0.85),
+                    (0.55, 0.1),
+                ]);
+                line(&[(-0.2, 0.2), (0.85, -0.85)]);
+                line(&[(0.25, -0.85), (0.85, -0.85), (0.85, -0.25)]);
+            }
+            Self::Attach => {
+                line(&[
+                    (-0.1, -0.55),
+                    (-0.85, -0.55),
+                    (-0.85, 0.85),
+                    (0.55, 0.85),
+                    (0.55, 0.1),
+                ]);
+                line(&[(0.85, -0.85), (-0.2, 0.2)]);
+                line(&[(-0.2, -0.4), (-0.2, 0.2), (0.4, 0.2)]);
+            }
+            Self::PanelFull => {
+                polygon(
+                    &[(-0.85, -0.75), (0.85, -0.75), (0.85, 0.75), (-0.85, 0.75)],
+                    Color32::TRANSPARENT,
+                    stroke,
+                );
+                line(&[(-0.85, 0.15), (0.85, 0.15)]);
+                line(&[(-0.3, -0.15), (0.0, -0.45), (0.3, -0.15)]);
+            }
+            Self::Keys => {
+                polygon(
+                    &[(-0.9, -0.7), (0.9, -0.7), (0.9, 0.7), (-0.9, 0.7)],
+                    Color32::TRANSPARENT,
+                    stroke,
+                );
+                for x in [-0.45, 0.0, 0.45] {
+                    line(&[(x, 0.05), (x, 0.7)]);
+                }
+                for x in [-0.45, 0.0, 0.45] {
+                    painter.rect_filled(
+                        egui::Rect::from_two_pos(point(x - 0.12, -0.7), point(x + 0.12, 0.05)),
+                        0.0,
+                        color,
+                    );
+                }
+            }
+            Self::Faders => {
+                for (x, y) in [(-0.6, 0.25), (0.0, -0.35), (0.6, 0.45)] {
+                    line(&[(x, -0.85), (x, 0.85)]);
+                    painter.rect_filled(
+                        egui::Rect::from_two_pos(point(x - 0.2, y - 0.1), point(x + 0.2, y + 0.1)),
+                        0.0,
+                        color,
+                    );
+                }
+            }
+            Self::Lanes => {
+                for y in [-0.6, 0.0, 0.6] {
+                    painter.rect_stroke(
+                        egui::Rect::from_two_pos(point(-0.85, y - 0.2), point(0.85, y + 0.2)),
+                        size * 0.04,
+                        stroke,
+                        egui::StrokeKind::Middle,
+                    );
+                }
+                for y in [-0.6, 0.0, 0.6] {
+                    line(&[(-0.5, y - 0.2), (-0.5, y + 0.2)]);
+                }
             }
         }
     }

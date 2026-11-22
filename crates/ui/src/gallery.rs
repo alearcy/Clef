@@ -60,6 +60,20 @@ const ARRANGEMENT_CASES: &[&str] = &[
     "arrangement-split-confirm",
     "arrangement-refused",
 ];
+/// T41 session-window cases: the default layout, the Editor and Mixer toggles, a track search,
+/// and an active Fit Height.
+const SESSION_CASES: &[&str] = &[
+    "session",
+    "editor",
+    "mixer",
+    "search",
+    "fit",
+    "mixer-full",
+    "functions",
+    "no-clip",
+    "rulers",
+    "empty",
+];
 const EDITING_CASES: &[&str] = &[
     "arrangement-five",
     "arrangement-height-24",
@@ -184,6 +198,52 @@ fn editing_fixture(app: &mut App, case: &str) {
         _ => clef_model::project::DEFAULT_TRACK_HEIGHT,
     };
     app.arrangement_ui.settings = app.view.project.arrangement_view;
+}
+
+/// T41: five tracks with audio running, plus the state each session case shows.
+fn session_fixture(app: &mut App, case: &str) {
+    app.arrangement_ui = Default::default();
+    app.piano_roll_open = false;
+    editing_fixture(app, "");
+    app.view.active = true;
+    app.view.rate = 48_000;
+    app.view.actual = "requested 256 frames · actual 256–256 frames · lead 1024 samples · \
+        plugin latency 0 samples · clipped samples 0"
+        .into();
+    app.panel = Default::default();
+    app.left_drawer_hidden = false;
+    app.mixer_ui.open = matches!(case, "mixer" | "mixer-full" | "empty");
+    app.panel.full = case == "mixer-full";
+    if case == "search" {
+        app.arrangement_ui.track_search = "pa".into();
+    }
+    if matches!(case, "editor" | "functions") {
+        app.toggle_editor();
+    }
+    app.piano_roll
+        .gallery_functions((case == "functions").then_some([true, false, true]));
+    if case == "no-clip" {
+        app.arrangement_ui.selected.clear();
+        app.piano_roll_open = true;
+    }
+    if case == "rulers" {
+        app.view.project.format.second_ruler = Some(clef_model::project::SecondCounter::Time);
+        app.arrangement_ui.track_column = Some(300.0);
+    }
+    if case == "empty" {
+        app.view
+            .project
+            .tracks
+            .retain(|track| !track.is_instrument());
+        app.view.selected = None;
+        app.arrangement_ui.selected.clear();
+        std::sync::Arc::make_mut(&mut app.view.project.midi)
+            .tracks
+            .clear();
+    }
+    if case == "fit" {
+        app.arrangement_ui.fit = Some(crate::arrangement::Fit::Height);
+    }
 }
 
 fn arrangement_fixture(app: &mut App, case: &str) {
@@ -334,6 +394,9 @@ fn mixer_fixture(app: &mut App, case: &str) {
     use clef_session::Meter;
     arrangement_fixture(app, "arrangement-selected");
     app.mixer_ui.open = !case.starts_with("header");
+    // The mixer at full height without the drawer: the whole workspace (T41 S2).
+    app.panel.full = app.mixer_ui.open;
+    app.left_drawer_hidden = app.mixer_ui.open;
     app.piano_roll_open = case == "header-dock";
     let view = &mut app.view;
     view.active = !matches!(case, "empty" | "stopped" | "header-empty");
@@ -478,6 +541,9 @@ fn routing_fixture(app: &mut App, case: &str) {
     use clef_session::Meter;
     mixer_fixture(app, "playing");
     app.mixer_ui.open = true;
+    // The mixer at full height without the drawer: the whole workspace (T41 S2).
+    app.panel.full = true;
+    app.left_drawer_hidden = true;
     for track in &mut app.view.project.tracks {
         track.mix.solo = false;
         track.mix.mute = false;
@@ -676,6 +742,12 @@ impl Gallery {
             self.frames = 0;
             return;
         }
+        if self.prefix == "t41" {
+            egui::Popup::close_all(ctx);
+            session_fixture(&mut self.app, case);
+            self.frames = 0;
+            return;
+        }
         if self.prefix == "t40" {
             egui::Popup::close_all(ctx);
             editing_fixture(&mut self.app, case);
@@ -831,7 +903,6 @@ impl Gallery {
                     &app.view,
                     &app.arrangement_ui.selected,
                     app.view.edit_history.available,
-                    &mut app.piano_roll_open,
                 );
             });
         } else if self.prefix == "t10" && self.cases[self.case] != "dock" {
@@ -844,16 +915,14 @@ impl Gallery {
                     &app.view,
                     &app.arrangement_ui.selected,
                     app.view.edit_history.available,
-                    &mut app.piano_roll_open,
                 );
             });
         } else if matches!(
             self.prefix,
-            "t08" | "t09" | "t10" | "t11" | "t12" | "t15" | "t34" | "t40"
+            "t08" | "t09" | "t10" | "t11" | "t12" | "t15" | "t34" | "t40" | "t41"
         ) {
-            egui::Frame::new()
-                .inner_margin(12.0)
-                .show(ui, |ui| self.app.main_surface(ui, &ctx));
+            // main_surface lays out its own margins (T41).
+            self.app.main_surface(ui, &ctx);
             if self.prefix == "t08" {
                 self.app.history_window.show(
                     &ctx,
@@ -911,6 +980,10 @@ pub fn render_editing(output: PathBuf, width: u32, scale: u32) -> Result<()> {
     render(output, width, scale, "t40", EDITING_CASES)
 }
 
+pub fn render_session(output: PathBuf, width: u32, scale: u32) -> Result<()> {
+    render(output, width, scale, "t41", SESSION_CASES)
+}
+
 pub fn render_transport(output: PathBuf, width: u32, scale: u32) -> Result<()> {
     render(output, width, scale, "t34", TRANSPORT_CASES)
 }
@@ -933,7 +1006,7 @@ fn render(
     std::fs::create_dir_all(&output)?;
     let height = if prefix == "t15" {
         900.0
-    } else if matches!(prefix, "t11" | "t12") {
+    } else if matches!(prefix, "t11" | "t12" | "t41") {
         768.0
     } else {
         640.0
@@ -992,6 +1065,7 @@ mod tests {
         ("t18", crate::primitives::specimens::CASES),
         ("t34", TRANSPORT_CASES),
         ("t40", EDITING_CASES),
+        ("t41", SESSION_CASES),
     ];
 
     /// Interactive accesskit nodes without a name, or sliders without a value, in one case.
@@ -1256,6 +1330,134 @@ mod tests {
     }
 
     #[test]
+    fn the_editor_toggle_opens_the_selected_roll_from_the_mixer_and_closes_it_again() {
+        let mut app = App::new(egui::Context::default(), PathBuf::new());
+        session_fixture(&mut app, "mixer");
+        assert!(app.mixer_ui.open);
+        assert!(app.command_available(crate::Command::ShowEditor, false));
+        app.toggle_editor();
+        assert!(!app.mixer_ui.open, "Editor leaves the mixer");
+        let clip = app
+            .arrangement_ui
+            .open_roll
+            .take()
+            .expect("a roll is requested");
+        assert!(app.arrangement_ui.selected.contains(&clip));
+        app.piano_roll_open = true;
+        app.toggle_editor();
+        assert!(!app.piano_roll_open, "a second press closes the roll");
+        assert_eq!(app.arrangement_ui.open_roll, None);
+    }
+
+    #[test]
+    fn the_lower_panel_docks_one_view_and_full_height_hides_the_arrangement() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut app = App::new(ctx.clone(), PathBuf::new());
+        session_fixture(&mut app, "editor");
+        let clip = app.arrangement_ui.open_roll.take().unwrap();
+        app.arrangement_ui.open_roll = Some(clip);
+        let labels = |app: &mut App, events: Vec<egui::Event>| {
+            let render = |app: &mut App, events| {
+                ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1024.0, 768.0),
+                        )),
+                        events,
+                        ..Default::default()
+                    },
+                    |ui| app.main_surface(ui, &ctx),
+                )
+            };
+            let _ = render(app, events);
+            let tree = render(app, vec![])
+                .platform_output
+                .accesskit_update
+                .unwrap();
+            tree.nodes
+                .iter()
+                .filter_map(|(_, node)| {
+                    let label = node.label()?.to_owned();
+                    Some((label, node.bounds()?))
+                })
+                .collect::<Vec<_>>()
+        };
+        let has = |labels: &[(String, egui::accesskit::Rect)], label: &str| {
+            labels.iter().any(|(item, _)| item == label)
+        };
+        let docked = labels(&mut app, vec![]);
+        assert!(app.piano_roll_open);
+        assert!(
+            has(&docked, "Find tracks"),
+            "half height keeps the arrangement"
+        );
+        assert!(has(&docked, "Detach into Own Window"));
+        assert!(has(&docked, "Full Height"));
+        // Opening the mixer takes the editor's place (S1).
+        app.dispatch_mixer(crate::Command::ShowMixer);
+        assert!(app.mixer_ui.open && !app.piano_roll_open);
+        // Full height hides the tool row and the arrangement (S2).
+        app.dispatch(crate::Command::TogglePanelFull, &ctx);
+        let full = labels(&mut app, vec![]);
+        assert!(!has(&full, "Find tracks"));
+        assert!(has(&full, "Half Height"));
+        assert!(
+            !app.enabled(crate::Command::SelectAllClips),
+            "clip commands wait while the arrangement is hidden"
+        );
+        app.dispatch(crate::Command::TogglePanelFull, &ctx);
+        assert!(app.enabled(crate::Command::SelectAllClips));
+        // The panel's Close closes the mixer.
+        let close = docked_close(&labels(&mut app, vec![]));
+        let click = |pressed| egui::Event::PointerButton {
+            pos: close,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let _ = labels(&mut app, vec![click(true)]);
+        let _ = labels(&mut app, vec![click(false)]);
+        assert!(!app.mixer_ui.open);
+    }
+
+    /// The centre of the lower panel's Close control.
+    fn docked_close(labels: &[(String, egui::accesskit::Rect)]) -> egui::Pos2 {
+        let (_, rect) = labels
+            .iter()
+            .filter(|(label, _)| label == "Close")
+            .max_by(|a, b| a.1.x0.total_cmp(&b.1.x0))
+            .expect("a Close control");
+        egui::pos2(
+            ((rect.x0 + rect.x1) / 2.0) as f32,
+            ((rect.y0 + rect.y1) / 2.0) as f32,
+        )
+    }
+
+    #[test]
+    fn the_status_row_puts_errors_before_recording_and_messages() {
+        let mut app = App::new(egui::Context::default(), PathBuf::new());
+        session_fixture(&mut app, "session");
+        app.view.message = "Saved".into();
+        app.view.record_unavailable = Some("Arm an instrument track to record");
+        assert_eq!(app.status_message(), ("Saved".into(), false));
+        app.view.message.clear();
+        app.status.clear();
+        assert_eq!(
+            app.status_message(),
+            ("Arm an instrument track to record".into(), false)
+        );
+        app.view.recording = true;
+        assert_eq!(
+            app.status_message(),
+            ("Preparing MIDI recording".into(), true)
+        );
+        app.view.history_message = "History unavailable".into();
+        assert_eq!(app.status_message(), ("History unavailable".into(), true));
+    }
+
+    #[test]
     fn mixer_master_stays_docked_and_track_meters_line_up_at_both_widths() {
         for width in [760.0, 1024.0] {
             let ctx = egui::Context::default();
@@ -1280,9 +1482,7 @@ mod tests {
                         ..Default::default()
                     };
                     ctx.run_ui(input, |ui| {
-                        egui::Frame::new()
-                            .inner_margin(12.0)
-                            .show(ui, |ui| app.main_surface(ui, &ctx));
+                        app.main_surface(ui, &ctx);
                     })
                 };
                 let _ = render(&mut app, vec![]);
@@ -1334,8 +1534,10 @@ mod tests {
                         continue;
                     }
                     let before = bounds("Strings stereo level · Clipped");
-                    let hover =
-                        egui::Event::PointerMoved(egui::pos2(210.0, before.y0 as f32 + 10.0));
+                    let hover = egui::Event::PointerMoved(egui::pos2(
+                        before.x0 as f32 - 20.0,
+                        before.y0 as f32 + 10.0,
+                    ));
                     let wheel = egui::Event::MouseWheel {
                         unit: egui::MouseWheelUnit::Point,
                         delta: egui::vec2(0.0, -100.0),
@@ -1422,13 +1624,16 @@ mod tests {
     }
 
     #[test]
-    fn t15_mixer_exposes_bus_sends_output_and_add_bus_at_both_widths() {
+    fn t15_mixer_exposes_bus_sends_output_and_panel_controls_at_both_widths() {
         for width in [760.0, 1024.0] {
             let ctx = egui::Context::default();
             ctx.enable_accesskit();
             let mut app = App::new(ctx.clone(), PathBuf::new());
             routing_fixture(&mut app, "buses");
             app.mixer_ui.open = true;
+            // The mixer at full height without the drawer: the whole workspace (T41 S2).
+            app.panel.full = true;
+            app.left_drawer_hidden = true;
             let render = |app: &mut App, events| {
                 ctx.run_ui(
                     egui::RawInput {
@@ -1461,7 +1666,8 @@ mod tests {
             let send = find("Strings Send");
             let add_send = find("Strings, Add send…");
             let add_effect = find("Strings, Add audio effect…");
-            let add_bus = find("+ Bus");
+            // T41 round 3: "+ Bus" left the mixer (S4); its panel controls sit in view (S2).
+            let add_bus = find("Detach into Own Window");
             assert!(bus.x0 >= 0.0 && bus.x1 <= f64::from(width));
             assert!(send.x0 >= bus.x1.min(send.x0) && send.x1 <= f64::from(width));
             assert!(add_send.x0 >= 0.0 && add_send.x1 <= f64::from(width));
@@ -1515,6 +1721,9 @@ mod tests {
         let mut app = App::new(ctx.clone(), PathBuf::new());
         routing_fixture(&mut app, "buses");
         app.mixer_ui.open = true;
+        // The mixer at full height without the drawer: the whole workspace (T41 S2).
+        app.panel.full = true;
+        app.left_drawer_hidden = true;
         let render = |app: &mut App, events| {
             ctx.run_ui(
                 egui::RawInput {
@@ -1561,6 +1770,9 @@ mod tests {
         let mut app = App::new(ctx.clone(), PathBuf::new());
         routing_fixture(&mut app, "buses");
         app.mixer_ui.open = true;
+        // The mixer at full height without the drawer: the whole workspace (T41 S2).
+        app.panel.full = true;
+        app.left_drawer_hidden = true;
         app.view.selected = Some(2);
         app.mixer_ui.follow_instrument_selection(Some(2));
         let render = |app: &mut App, events| {
@@ -1616,6 +1828,9 @@ mod tests {
         let mut app = App::new(ctx.clone(), PathBuf::new());
         routing_fixture(&mut app, "buses");
         app.mixer_ui.open = true;
+        // The mixer at full height without the drawer: the whole workspace (T41 S2).
+        app.panel.full = true;
+        app.left_drawer_hidden = true;
         let render = |app: &mut App, events| {
             ctx.run_ui(
                 egui::RawInput {
@@ -1672,6 +1887,9 @@ mod tests {
         let mut app = App::new(ctx.clone(), PathBuf::new());
         routing_fixture(&mut app, "buses");
         app.mixer_ui.open = true;
+        // The mixer at full height without the drawer: the whole workspace (T41 S2).
+        app.panel.full = true;
+        app.left_drawer_hidden = true;
         let render = |app: &mut App, events| {
             ctx.run_ui(
                 egui::RawInput {
