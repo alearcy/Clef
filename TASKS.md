@@ -21,7 +21,8 @@ reference and remains a planning draft.
 
 | Task | Status | Specification | Next step / dependency |
 | --- | --- | --- | --- |
-| T41 — Session Window Layout Cleanup | In Progress | [T41 specification](docs/specs/T41-session-window-layout.md) | P1. Round 3 implemented; awaiting the user's GUI check. |
+| T41 — Session Window Layout Cleanup | In Progress | [T41 specification](docs/specs/T41-session-window-layout.md) | P1. Round 4 implemented; awaiting the user's GUI check. |
+| T43 — Instruments with Several Audio Buses | Todo | [T43 specification](docs/specs/T43-multi-bus-instruments.md) | P1. After T41; specification approved. |
 | T14 — Audio Tracks and Recording | Todo | [T14 specification](docs/specs/T14-audio-recording.md) | P1. After T05 and T11; media-storage decision required. |
 | T27 — Audio Comping and Take Lanes | Todo | [T27 specification](docs/specs/T27-audio-comping.md) | P2. After T14 and T26; T14 media-storage decision required. |
 | T28 — FX Rack and Virtual Cable Graph | Todo | [T28 specification](docs/specs/T28-fx-rack.md) | P2. After T12 and T15; audio and MIDI nodes connected by virtual cables. |

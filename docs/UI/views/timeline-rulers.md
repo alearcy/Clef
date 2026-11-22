@@ -52,7 +52,8 @@ label opens the second-ruler menu: None, Time, Samples, SMPTE 24 / 25 / 30. The 
 marks on round values of its unit at least 96 points apart (`unit_step`), labelled in 10-point
 `secondary`; it is display only. Its unit is independent of the transport's second counter and is
 saved with the project (`ProjectFormat::second_ruler`, project version 8); the SMPTE frame rate is
-shared with the counter. The piano roll keeps the bars ruler only.
+shared with the counter. The piano roll keeps the bars ruler only. Since T41 round 4 the loop
+band is labelled "Loop" the same way (`timeline::loop_label`, 10-point `secondary`, label only).
 
 **Evidence:** `snapshots/egui/t41-rulers-{1024,760}.png`; unit test
 `the_second_ruler_marks_round_values_of_its_unit`.

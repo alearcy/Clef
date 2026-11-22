@@ -715,7 +715,7 @@ impl App {
             ui.vertical(|ui| {
                 ruler_change =
                     timeline_ui::ruler_labels(ui, header_width, second_ruler, format.smpte_fps);
-                ui.allocate_space(egui::vec2(header_width, LOOP_HEIGHT));
+                timeline_ui::loop_label(ui, header_width);
             });
             ui.vertical(|ui| {
                 let (locate, shown) = viewport.ruler(

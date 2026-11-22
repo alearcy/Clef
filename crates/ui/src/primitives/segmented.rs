@@ -59,7 +59,7 @@ impl<'a, T: Copy + PartialEq> Segmented<'a, T> {
         let body = paint::control_body(
             ui.painter(),
             rect,
-            Depth::Recessed,
+            Depth::Flat,
             BodyState {
                 disabled: !enabled,
                 ..Default::default()

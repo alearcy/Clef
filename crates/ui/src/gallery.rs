@@ -1422,6 +1422,137 @@ mod tests {
         assert!(!app.mixer_ui.open);
     }
 
+    /// T41 round 4: the instrument chosen in New Tracks stays chosen until Create.
+    #[test]
+    fn new_tracks_keeps_the_chosen_instrument() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut app = App::new(ctx.clone(), PathBuf::new());
+        session_fixture(&mut app, "arrangement");
+        app.catalog.plugins = vec![gallery_plugin("Pad", "VST3")];
+        app.new_tracks = Some(crate::NewTracks::default());
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
+            let out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1024.0, 768.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    app.main_surface(ui, &ctx);
+                    app.new_tracks_window(&ctx);
+                },
+            );
+            out.platform_output
+                .accesskit_update
+                .unwrap()
+                .nodes
+                .iter()
+                .filter_map(|(_, n)| Some((n.label()?.to_owned(), n.bounds()?)))
+                .collect::<Vec<_>>()
+        };
+        let at = |labels: &[(String, egui::accesskit::Rect)], name: &str| {
+            let (_, r) = labels
+                .iter()
+                .find(|(l, _)| l.starts_with(name))
+                .unwrap_or_else(|| panic!("{name}: {labels:?}"));
+            egui::pos2(((r.x0 + r.x1) / 2.0) as f32, ((r.y0 + r.y1) / 2.0) as f32)
+        };
+        let click = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(&mut app, vec![]);
+        let labels = frame(&mut app, vec![]);
+        let menu = at(&labels, "Instrument: None");
+        frame(
+            &mut app,
+            vec![egui::Event::PointerMoved(menu), click(menu, true)],
+        );
+        frame(&mut app, vec![click(menu, false)]);
+        let labels = frame(&mut app, vec![]);
+        let item = at(&labels, "Pad · VST3");
+        frame(
+            &mut app,
+            vec![egui::Event::PointerMoved(item), click(item, true)],
+        );
+        frame(&mut app, vec![click(item, false)]);
+        frame(&mut app, vec![]);
+        let _ = labels;
+        assert_eq!(
+            app.new_tracks
+                .as_ref()
+                .unwrap()
+                .plugin
+                .as_ref()
+                .map(|p| p.name.as_str()),
+            Some("Pad")
+        );
+    }
+
+    /// T41 round 4: a debug build outlines in red every widget whose ID changed at the same
+    /// rect between two frames. Toggling Full height and selecting another track (each track
+    /// with its own inserts) must move no ID in the editor lanes or the drawer's strips.
+    #[test]
+    fn full_height_and_track_selection_keep_widget_ids() {
+        let ctx = egui::Context::default();
+        let mut app = App::new(ctx.clone(), PathBuf::new());
+        session_fixture(&mut app, "editor");
+        for (n, track) in app.view.project.tracks.iter_mut().enumerate() {
+            track.inserts = (0..2)
+                .map(|k| clef_model::project::Insert {
+                    id: 1_000 + 10 * n as u64 + k,
+                    plugin: gallery_plugin(&format!("Effect {n}{k}"), "VST3"),
+                    bypassed: false,
+                    state: Default::default(),
+                })
+                .collect();
+        }
+        // The rects egui's `warn_if_rect_changes_id` outlined in this frame.
+        let flagged = |app: &mut App| {
+            fn red(shape: &egui::Shape, found: &mut Vec<egui::Rect>) {
+                match shape {
+                    egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| red(s, found)),
+                    egui::Shape::Rect(rect) if rect.stroke.color == egui::Color32::RED => {
+                        found.push(rect.rect);
+                    }
+                    _ => {}
+                }
+            }
+            let output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1280.0, 800.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| app.main_surface(ui, &ctx),
+            );
+            let mut found = Vec::new();
+            for clipped in &output.shapes {
+                red(&clipped.shape, &mut found);
+            }
+            found
+        };
+        assert!(flagged(&mut app).is_empty());
+        assert!(flagged(&mut app).is_empty());
+        for _ in 0..2 {
+            app.dispatch(crate::Command::TogglePanelFull, &ctx);
+            assert_eq!(flagged(&mut app), [], "Full height toggled");
+        }
+        let ids: Vec<u64> = app.view.project.tracks.iter().map(|t| t.id).collect();
+        for id in ids {
+            app.view.selected = Some(id);
+            assert_eq!(flagged(&mut app), [], "track {id} selected");
+        }
+    }
+
     /// The centre of the lower panel's Close control.
     fn docked_close(labels: &[(String, egui::accesskit::Rect)]) -> egui::Pos2 {
         let (_, rect) = labels

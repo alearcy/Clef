@@ -694,7 +694,9 @@ impl PianoRoll {
                 let result = self.pitch_editor(ui, &active_context, view, grid_height, &others);
                 let moved = ui
                     .allocate_ui(egui::vec2(bar, grid_height), |ui| {
-                        scroll_zoom_bars::vertical(
+                        // T41 round 4 (Q5): the −/+ sit at the corner, beside the time
+                        // bar's −/+, under the controller lanes' column.
+                        scroll_zoom_bars::vertical_to(
                             ui,
                             "Piano roll pitch",
                             scroll_zoom_bars::Axis {
@@ -703,6 +705,7 @@ impl PianoRoll {
                                 total: content,
                             },
                             true,
+                            grid_top + grid_height + self.lanes_height,
                         )
                     })
                     .inner;

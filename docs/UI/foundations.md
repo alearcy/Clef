@@ -236,9 +236,14 @@ carries a control's shape; soft depth does, painted by the primitive helper
   5 %) and a tight blurred drop shadow (black 35 %, 1 px down, 3 px blur) that falls mostly in the
   strip under the body. T18 Phase 3 (2026-11-21, user choice "C" of a shadow study) replaced the
   earlier hard two-line shadow (black 55 % then 24 %) and the 9 % top light as dated.
-- **Recessed** — only travels and tracks other controls sit in: fader grooves and segment tracks.
-  An inner top shadow (black 50 % over 3 px) and a 1-pixel bottom light (white 7 %).
-- **One body height.** Raised and recessed controls share `controlBody`, 2 px shorter than the
+- **Recessed** — only travels other controls move along: fader grooves, scroll tracks, value
+  slider tracks and the segment-display wells. An inner top shadow (black 50 % over 3 px) and a
+  1-pixel bottom light (white 7 %).
+- **Flat** — choice wells: the segmented control (user decision, T41 round 4, 2026-11-22). A
+  `field` fill with a 1-point `divider` edge, no light and no shadow; the lit segment is a flat
+  `peacock` fill. In short: raised if you press or type into it, recessed if something travels
+  in it, flat if it holds a choice.
+- **One body height.** Raised, recessed and flat controls share `controlBody`, 2 px shorter than the
   bounds, in every state; the strip under a raised body holds its shadow and stays empty under a
   recessed one, so buttons and fields side by side line up.
 - **Hover** lifts the body to `field` and never adds a border; keyboard focus keeps its `accent`

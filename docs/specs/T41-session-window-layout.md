@@ -1,6 +1,7 @@
 # T41 — Session Window Layout Cleanup
 
-- **Status** — In Progress — 2026-11-22: round 3 (GUI review) approved by the user with the
+- **Status** — In Progress — 2026-11-22: round 4 (GUI review, Q1–Q7) drafted from the user's
+  answers and approved by the user. 2026-11-22: round 3 (GUI review) approved by the user with the
   proposed defaults and implemented; awaiting the user's GUI check. 2026-11-22: round 2 (GUI review) approved by the user with the proposed defaults. 2026-11-21: Specification and proposed answers to the open questions
   approved by the user on 2026-11-21.
 - **Priority** — P1 (user request: cleaner main window before further feature work).
@@ -216,6 +217,48 @@ S12. **Format readout as digits.** The sample rate and bit depth use the transpo
 
 Not changed: the transport's second counter (R14) remains independent of the S11 ruler.
 
+## Round 4 — GUI review (2026-11-22)
+
+Seven comments from the user on the running app (screenshot of `T12-listening-v2` with the New
+Tracks dialog open). Interview answers recorded as **(user)**.
+
+Q1. **Windows open centred.** Every floating tool window (New Tracks, Project Format, Audio/MIDI
+    Settings, Choose Instrument, confirmations, History, Commands…) opens centred on Clef's
+    window **(user: all)**. egui places windows inside the app window, not on the physical
+    display. A window the user moves keeps its place for the session (egui memory), as before.
+Q2. **Segmented control is flat (user).** The depth rule stays: *raised* for every control you
+    press or type into, *recessed* only for travels other controls move along (fader grooves,
+    scroll tracks). The segmented control becomes *flat*: a `field` well with a 1-point
+    `divider` edge, no top light and no inner shadow; the lit segment is a flat `peacock` fill.
+    Foundations › Depth names the three cases.
+Q3. **New Tracks keeps its instrument.** Not reproduced: the dialog keeps the chosen instrument
+    (new UI test) and the session loads it on every new track (new native test with TestSynth).
+    The user had to apply Audio/MIDI Settings to start audio **(user)**. Hazard found on that
+    path: starting audio at a rate other than the workers' clears every track runtime, which
+    silently drops an instrument load still in flight, so the new track stays empty. Audio now
+    waits to start automatically until no instrument is loading (Settings already refused to
+    apply while one loads). Why audio did not start on its own is not known; the status row
+    shows the reason when it fails.
+    **Root cause found after the user's retest (2026-11-22):** Kontakt 7, Opus, SINE Player and
+    Falcon (VST3) fail with "unsupported VST3 stereo audio bus layout"; Zebra2 and ZebraHZ load.
+    The VST3 bridge (`native/vst3_bridge.cpp`, `stereo_buses`) accepts an instrument only with
+    exactly one stereo output bus and no input bus, so multi-output or sidechain instruments are
+    refused by New Tracks and Choose Instrument alike. The user saw no message. Supporting those
+    layouts is a plugin-hosting change outside T41, to be agreed with the user in its own task.
+Q4. **Loop lane label.** The header column carries "Loop" (caption, `secondary`, right-aligned)
+    beside the loop lane, like the ruler labels.
+Q5. **Editor zoom glyphs meet at the corner (user).** The piano roll's vertical bar still scrolls
+    only the pitch grid, but its −/+ sit at the bottom of the column beside the horizontal bar,
+    the same distance from the corner as the horizontal −/+, as in the arrangement. The column
+    beside the controller lanes stays empty.
+Q6, Q7. **No red outlines.** Debug builds outlined widgets in red for one frame when Full height
+    was toggled and when another track was selected with the editor open: egui's
+    `warn_if_rect_changes_id` flags a widget whose ID changes at the same rect. Fixed at the
+    source: the lower panel draws in a global ID scope (egui's automatic IDs otherwise count the
+    widgets its parent drew before, and Full height skips the arrangement), and channel strips, insert rows and send rows
+    use positional IDs, so the drawer swapping one track's strip for another moves no ID. A
+    gallery test fails on any red outline across those transitions.
+
 ## Scope
 
 In scope: the items above, their UI documentation updates (transport bar, tool row, track header,
@@ -268,6 +311,9 @@ rendering, menu bar changes.
 - 2026-11-22 — GUI review round 3 (15 comments on four screenshots): interview, round 3 drafted
   (S1–S12) and approved by the user with the proposed defaults; implemented; awaiting the user's
   GUI check.
+- 2026-11-22 — Round 3 committed (`bed495a`). GUI review round 4 (seven comments): red outlines
+  traced to egui's ID-change check and fixed, New Tracks not reproduced (audio-start hazard
+  found), interview; round 4 drafted (Q1–Q7) and approved.
 
 ## Round 2 implementation notes
 
@@ -313,6 +359,21 @@ rendering, menu bar changes.
 - S11 `ProjectFormat::second_ruler` (project version 8; version 7 loads hidden);
   `timeline::ruler_labels` and `Viewport::unit_ruler` with `unit_step`.
 - S12 `segment_display::two_row_readout`; `transport::rate_digits`, `bit_digits`.
+
+## Round 4 implementation notes
+
+- Q1: `ToolWindow` without an explicit `position` uses pivot `CENTER_CENTER` at the centre of
+  `ctx.content_rect()`; `egui::Modal` dialogs were already centred.
+- Q2: `paint::Depth::Flat` (`field` fill, 1-point `divider` edge) is used by `Segmented`;
+  foundations › Depth names raised, recessed and flat.
+- Q3: `Session::poll` starts audio automatically only while no track runtime is loading;
+  `audio_pending` stays set until then.
+- Q4: `timeline::loop_label` paints "Loop" in the header column beside the loop band.
+- Q5: `scroll_zoom_bars::vertical_to` lets the piano roll's pitch bar keep its track beside the
+  grid and place its −/+ at the corner (grid bottom plus the measured controller lanes height).
+- Q6/Q7: `editing_column` draws the lower panel in `UiBuilder::new().id("clef-lower-panel")`, a
+  global scope whose IDs do not depend on what the column drew before; the mixer strip, insert rows and send rows use positional IDs instead of track,
+  slot and send IDs (their drag and drop carries the IDs in payloads, not in widget IDs).
 
 ## Implementation notes
 
@@ -373,3 +434,16 @@ Not covered by automated tests: the detached window on a real display or second 
 accordion animation, the column divider drag, and the shading as seen on a Retina screen.
 
 GUI: pending the user's check of round 3 in the running app.
+
+Round 4 automated (2026-11-22): `cargo fmt --all --check`, `cargo clippy --all-targets --locked
+-- -D warnings` clean; `cargo test --locked` 289 passed, 27 ignored. New tests:
+`full_height_and_track_selection_keep_widget_ids` (fails without the lower panel's global scope),
+`new_tracks_keeps_the_chosen_instrument`, `automatic_audio_start_waits_for_instrument_loads`, and
+the ignored native `native_new_tracks_loads_the_chosen_instrument_on_each_track` (passed with the
+bundled TestSynth, two tracks). Project-window and t18 goldens re-rendered (loop label, flat
+segmented control, piano roll −/+ at the corner).
+
+Not covered by automated tests: centring on a real window (egui places it), the cause of audio not
+starting by itself in the user's session, and red outlines in transitions the test does not drive.
+
+GUI: pending the user's check of round 4 in the running app.

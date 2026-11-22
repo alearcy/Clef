@@ -6,8 +6,11 @@ use eframe::egui::{Color32, CornerRadius, Id, Painter, Rect, Response, Stroke, S
 pub enum Depth {
     /// Controls you press or type into: top light and a soft shadow under the body.
     Raised,
-    /// Travels and tracks other controls sit in: inner top shadow and a bottom light.
+    /// Travels other controls move along: inner top shadow and a bottom light.
     Recessed,
+    /// Choice wells such as the segmented control (T41 round 4): `field` with a `divider` edge,
+    /// no light and no shadow.
+    Flat,
 }
 
 /// What a control body shows this frame.
@@ -108,6 +111,15 @@ pub fn control_body(painter: &Painter, bounds: Rect, depth: Depth, state: BodySt
                 body.x_range().shrink(f32::from(metric::CORNER_CONTROL)),
                 body.bottom() - 0.5,
                 Stroke::new(1.0_f32, Color32::from_white_alpha(18)),
+            );
+        }
+        Depth::Flat => {
+            painter.rect(
+                body,
+                corner,
+                state.lit.unwrap_or(theme::FIELD),
+                Stroke::new(1.0_f32, theme::DIVIDER),
+                StrokeKind::Inside,
             );
         }
     }

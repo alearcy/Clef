@@ -48,13 +48,30 @@ enum Direction {
 /// The horizontal bar across the available width, with −/+ at its right.
 pub fn horizontal(ui: &mut Ui, name: &str, axis: Axis, enabled: bool) -> Moved {
     let size = vec2(ui.available_width(), metric::SCROLL_BAR);
-    bar(ui, name, axis, enabled, size, Direction::Horizontal)
+    bar(ui, name, axis, enabled, size, Direction::Horizontal, None)
 }
 
 /// The vertical bar down the available height, with −/+ stacked at its bottom.
 pub fn vertical(ui: &mut Ui, name: &str, axis: Axis, enabled: bool) -> Moved {
     let size = vec2(metric::SCROLL_BAR, ui.available_height());
-    bar(ui, name, axis, enabled, size, Direction::Vertical)
+    bar(ui, name, axis, enabled, size, Direction::Vertical, None)
+}
+
+/// The vertical bar down the available height, with its −/+ stacked further down so that they
+/// end at `bottom` (T41 round 4): an owner with rows under the scrolled area (the piano roll's
+/// controller lanes) keeps the −/+ at the corner beside the horizontal bar's −/+. The column
+/// between the bar and the buttons stays empty and belongs to the owner.
+pub fn vertical_to(ui: &mut Ui, name: &str, axis: Axis, enabled: bool, bottom: f32) -> Moved {
+    let size = vec2(metric::SCROLL_BAR, ui.available_height());
+    bar(
+        ui,
+        name,
+        axis,
+        enabled,
+        size,
+        Direction::Vertical,
+        Some(bottom),
+    )
 }
 
 fn bar(
@@ -64,11 +81,20 @@ fn bar(
     enabled: bool,
     size: Vec2,
     direction: Direction,
+    buttons_bottom: Option<f32>,
 ) -> Moved {
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
     let button = metric::SCROLL_BAR;
-    let (track, minus, plus) = match direction {
-        Direction::Horizontal => (
+    let (track, minus, plus) = match (direction, buttons_bottom) {
+        (Direction::Vertical, Some(bottom)) => (
+            rect,
+            Rect::from_min_size(
+                pos2(rect.left(), bottom - 2.0 * button),
+                Vec2::splat(button),
+            ),
+            Rect::from_min_size(pos2(rect.left(), bottom - button), Vec2::splat(button)),
+        ),
+        (Direction::Horizontal, _) => (
             Rect::from_min_max(rect.min, pos2(rect.right() - 2.0 * button, rect.bottom())),
             Rect::from_min_size(
                 pos2(rect.right() - 2.0 * button, rect.top()),
@@ -76,7 +102,7 @@ fn bar(
             ),
             Rect::from_min_size(pos2(rect.right() - button, rect.top()), Vec2::splat(button)),
         ),
-        Direction::Vertical => (
+        (Direction::Vertical, None) => (
             Rect::from_min_max(rect.min, pos2(rect.right(), rect.bottom() - 2.0 * button)),
             Rect::from_min_size(
                 pos2(rect.left(), rect.bottom() - 2.0 * button),

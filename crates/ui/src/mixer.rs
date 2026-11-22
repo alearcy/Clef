@@ -954,7 +954,9 @@ impl App {
         ]
         .map(shortcut);
         let frame = ui
-            .push_id(target, |ui| {
+            // Positional, not per target: the drawer swaps one track's strip for another in
+            // place, and egui's debug build flags a widget whose ID changes at the same rect.
+            .push_id(ui.next_auto_id(), |ui| {
                 controls::strip(ui, selected, |ui| {
                     ui.add_enabled_ui(enabled, |ui| {
                         let knob = |ui: &mut egui::Ui, control: Control| {
@@ -1159,8 +1161,10 @@ impl App {
             .max_height(58.0)
             .auto_shrink([false, true])
             .show(ui, |ui| {
-                for send in sends {
-                    ui.push_id(send.id, |ui| {
+                // Positional IDs: a row keeps its ID when another track's sends replace these,
+                // so egui's debug check never flags the swap as a changed widget.
+                for (row, send) in sends.iter().enumerate() {
+                    ui.push_id(row, |ui| {
                         let row = ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 0.5;
                             ui.spacing_mut().button_padding.x = 1.0;
@@ -1617,7 +1621,8 @@ impl App {
                                 }
                                 continue;
                             };
-                            ui.push_id(slot.id, |ui| {
+                            // Positional, like the strip: rows keep their IDs across tracks.
+                            ui.push_id(index, |ui| {
                                 if index > 0 {
                                     let gap = inserts::gap(
                                         ui,

@@ -1836,7 +1836,16 @@ impl App {
             ui.ctx().request_repaint();
         }
         if docked {
-            selected = self.lower_panel(ui).or(selected);
+            // A global scope: egui derives automatic widget IDs from the widgets a parent drew
+            // before, so skipping the arrangement at Full height would move every panel ID (a
+            // debug build outlines each moved one in red).
+            selected = ui
+                .scope_builder(
+                    egui::UiBuilder::new().id(egui::Id::new("clef-lower-panel")),
+                    |ui| self.lower_panel(ui),
+                )
+                .inner
+                .or(selected);
         }
         selected
     }

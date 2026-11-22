@@ -3289,12 +3289,14 @@ impl Session {
     }
     fn poll(&mut self) {
         // T39: audio starts by itself once a project is open; a failure waits for the next
-        // apply, open or launch.
+        // apply, open or launch. T41 round 4: it also waits for instrument loads in flight,
+        // because a start at another rate clears the track runtimes and would drop them.
         if self.auto_audio
             && self.audio_pending
             && self.view.project_open
             && self.engine.is_none()
             && !self.view.recording
+            && !self.runtimes.values().any(|runtime| runtime.loading)
         {
             self.audio_pending = false;
             if let Err(error) = self.start_audio() {
@@ -3638,6 +3640,22 @@ mod tests {
         assert_eq!(session.view.project.midi.find_clip(id).unwrap().0, 1);
     }
 
+    /// T41 round 4: audio starting at another rate clears the track runtimes, so it must not
+    /// start while an instrument load (New Tracks, Choose Instrument) is still in flight.
+    #[test]
+    fn automatic_audio_start_waits_for_instrument_loads() {
+        let (_directory, mut session) = isolated();
+        session.auto_audio = true;
+        session.apply(Action::New).unwrap();
+        session.runtimes.entry(1).or_default().loading = true;
+        session.poll();
+        assert!(session.engine.is_none());
+        assert!(
+            session.audio_pending,
+            "audio still starts once the load ends"
+        );
+    }
+
     #[test]
     fn new_tracks_adds_numbered_tracks_of_one_kind_and_refuses_past_the_limit() {
         let (_directory, mut session) = isolated();
@@ -3929,6 +3947,40 @@ mod tests {
         assert_eq!(session.view.edit_history.cursor, 3);
         assert_eq!(session.view.project.tracks[0].name, "Piano");
         assert_eq!(session.view.project.tracks[0].state[..], [2]);
+    }
+
+    #[test]
+    #[ignore = "requires built Clef, TestSynth and native worker WindowServer access"]
+    fn native_new_tracks_loads_the_chosen_instrument_on_each_track() {
+        let (directory, mut session) = isolated();
+        let synth = scan_test_synth(&directory.0)
+            .into_iter()
+            .find(|plugin| plugin.name == "VST3 Host Test Synth")
+            .unwrap();
+        session.apply(Action::New).unwrap();
+        session
+            .apply(Action::AddTracks {
+                kind: TrackKind::Instrument,
+                count: 2,
+                name: String::new(),
+                plugin: Some(synth.clone()),
+            })
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !session.jobs.is_empty() && Instant::now() < deadline {
+            session.poll();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(session.jobs.is_empty());
+        for track in &session.view.project.tracks {
+            assert_eq!(
+                track.plugin.as_ref(),
+                Some(&synth),
+                "{}: {}",
+                track.name,
+                session.view.message
+            );
+        }
     }
 
     #[test]

@@ -26,7 +26,7 @@ pub fn frame() -> egui::Frame; // PANEL fill, 1-point DIVIDER edge, 4-point corn
 impl<'a> ToolWindow<'a> {
     pub fn new(title: &'a str) -> Self;              // default width 360
     pub fn width(self, width: f32) -> Self;
-    pub fn position(self, position: egui::Pos2) -> Self; // default position
+    pub fn position(self, position: egui::Pos2) -> Self; // default position; else centred
     pub fn show<R>(self, ctx: &egui::Context, open: &mut bool, draw: impl FnOnce(&mut egui::Ui) -> R)
         -> Option<R>;
 }
@@ -35,7 +35,9 @@ impl<'a> ToolWindow<'a> {
 ## Anatomy and behaviour
 
 An `egui::Window` titled in `BODY` bold `TEXT`, closable, not collapsible, using `frame()`. No
-shadow (foundations, depth). Dialogs built on `egui::Modal` pass `frame().inner_margin(16)`. The
+shadow (foundations, depth). It opens centred on Clef's window (T41 round 4, user decision)
+unless the owner passes `position`; once moved, egui keeps its place for the session. Modal
+dialogs are centred by `egui::Modal`. Dialogs built on `egui::Modal` pass `frame().inner_margin(16)`. The
 window id stays derived from the title, so saved positions survive the migration.
 
 ## Usage

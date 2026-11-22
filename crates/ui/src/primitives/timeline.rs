@@ -861,6 +861,21 @@ fn unit_step(unit: clef_model::project::SecondCounter, fps: u8, rate: u32, least
         .max(1)
 }
 
+/// T41 round 4: the loop lane's label over the track headers, right-aligned like the ruler
+/// labels beside it.
+pub fn loop_label(ui: &mut Ui, width: f32) {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, LOOP_HEIGHT), Sense::hover());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, "Loop"));
+    // Unclipped: the caption is as tall as the lane.
+    ui.painter().text(
+        Pos2::new(rect.right() - 8.0, rect.center().y),
+        Align2::RIGHT_CENTER,
+        "Loop",
+        theme::text::font(theme::text::CAPTION),
+        theme::SECONDARY,
+    );
+}
+
 /// T41 round 3 (S11): the unit labels over the track headers, beside the bars ruler and the
 /// second ruler. A click on either opens the second-ruler menu; returns the chosen unit
 /// (`None` hides the second ruler) and the SMPTE frame rate, which the transport counter

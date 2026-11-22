@@ -74,8 +74,8 @@ with its selected state.
 
 | Region | Size | Fill | Edge | Text |
 | --- | --- | --- | --- | --- |
-| Track | equal segments × widest label + 2 × `controlPadding`, `controlHeight` 24 | recessed `field` (control depth) | — | — |
-| Lit segment | one cell | `peacock` | — | `BODY`, `foreground_on(peacock)` |
+| Track | equal segments × widest label + 2 × `controlPadding`, `controlHeight` 24 | flat `field` (`Depth::Flat`, T41 round 4: no light, no shadow) | 1-pt `divider` | — |
+| Lit segment | one cell | flat `peacock` | — | `BODY`, `foreground_on(peacock)` |
 | Other segments | one cell | none | — | `BODY`, `secondary` |
 
 **States**

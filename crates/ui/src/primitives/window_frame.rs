@@ -55,9 +55,14 @@ impl<'a> ToolWindow<'a> {
         .collapsible(false)
         .frame(frame())
         .default_width(self.width);
-        if let Some(position) = self.position {
-            window = window.default_pos(position);
-        }
+        // T41 round 4 (Q1): a window opens centred on Clef's window unless its owner places
+        // it; once moved, egui keeps its place for the session.
+        window = match self.position {
+            Some(position) => window.default_pos(position),
+            None => window
+                .pivot(egui::Align2::CENTER_CENTER)
+                .default_pos(ctx.content_rect().center()),
+        };
         window.show(ctx, draw).and_then(|inner| inner.inner)
     }
 }

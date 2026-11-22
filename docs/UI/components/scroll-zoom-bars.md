@@ -7,7 +7,7 @@ impl: gallery
 tokens: [field, secondary, text]
 used-in: [arrangement, piano-roll, mixer]
 snapshot: snapshots/egui/t18-scroll-zoom-bars-1024.png
-api: ui::primitives::scroll_zoom_bars::{horizontal, vertical, Axis, Moved}
+api: ui::primitives::scroll_zoom_bars::{horizontal, vertical, vertical_to, Axis, Moved}
 evidence: [t18-scroll-zoom-bars, primitives::scroll_zoom_bars::tests]
 ---
 
@@ -43,6 +43,8 @@ pub enum Zoom { In, Out }
 pub struct Moved { pub offset: Option<f32>, pub zoom: Option<Zoom> }
 pub fn horizontal(ui: &mut egui::Ui, name: &str, axis: Axis, enabled: bool) -> Moved;
 pub fn vertical(ui: &mut egui::Ui, name: &str, axis: Axis, enabled: bool) -> Moved;
+// The track fills the available height; the −/+ end at `bottom`, further down (T41 round 4).
+pub fn vertical_to(ui: &mut egui::Ui, name: &str, axis: Axis, enabled: bool, bottom: f32) -> Moved;
 ```
 
 `SCROLL_BAR` (12) thick. The track is a recessed `control_body`; the thumb is `SECONDARY` at 55 %
@@ -53,7 +55,9 @@ stacked at the bottom (vertical). The owner applies `Moved`; the primitive holds
 8–240 points per quarter). Since [T40](../../specs/T40-editing-surfaces-cleanup.md) the
 arrangement places the horizontal bar under its lanes and a vertical bar beside its track rows
 (track height steps); the piano roll places the horizontal bar under its controller lanes and a
-vertical bar beside its grid (pitch-row height steps).
+vertical bar beside its grid (pitch-row height steps). Since T41 round 4 the piano roll uses
+`vertical_to`: its vertical −/+ sit at the corner beside the horizontal −/+, as in the
+arrangement, and the column beside the controller lanes stays empty.
 
 `scroll_zoom_bars::wheel(ui, rect) -> Wheel` reads the gesture over a surface and consumes its
 scroll: `scroll` (points; egui already turns Shift-wheel into horizontal scroll),
